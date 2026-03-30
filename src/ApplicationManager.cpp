@@ -386,6 +386,8 @@ void ApplicationManager::handleSpoolDetected(const AppMessage& msg) {
         if (s.diameter > 0.0f)     len += snprintf(json + len, sizeof(json) - len, ",\"diameter_mm\":%.2f", s.diameter);
         snprintf(json + len, sizeof(json) - len, "}");
         publishToHA("tag/state", json, true);
+        strncpy(lastHAStateJson_, json, sizeof(lastHAStateJson_) - 1);
+        lastHAStateJson_[sizeof(lastHAStateJson_) - 1] = '\0';
     }
 
 #ifndef NATIVE_TEST
@@ -555,6 +557,8 @@ void ApplicationManager::handleBlankTagDetected(const AppMessage& msg) {
                  "\"blank\":true}",
                  msg.payload.blankTag.spool_id);
         publishToHA("tag/state", json, true);
+        strncpy(lastHAStateJson_, json, sizeof(lastHAStateJson_) - 1);
+        lastHAStateJson_[sizeof(lastHAStateJson_) - 1] = '\0';
     }
 }
 
@@ -588,6 +592,8 @@ void ApplicationManager::handleGenericTagDetected(const AppMessage& msg) {
                  "\"spoolman_id\":-1,\"blank\":false}",
                  msg.payload.genericTag.spool_id);
         publishToHA("tag/state", json, true);
+        strncpy(lastHAStateJson_, json, sizeof(lastHAStateJson_) - 1);
+        lastHAStateJson_[sizeof(lastHAStateJson_) - 1] = '\0';
     }
 
     // Trigger Spoolman UID lookup — result will arrive via SPOOLMAN_SYNCED
