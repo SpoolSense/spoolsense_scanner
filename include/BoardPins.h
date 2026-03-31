@@ -71,13 +71,13 @@
   // Status LED — external SK6812 RGBW (optional, requires wiring)
   #define PIN_STATUS_LED   4
   // 3x4 Matrix Keypad (ENABLE_KEYPAD)
-  #define PIN_KEYPAD_ROW1  15
-  #define PIN_KEYPAD_ROW2  16
-  #define PIN_KEYPAD_ROW3  17
-  #define PIN_KEYPAD_ROW4  18
-  #define PIN_KEYPAD_COL1  19
+  #define PIN_KEYPAD_ROW1  19
+  #define PIN_KEYPAD_ROW2  15
+  #define PIN_KEYPAD_ROW3  16
+  #define PIN_KEYPAD_ROW4  5
+  #define PIN_KEYPAD_COL1  18
   #define PIN_KEYPAD_COL2  21
-  #define PIN_KEYPAD_COL3  5
+  #define PIN_KEYPAD_COL3  17
   // TFT SPI display (ENABLE_TFT — mutually exclusive with LCD I2C)
   // Uses VSPI. Pins 23/22 freed from LCD when TFT replaces it.
   #define PIN_TFT_MOSI     23  // VSPI MOSI (shared with LCD SDA when LCD enabled)
