@@ -117,7 +117,9 @@ void initWiFi() {
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
       Serial.println("Failed to obtain time");
-      if (config.isLcdEnabled()) {
+      if (config.isTftEnabled()) {
+        tftManager.showError("NTP FAILED");
+      } else if (config.isLcdEnabled()) {
         lcdManager.updateScreen("NTP FAILED", "");
       }
     } else {
@@ -269,7 +271,7 @@ void setup() {
   if (config.isTftEnabled()) {
     tftManager.showReady();
   } else if (config.isLcdEnabled()) {
-    ApplicationManager::getInstance().showStatusOnLCD();
+    ApplicationManager::getInstance().showStatusScreen();
   }
 
   if (config.isLedEnabled()) {
@@ -280,6 +282,7 @@ void setup() {
   // Start HTTP server (both STA and AP mode)
   if (WiFi.status() == WL_CONNECTED || g_apModeActive) {
     WebServerManager::getInstance().begin(g_apModeActive);
+    WebServerManager::getInstance().setDisplay(activeDisplay);
   }
 
   Serial.println("=== Setup complete ===");

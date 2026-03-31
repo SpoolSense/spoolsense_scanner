@@ -54,6 +54,8 @@ struct GenericTagSpoolInfo {
     char color_hex[8];
     float remaining_weight_g;
     int32_t spoolman_id;
+    int16_t extruder_temp;
+    int16_t bed_temp;
     bool valid;
 };
 

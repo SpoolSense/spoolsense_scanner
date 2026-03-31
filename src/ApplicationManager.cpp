@@ -81,7 +81,7 @@ void ApplicationManager::processMessages() {
             bool isTft = false;
 #endif
             if (keypadBufferLen_ == 0 && !isTft) {
-                showStatusOnLCD();
+                showStatusScreen();
             }
             pendingStatusAfterTagRemoved = false;
         }
@@ -111,7 +111,7 @@ void ApplicationManager::processMessages() {
 
 }
 
-void ApplicationManager::showStatusOnLCD() {
+void ApplicationManager::showStatusScreen() {
     if (display_ == nullptr) {
         return;
     }
@@ -676,6 +676,8 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             strncpy(info.color_hex, msg.payload.spoolmanSynced.color_hex, sizeof(info.color_hex) - 1);
             info.remaining_weight_g = kgRemaining * 1000.0f;
             info.spoolman_id = msg.payload.spoolmanSynced.spoolman_id;
+            info.extruder_temp = msg.payload.spoolmanSynced.extruder_temp;
+            info.bed_temp = msg.payload.spoolmanSynced.bed_temp;
             info.valid = true;
             NFCManager::getInstance().setGenericTagSpoolInfo(info);
         }

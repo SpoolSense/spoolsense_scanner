@@ -87,6 +87,8 @@ struct SpoolmanSyncedPayload {
     char material_name[32];      // Carried from sync request — avoids re-reading NFC state
     char manufacturer[64];       // Vendor name (populated for UID lookups)
     char color_hex[8];           // "#RRGGBB" (populated for UID lookups)
+    int16_t extruder_temp;       // Spoolman settings_extruder_temp (0 = not set)
+    int16_t bed_temp;            // Spoolman settings_bed_temp (0 = not set)
     bool is_uid_lookup;          // True = result of a UID-only lookup (generic tag)
 };
 
@@ -155,7 +157,7 @@ public:
     bool begin(DisplayI* display = nullptr);
     bool sendMessage(const AppMessage& msg, uint32_t waitMs = 0);
     void processMessages();
-    void showStatusOnLCD();
+    void showStatusScreen();
 
     // Public for testing
     void handleMessage(const AppMessage& msg);

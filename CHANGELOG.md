@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.6.1] - 2026-03-30
+
+### Added
+
+- **Link/re-assign NFC+ tags to Spoolman spools** — spool picker on reader page with search. Link unlinked tags or re-assign existing ones. Proxy endpoints avoid CORS. (#54)
+- **Tag writer auto-populate from scanned tag** — place a tag on the reader, open any writer page, form fields pre-fill from the tag's data. Works cross-format (scan TigerTag, write as OpenPrintTag). (#57)
+- **NFC+ reader shows temps** — extruder and bed temps from Spoolman now displayed on the reader page for NFC+ tags. (#56)
+
+### Fixed
+
+- **HA discovery MQTT traffic reduced ~80%** — only re-publishes when UID changes, not every scan. Legacy openprinttag_ entity cleanup removed. (#55)
+- **Spoolman HTTP connection reuse** — persistent TCP connection across API calls, eliminates per-request connection overhead. (#30)
+- **NFC+ reader polling** — keeps polling until Spoolman data arrives instead of stopping on first tag detection.
+- **Spoolman JSON buffer** — dynamically sized to response (was fixed 16KB, failed on 25KB+ spool lists).
+- **Spool picker security** — XSS escaping, hex validation on nfc_id, HTTP timeouts, safe re-assign order (set new before clearing old).
+- **TFT display** — removed duplicate filament name line. Fixed breathing animation unsigned underflow. NTP failure now shown on TFT.
+- **HA task stack** — bumped 7168 → 8192 to prevent overflow during discovery.
+- **Renamed showStatusOnLCD → showStatusScreen** — method now uses DisplayI interface, name reflects that.
+
+---
+
 ## [1.6.0] - 2026-03-30
 
 ### Added

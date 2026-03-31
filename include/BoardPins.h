@@ -38,13 +38,15 @@
   #define PIN_KEYPAD_COL1  17
   #define PIN_KEYPAD_COL2  18
   #define PIN_KEYPAD_COL3  42
-  // TFT SPI display (ENABLE_TFT — S3 pins, not yet validated on hardware)
+  // TFT SPI display — S3-Zero + PN532 only (GPIO 1-13 are side headers)
+  // PN532 uses GPIO 4-8,11. TFT uses the remaining header pins.
+  // Not compatible with PN5180 (not enough free header pins).
   #define PIN_TFT_MOSI     13
-  #define PIN_TFT_SCLK     15
+  #define PIN_TFT_SCLK     12
   #define PIN_TFT_MISO     -1
-  #define PIN_TFT_CS        16
+  #define PIN_TFT_CS        10
   #define PIN_TFT_DC         3
-  #define PIN_TFT_RST       -1
+  #define PIN_TFT_RST        9
   #define PIN_TFT_BL        -1
 #else
   // --- ESP32-WROOM-32 pin mapping (default) ---

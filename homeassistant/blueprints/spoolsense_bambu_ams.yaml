@@ -1,0 +1,114 @@
+blueprint:
+  name: "SpoolSense → Bambu AMS"
+  description: >
+    Automatically push scanned spool data (material, color, temperatures) into a
+    Bambu Lab AMS tray. Scan a spool with SpoolSense, load it into an AMS tray,
+    and the blueprint sets the tray filament info via Home Assistant.
+  domain: automation
+  input:
+    spoolsense_sensor:
+      name: SpoolSense Spool Sensor
+      description: The SpoolSense spool sensor entity (e.g., sensor.spoolsense_XXXXXX_spool)
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+    ams_tray_entities:
+      name: AMS Tray Sensors
+      description: >
+        Select all AMS tray sensor entities to monitor. When filament is loaded
+        into any of these trays after a scan, the spool data is pushed to that tray.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+    timeout_seconds:
+      name: Scan-to-Load Timeout
+      description: >
+        How long (in seconds) to wait for a tray load after scanning a spool.
+        If no tray is loaded within this time, the automation does nothing.
+      default: 300
+      selector:
+        number:
+          min: 30
+          max: 600
+          unit_of_measurement: seconds
+
+mode: restart
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input spoolsense_sensor
+    to: "present"
+
+actions:
+  - variables:
+      spool_material_raw: "{{ trigger.to_state.attributes.material_type | default('') }}"
+      spool_material: "{{ spool_material_raw.split(' ')[-1] | upper }}"
+      filament_id_map:
+        PLA: "GFL99"
+        PLA-CF: "GFL98"
+        PETG: "GFG99"
+        PETG-CF: "GFG98"
+        PETG-HF: "GFG96"
+        PCTG: "GFG97"
+        ABS: "GFB99"
+        ABS-GF: "GFB50"
+        ASA: "GFB98"
+        ASA-CF: "GFB51"
+        TPU: "GFU99"
+        PC: "GFC99"
+        PC-FR: "GFC01"
+        PA: "GFN99"
+        PA-CF: "GFN98"
+        PA6-CF: "GFN05"
+        PA6-GF: "GFN08"
+        PAHT-CF: "GFN04"
+        NYLON: "GFN99"
+        PPA-CF: "GFN97"
+        PPA-GF: "GFN96"
+        PVA: "GFS99"
+        HIPS: "GFS98"
+        BVOH: "GFS97"
+        PET-CF: "GFT01"
+        PPS: "GFT97"
+        PPS-CF: "GFT98"
+        PP: "GFP97"
+        PP-CF: "GFP96"
+        PP-GF: "GFP95"
+        PE: "GFP99"
+        PE-CF: "GFP98"
+        PHA: "GFR98"
+        EVA: "GFR99"
+      spool_filament_id: "{{ filament_id_map.get(spool_material, 'GFL99') }}"
+      spool_color_raw: "{{ trigger.to_state.attributes.color | default('000000') }}"
+      spool_color_rgba: "{{ spool_color_raw.replace('#', '') ~ 'FF' }}"
+      spool_nozzle_min: "{{ trigger.to_state.attributes.min_print_temp | default(0) | int }}"
+      spool_nozzle_max: "{{ trigger.to_state.attributes.max_print_temp | default(0) | int }}"
+
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: !input ams_tray_entities
+        attribute: empty
+        from: true
+        to: false
+    timeout:
+      seconds: !input timeout_seconds
+    continue_on_timeout: false
+
+  - variables:
+      loaded_tray: "{{ wait.trigger.entity_id }}"
+
+  - condition: template
+    value_template: "{{ spool_material != '' }}"
+
+  - action: bambu_lab.set_filament
+    data:
+      entity_id: "{{ loaded_tray }}"
+      tray_info_idx: "{{ spool_filament_id }}"
+      tray_type: "{{ spool_material }}"
+      tray_color: "{{ spool_color_rgba }}"
+      nozzle_temp_min: "{{ spool_nozzle_min }}"
+      nozzle_temp_max: "{{ spool_nozzle_max }}"

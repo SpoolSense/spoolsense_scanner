@@ -166,10 +166,14 @@ static bool parseSpoolIdByUuid(const char* jsonText, const char* uuid, int& outI
     // Use ArduinoJson — the streaming parser (htcw_json) can't reliably
     // handle Spoolman's nested filament/vendor objects with their own 'id' fields.
     // The response is small enough for heap parsing (~1-2KB per spool).
-    DynamicJsonDocument doc(16384);
+    size_t jsonLen = strlen(jsonText);
+    size_t bufSize = jsonLen + 4096;  // response size + overhead for ArduinoJson metadata
+    if (bufSize < 16384) bufSize = 16384;
+    DynamicJsonDocument doc(bufSize);
     DeserializationError err = deserializeJson(doc, jsonText);
     if (err) {
-        Serial.printf("SpoolmanManager: parseSpoolIdByUuid JSON parse failed: %s\n", err.c_str());
+        Serial.printf("SpoolmanManager: parseSpoolIdByUuid JSON parse failed: %s (input=%u buf=%u)\n",
+                       err.c_str(), (unsigned)jsonLen, (unsigned)bufSize);
         return false;
     }
 
@@ -219,54 +223,50 @@ static bool parseSpoolUuid(const char* jsonText, char* outUuid, size_t outUuidSi
 }
 
 // --- File-local HTTP helpers ---
+// Persistent client + http objects — reuse TCP connection across requests.
+// All Spoolman calls are serialized by httpMutex_ so no concurrent access.
+// begin() internally calls end() + resets headers. setReuse(true) keeps TCP alive.
+static WiFiClient spoolmanClient;
+static HTTPClient spoolmanHttp;
 
 static int httpGet(const char* path, String& response) {
     const char* baseUrl = ConfigurationManager::getInstance().getSpoolmanURL();
-    WiFiClient client;
-    HTTPClient http;
-
     char url[256];
     snprintf(url, sizeof(url), "%s%s", baseUrl, path);
-    http.begin(client, url);
-    int code = http.GET();
+    spoolmanHttp.begin(spoolmanClient, url);
+    spoolmanHttp.setReuse(true);
+    int code = spoolmanHttp.GET();
     if (code > 0) {
-        response = http.getString();
+        response = spoolmanHttp.getString();
     }
-    http.end();
     return code;
 }
 
 static int httpPost(const char* path, const char* body, String& response) {
     const char* baseUrl = ConfigurationManager::getInstance().getSpoolmanURL();
-    WiFiClient client;
-    HTTPClient http;
-
     char url[256];
     snprintf(url, sizeof(url), "%s%s", baseUrl, path);
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    int code = http.POST(body);
+    spoolmanHttp.begin(spoolmanClient, url);
+    spoolmanHttp.setReuse(true);
+    spoolmanHttp.addHeader("Content-Type", "application/json");
+    int code = spoolmanHttp.POST(body);
     if (code > 0) {
-        response = http.getString();
+        response = spoolmanHttp.getString();
     }
-    http.end();
     return code;
 }
 
 static int httpPatch(const char* path, const char* body, String& response) {
     const char* baseUrl = ConfigurationManager::getInstance().getSpoolmanURL();
-    WiFiClient client;
-    HTTPClient http;
-
     char url[256];
     snprintf(url, sizeof(url), "%s%s", baseUrl, path);
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    int code = http.PATCH(body);
+    spoolmanHttp.begin(spoolmanClient, url);
+    spoolmanHttp.setReuse(true);
+    spoolmanHttp.addHeader("Content-Type", "application/json");
+    int code = spoolmanHttp.PATCH(body);
     if (code > 0) {
-        response = http.getString();
+        response = spoolmanHttp.getString();
     }
-    http.end();
     return code;
 }
 
@@ -850,6 +850,16 @@ bool SpoolmanManager::getSpoolDetails(int32_t spoolmanId, SpoolDetails& outDetai
                             snprintf(outDetails.color_hex, sizeof(outDetails.color_hex), "#%s", colorBuf);
                         }
                     }
+                } else if (strcmp(currentField, "settings_extruder_temp") == 0) {
+                    int temp = 0;
+                    if (readIntValue(reader, temp)) {
+                        outDetails.extruder_temp = static_cast<int16_t>(temp);
+                    }
+                } else if (strcmp(currentField, "settings_bed_temp") == 0) {
+                    int temp = 0;
+                    if (readIntValue(reader, temp)) {
+                        outDetails.bed_temp = static_cast<int16_t>(temp);
+                    }
                 } else if (strcmp(currentField, "weight") == 0) {
                     // Fallback capacity if initial_weight is not set
                     if (outDetails.initial_weight_g == 0.0f && reader.value_type() == json_value_type::real) {
@@ -1141,6 +1151,8 @@ void SpoolmanManager::taskLoop() {
                         found ? details.color_hex : "",
                         sizeof(msg.payload.spoolmanSynced.color_hex) - 1);
                 msg.payload.spoolmanSynced.color_hex[sizeof(msg.payload.spoolmanSynced.color_hex) - 1] = '\0';
+                msg.payload.spoolmanSynced.extruder_temp = found ? details.extruder_temp : 0;
+                msg.payload.spoolmanSynced.bed_temp = found ? details.bed_temp : 0;
             } else {
                 Serial.printf("SpoolmanManager: Syncing spool %s\n", req.spool_id);
                 int resolvedSpoolmanId = -1;

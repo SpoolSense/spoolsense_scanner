@@ -406,6 +406,33 @@ const char TIGERTAG_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     materialSearchEl.addEventListener('input', autoFillFromMaterial);
 
+    // Pre-fill from scanned tag if present
+    prefillFromTag({
+      material: 'material_search',
+      color: 'colorHex',
+      colorPicker: 'colorPicker',
+      manufacturer: 'brand_search',
+      weight: 'weight_g',
+      nozzle_min: 'nozzle_min',
+      nozzle_max: 'nozzle_max',
+      bed_min: 'bed_min',
+      bed_max: 'bed_max',
+      dry_temp: 'dry_temp',
+      dry_time: 'dry_time'
+    }).then(function(d) {
+      if (!d) return;
+      // Sync hidden material_id from material name
+      if (d.tigertag_material_id !== undefined) {
+        document.getElementById('material_id').value = d.tigertag_material_id;
+      } else {
+        syncMaterialId();
+      }
+      // Sync hidden brand_id from brand name
+      if (d.tigertag_brand_id !== undefined) {
+        document.getElementById('brand_id').value = d.tigertag_brand_id;
+      }
+    });
+
     (async function loadTigerTagAPI() {
       try {
         var resp = await fetch('https://raw.githubusercontent.com/TigerTag-Project/TigerTag-RFID-Guide/main/database/id_material.json');

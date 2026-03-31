@@ -280,6 +280,40 @@ const char OPENPRINTTAG_WRITER_HTML[] PROGMEM = R"rawliteral(
     var STEP_IDS = ['step-wait', 'step-detect', 'step-format', 'step-write', 'step-verify'];
 
     syncColorPicker('colorPicker', 'colorHex');
+
+    // Pre-fill from scanned tag if present
+    prefillFromTag({
+      material: 'material_search',
+      color: 'colorHex',
+      colorPicker: 'colorPicker',
+      manufacturer: 'manufacturer',
+      weight: 'initial_weight_g',
+      remaining: 'remaining_g',
+      density: 'density',
+      diameter: 'diameter_mm',
+      nozzle_min: 'min_print_temp',
+      nozzle_max: 'max_print_temp',
+      preheat: 'preheat_temp',
+      bed_min: 'min_bed_temp',
+      bed_max: 'max_bed_temp'
+    }).then(function(d) {
+      if (!d) return;
+      // Sync material_type hidden field from material name
+      var opts = document.getElementById('material-list').querySelectorAll('option');
+      var search = document.getElementById('material_search');
+      var hidden = document.getElementById('material_type');
+      for (var i = 0; i < opts.length; i++) {
+        if (opts[i].value.toUpperCase() === (d.material || '').toUpperCase()) {
+          search.value = opts[i].value;
+          hidden.value = opts[i].dataset.id || '0';
+          break;
+        }
+      }
+      // Trigger material DB auto-fill for any fields the tag didn't have
+      var materialSearchEl = document.getElementById('material_search');
+      if (materialSearchEl) materialSearchEl.dispatchEvent(new Event('input'));
+    });
+
     setupAdvancedToggle('advancedToggle', 'advancedBox');
 
     // Sync material search → hidden material_type ID

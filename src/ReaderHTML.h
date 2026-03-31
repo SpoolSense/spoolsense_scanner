@@ -43,6 +43,15 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
         <div id="tagView" class="hidden">
           <div class="tag-info" id="tagFields"></div>
         </div>
+
+        <!-- Spool picker for NFC+ link/re-assign -->
+        <div id="spoolPicker" class="hidden" style="margin-top:16px">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+            <input type="text" id="spoolSearch" placeholder="Search spools..." style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:0.95em" />
+          </div>
+          <div id="spoolResults" style="max-height:240px;overflow-y:auto"></div>
+          <div id="linkResult" class="hidden" style="margin-top:10px;padding:10px;border-radius:8px;text-align:center;font-weight:600"></div>
+        </div>
       </div>
     </section>
 
@@ -143,9 +152,118 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
       if (s.color)         html += row('Color', '<span class="color-swatch" style="background:' + s.color + '"></span> ' + s.color);
       if (s.remaining_g !== undefined) html += row('Remaining', s.remaining_g.toFixed(1) + ' g');
       if (s.spoolman_id > 0) html += row('Spoolman ID', s.spoolman_id);
-      if (!s.material_name && !s.tag_data_valid) html += row('Data', 'No parseable data &mdash; scan in progress');
+      if (s.extruder_temp > 0) html += row('Extruder Temp', s.extruder_temp + ' &deg;C');
+      if (s.bed_temp > 0) html += row('Bed Temp', s.bed_temp + ' &deg;C');
+      if (!s.material_name && !s.tag_data_valid) html += row('Data', '<em>Looking up in Spoolman&hellip; keep tag on reader</em>');
+      // Link/Re-assign button — show once Spoolman lookup is done (success or fail)
+      if (s.uid && (s.material_name || s.tag_data_valid === false)) {
+        var btnLabel = s.spoolman_id > 0 ? 'Re-assign Spool' : 'Link to Spool';
+        html += '<div style="margin-top:14px;text-align:center"><button onclick="showSpoolPicker(\'' + (s.uid || '') + '\',' + (s.spoolman_id || -1) + ')" class="btn-primary" style="font-size:0.9em;padding:8px 20px">' + btnLabel + '</button></div>';
+      }
       return html;
     }
+
+    // --- Spool picker for NFC+ link/re-assign ---
+    var spoolmanUrl = '';
+    var allSpools = [];
+    var currentTagUid = '';
+    var currentSpoolmanId = -1;
+
+    // Fetch Spoolman URL from scanner config
+    api('/api/config').then(function(cfg) {
+      if (cfg.spoolman_url) spoolmanUrl = cfg.spoolman_url.replace(/\/+$/, '');
+    }).catch(function(){});
+
+    function fetchSpools() {
+      return fetch('/api/spoolman/spools')
+        .then(function(r) { return r.ok ? r.json() : []; })
+        .catch(function() { return []; });
+    }
+
+    function esc(s) {
+      var d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+    }
+
+    function renderSpoolRow(spool) {
+      var fil = spool.filament || {};
+      var vendor = fil.vendor ? esc(fil.vendor.name) : '';
+      var color = (fil.color_hex || '').replace(/[^0-9a-fA-F]/g, '');
+      var colorSwatch = color ? '<span class="color-swatch" style="background:#' + color + ';display:inline-block;width:14px;height:14px;border-radius:50%;vertical-align:middle;margin-right:6px"></span>' : '';
+      var remaining = spool.remaining_weight ? Math.round(spool.remaining_weight) + 'g' : '?';
+      var label = colorSwatch + '#' + spool.id + ' ' + (vendor ? vendor + ' ' : '') + esc(fil.material || fil.name || '?') + ' — ' + remaining;
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border)">'
+           + '<span style="font-size:0.9em">' + label + '</span>'
+           + '<button onclick="linkSpool(' + spool.id + ')" style="padding:4px 14px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:0.85em;font-weight:600">'
+           + (currentSpoolmanId > 0 ? 'Re-assign' : 'Link') + '</button>'
+           + '</div>';
+    }
+
+    function showSpoolPicker(uid, spoolmanId) {
+      currentTagUid = uid;
+      currentSpoolmanId = spoolmanId;
+      var picker = document.getElementById('spoolPicker');
+      var results = document.getElementById('spoolResults');
+      var linkResult = document.getElementById('linkResult');
+      linkResult.classList.add('hidden');
+      picker.classList.remove('hidden');
+
+      fetchSpools().then(function(spools) {
+        allSpools = spools;
+        filterSpools('');
+      });
+    }
+
+    function filterSpools(query) {
+      var results = document.getElementById('spoolResults');
+      var q = query.toLowerCase();
+      var filtered = allSpools.filter(function(s) {
+        var fil = s.filament || {};
+        var vendor = fil.vendor ? fil.vendor.name : '';
+        var text = (vendor + ' ' + (fil.material || '') + ' ' + (fil.name || '')).toLowerCase();
+        return !q || text.indexOf(q) >= 0;
+      });
+      if (filtered.length === 0) {
+        results.innerHTML = '<div style="padding:12px;opacity:0.5;text-align:center">No spools found</div>';
+      } else {
+        results.innerHTML = filtered.slice(0, 20).map(renderSpoolRow).join('');
+      }
+    }
+
+    document.getElementById('spoolSearch').addEventListener('input', function() {
+      filterSpools(this.value);
+    });
+
+    window.linkSpool = function(newSpoolId) {
+      if (!currentTagUid) return;
+      var linkResult = document.getElementById('linkResult');
+      linkResult.textContent = 'Linking...';
+      linkResult.className = '';
+      linkResult.classList.remove('hidden');
+
+      fetch('/api/spoolman/link', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          spool_id: newSpoolId,
+          nfc_id: currentTagUid,
+          old_spool_id: currentSpoolmanId
+        })
+      }).then(function(r) {
+        return r.json().then(function(data) {
+          if (data.success) {
+            linkResult.textContent = 'Linked! Remove and re-scan tag to verify.';
+            linkResult.style.color = '#22c55e';
+            document.getElementById('spoolResults').innerHTML = '';
+            document.getElementById('spoolSearch').value = '';
+          } else {
+            throw new Error(data.error || 'Link failed');
+          }
+        });
+      }).catch(function(err) {
+        linkResult.textContent = 'Failed: ' + err.message;
+        linkResult.style.color = '#ef4444';
+      });
+    };
 
     function render(s) {
       if (!s.present) {
@@ -184,17 +302,25 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
       noTag.classList.remove('hidden');
       tagView.classList.add('hidden');
       scanBtn.classList.add('hidden');
+      document.getElementById('spoolPicker').classList.add('hidden');
       pollTimer = setInterval(poll, 1000);
       poll();
     }
 
     function poll() {
       api('/api/status').then(function(s){
-        if (s.present && !tagFound) {
-          tagFound = true;
-          stopPolling();
+        if (s.present) {
           render(s);
-          scanBtn.classList.remove('hidden');
+          // For generic UID tags, keep polling until Spoolman data arrives
+          var isGenericPending = (s.tag_kind === 'GenericUidTag') && !s.material_name;
+          if (!tagFound && !isGenericPending) {
+            tagFound = true;
+            stopPolling();
+            scanBtn.classList.remove('hidden');
+          } else if (!tagFound) {
+            // Still waiting for Spoolman lookup — keep polling
+            render(s);
+          }
         } else if (!tagFound) {
           render(s);
         }

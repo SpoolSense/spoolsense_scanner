@@ -303,10 +303,10 @@ void TFTManager::processQueue() {
     // Breathing animation tick
     if (_isBreathing && (millis() - _lastBreathMs >= BREATH_STEP_MS)) {
         _lastBreathMs = millis();
-        _breathBrightness += _breathDirection * 3;
-        if (_breathBrightness <= 30)  _breathDirection = 1;
-        if (_breathBrightness >= 255) _breathDirection = -1;
-        _breathBrightness = constrain(_breathBrightness, 30, 255);
+        int16_t next = (int16_t)_breathBrightness + _breathDirection * 3;
+        if (next <= 30)  { next = 30;  _breathDirection = 1; }
+        if (next >= 255) { next = 255; _breathDirection = -1; }
+        _breathBrightness = (uint8_t)next;
         _tft.setBrightness(_breathBrightness);
     }
 
@@ -397,24 +397,19 @@ void TFTManager::renderSpoolScanned(const TFTSpoolData& spool) {
     drawSpool(cx, cy, 68, 26, fillColor);
 
     // ---- Text area ----
-    int textY = 185;
+    int textY = 190;
     _sprite.setTextDatum(MC_DATUM);
 
-    // Brand + material on one line
+    // Brand + material
     char brandMat[48];
     snprintf(brandMat, sizeof(brandMat), "%s  %s", spool.brand, spool.material);
-    _sprite.setTextColor(COLOR_SUBTEXT);
+    _sprite.setTextColor(COLOR_TEXT);
     _sprite.setTextSize(1);
     _sprite.drawString(brandMat, cx, textY);
 
-    // Filament name
-    _sprite.setTextColor(COLOR_TEXT);
-    _sprite.setTextSize(1);
-    _sprite.drawString(spool.name, cx, textY + 14);
-
     // Weight bar
     if (spool.totalWeight > 0) {
-        drawWeightBar(20, textY + 28, W - 40, 8,
+        drawWeightBar(20, textY + 14, W - 40, 8,
                       spool.remainingWeight, spool.totalWeight);
 
         // Weight text
@@ -424,7 +419,7 @@ void TFTManager::renderSpoolScanned(const TFTSpoolData& spool) {
         _sprite.setTextColor(COLOR_SUBTEXT);
         _sprite.setTextSize(1);
         _sprite.setTextDatum(MC_DATUM);
-        _sprite.drawString(weightStr, cx, textY + 44);
+        _sprite.drawString(weightStr, cx, textY + 30);
     }
 
     _sprite.pushSprite(0, 0);
@@ -629,6 +624,8 @@ uint32_t TFTManager::hexToRgb(const char* hex) {
     return (uint32_t)val;
 }
 
+// Reserved for future use: dim spool graphic color when tag removed
+// (show last scanned spool at ~50% brightness to indicate "gone")
 uint32_t TFTManager::dimColor(uint32_t color, uint8_t brightness) {
     uint8_t r = ((color >> 16) & 0xFF) * brightness / 255;
     uint8_t g = ((color >> 8)  & 0xFF) * brightness / 255;
@@ -669,4 +666,105 @@ void TFTManager::showSpool(const DisplaySpoolData& spool) {
     tftSpool.totalWeight = spool.totalWeight;
     tftSpool.tagType = spool.tagType;
     showSpoolScanned(tftSpool);
+}
+
+// ---------------------------------------------------------------------------
+// OTA support — free sprite for SSL heap, render directly to panel
+// ---------------------------------------------------------------------------
+void TFTManager::freeForOTA() {
+    // Stop the TFT task so no queue processing conflicts with direct writes.
+    // NOTE: The task and sprite are NOT restored after OTA failure — the device
+    // is expected to reboot (success) or require manual reboot (failure).
+    if (_taskHandle != nullptr) {
+        vTaskDelete(_taskHandle);
+        _taskHandle = nullptr;
+        Serial.println("TFTManager: Task stopped for OTA");
+    }
+
+    // Delete sprite to free 57.6KB heap
+    _sprite.deleteSprite();
+    Serial.printf("TFTManager: Sprite freed, heap now %u\n", ESP.getFreeHeap());
+
+    // Wake screen if it was off
+    _tft.setBrightness(255);
+
+    // Draw OTA screen directly to panel (no sprite)
+    _tft.fillScreen(COLOR_BG);
+
+    // Header bar
+    _tft.fillRect(0, 0, _tft.width(), 28, COLOR_HEADER_BG);
+    _tft.setTextColor(COLOR_ACCENT);
+    _tft.setTextSize(1);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString("SpoolSense", _tft.width() / 2, 14);
+
+    // "Updating..." text
+    int cx = _tft.width() / 2;
+    _tft.setTextColor(COLOR_TEXT);
+    _tft.setTextSize(2);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString("Updating...", cx, 80);
+
+    // Progress bar outline (same position updateOTAProgress will fill)
+    int barX = 20;
+    int barY = 120;
+    int barW = _tft.width() - 40;  // 200px on 240px display
+    int barH = 20;
+    _tft.drawRoundRect(barX, barY, barW, barH, barH / 2, 0x555555);
+
+    // "0%" text
+    _tft.setTextColor(COLOR_SUBTEXT);
+    _tft.setTextSize(1);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString("0%", cx, 155);
+}
+
+void TFTManager::updateOTAProgress(uint8_t percent) {
+    if (percent > 100) percent = 100;
+
+    int barX = 20;
+    int barY = 120;
+    int barW = _tft.width() - 40;  // 200px
+    int barH = 20;
+    int cx = _tft.width() / 2;
+
+    // Fill progress bar
+    int filled = (barW * percent) / 100;
+    if (filled > 0) {
+        _tft.fillRoundRect(barX, barY, filled, barH, barH / 2, COLOR_ACCENT);
+    }
+
+    // Clear and redraw percentage text
+    _tft.fillRect(cx - 30, 148, 60, 16, COLOR_BG);
+    char pctStr[8];
+    snprintf(pctStr, sizeof(pctStr), "%u%%", percent);
+    _tft.setTextColor(COLOR_SUBTEXT);
+    _tft.setTextSize(1);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString(pctStr, cx, 155);
+}
+
+void TFTManager::showOTAError(const char* error) {
+    int cx = _tft.width() / 2;
+
+    // Clear progress area
+    _tft.fillRect(0, 60, _tft.width(), _tft.height() - 60, COLOR_BG);
+
+    // Error icon
+    _tft.fillCircle(cx, 100, 22, 0xFF4444);
+    _tft.setTextColor(COLOR_BG);
+    _tft.setTextSize(3);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString("X", cx, 100);
+
+    // "Update Failed" text
+    _tft.setTextColor(COLOR_TEXT);
+    _tft.setTextSize(1);
+    _tft.drawString("Update Failed", cx, 135);
+
+    // Error detail
+    if (error && error[0]) {
+        _tft.setTextColor(COLOR_SUBTEXT);
+        _tft.drawString(error, cx, 155);
+    }
 }

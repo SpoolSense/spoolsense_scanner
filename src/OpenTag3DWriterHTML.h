@@ -334,6 +334,51 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       }
     }
     baseMaterialEl.addEventListener('input', ot3dAutoFill);
+
+    // Pre-fill from scanned tag if present
+    prefillFromTag({
+      material: 'base_material',
+      color: 'colorHex',
+      colorPicker: 'colorPicker',
+      manufacturer: 'manufacturer',
+      weight: 'target_weight_g',
+      density: 'density',
+      diameter: 'diameter_mm',
+      nozzle_min: 'min_print_temp_c',
+      nozzle_max: 'max_print_temp_c',
+      bed_min: 'min_bed_temp_c',
+      bed_max: 'max_bed_temp_c',
+      dry_temp: 'max_dry_temp_c',
+      dry_time: 'dry_time_hours'
+    }).then(function(d) {
+      if (!d) return;
+      // Sync modifiers dropdown if available
+      if (d.modifiers) {
+        var modEl = document.getElementById('material_modifiers');
+        if (modEl) modEl.value = d.modifiers;
+      }
+      // Sync basic print/bed temp from nozzle_max/bed_max
+      var pt = document.getElementById('print_temp_c');
+      if (pt && d.nozzle_max && pt.dataset.autoFilled !== 'false') {
+        pt.value = d.nozzle_max; pt.dataset.autoFilled = 'true';
+      }
+      var bt = document.getElementById('bed_temp_c');
+      if (bt && d.bed_max && bt.dataset.autoFilled !== 'false') {
+        bt.value = d.bed_max; bt.dataset.autoFilled = 'true';
+      }
+      // Sync diameter dropdown (values in micrometers)
+      if (d.diameter) {
+        var dEl = document.getElementById('diameter_um');
+        if (dEl && dEl.dataset.autoFilled !== 'false') {
+          var um = Math.round(d.diameter * 1000);
+          dEl.value = um; dEl.dataset.autoFilled = 'true';
+        }
+      }
+      // Trigger material auto-fill for any missing fields
+      var matEl = document.getElementById('base_material');
+      if (matEl) matEl.dispatchEvent(new Event('input'));
+    });
+
     if (modifiersEl) modifiersEl.addEventListener('change', ot3dAutoFill);
     loadMaterialDb().then(function(db) {
       var dl = document.getElementById('material-list');

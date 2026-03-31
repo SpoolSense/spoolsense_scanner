@@ -73,6 +73,11 @@ public:
     void showKeypadEntry(const char* toolNumber);
     void showError(const char* msg);
 
+    // OTA support — free sprite heap, render progress directly to panel
+    void freeForOTA() override;
+    void updateOTAProgress(uint8_t percent) override;
+    void showOTAError(const char* error) override;
+
     void setScreenTimeoutMs(uint32_t timeoutMs) override;
 
     // DisplayI interface

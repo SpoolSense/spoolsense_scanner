@@ -5,6 +5,8 @@
 #include <WebServer.h>
 #endif
 
+class DisplayI;
+
 class WebServerManager {
 public:
     static WebServerManager& getInstance();
@@ -15,6 +17,7 @@ public:
 
     // Call from loop() — processes pending HTTP requests.
     void handleClient();
+    void setDisplay(DisplayI* display) { _display = display; }
 
 private:
     WebServerManager() = default;
@@ -57,6 +60,8 @@ private:
     void handleTroubleshootingPage();
     void handleUIDRegistrationPage();
     void handleApiRegisterUid();
+    void handleApiSpoolmanSpools();
+    void handleApiSpoolmanLink();
 
     // OTA download state
     static void otaDownloadTask(void* param);
@@ -65,6 +70,8 @@ private:
     char _otaUrl[512] = {0};
     char _otaError[64] = {0};
     volatile uint8_t _otaProgress = 0;
+
+    DisplayI* _display = nullptr;
 
     void sendError(int code, const char* msg);
 #endif

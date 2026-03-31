@@ -369,6 +369,7 @@ void HomeAssistantManager::taskLoop() {
                     lastMqttState_ = 0;
                     reconnectDelay_ = 1000; // Reset backoff
                     Serial.println("HomeAssistantManager: MQTT connected, publishing discovery/state");
+                    lastDiscoveryUid_[0] = '\0';  // Reset dedupe so reconnect publishes fresh
                     publishDiscovery();
                     subscribeCommands();
                     publishAvailability("online");
@@ -398,8 +399,17 @@ void HomeAssistantManager::taskLoop() {
                 if (strcmp(req.topic, tagStateTopic) == 0) {
                     // Keep spool attributes aligned with the state payload source.
                     mqttClient.publish(tagAttrsTopic, req.payload, req.retained);
-                    // Keep command topics aligned with currently-present UID.
-                    publishDiscovery();
+                    // Only re-publish discovery when UID changes (command topics include UID).
+                    CurrentSpoolState state;
+                    char currentUid[17] = {0};
+                    if (NFCManager::getInstance().getCurrentSpoolState(state) &&
+                        state.present && state.spool_id[0] != '\0') {
+                        strncpy(currentUid, state.spool_id, sizeof(currentUid) - 1);
+                    }
+                    if (strcmp(currentUid, lastDiscoveryUid_) != 0) {
+                        strncpy(lastDiscoveryUid_, currentUid, sizeof(lastDiscoveryUid_) - 1);
+                        publishDiscovery();
+                    }
                 }
             }
         }
@@ -509,15 +519,6 @@ void HomeAssistantManager::publishDiscovery() {
         bool ok = mqttClient.publish(discoveryTopic, payload, true);
         Serial.printf("HomeAssistantManager: Discovery %s -> %s (%u bytes)\n",
                       discoveryTopic, ok ? "OK" : "FAIL", (unsigned)len);
-    };
-    auto removeLegacyEntity = [&](const char* component, const char* objectId) {
-        char discoveryTopic[128];
-        snprintf(discoveryTopic, sizeof(discoveryTopic),
-                 "homeassistant/%s/openprinttag_%s/%s/config",
-                 component, deviceId_, objectId);
-        bool ok = mqttClient.publish(discoveryTopic, "", true);
-        Serial.printf("HomeAssistantManager: Remove legacy discovery %s -> %s\n",
-                      discoveryTopic, ok ? "OK" : "FAIL");
     };
     auto publishNumberEntity = [&](const char* objectId, const char* name, const char* valTpl,
                                    const char* cmdTopic, const char* cmdTpl, float minV, float maxV,
@@ -629,19 +630,7 @@ void HomeAssistantManager::publishDiscovery() {
         }
     }
 
-    // Remove stale retained discovery configs from previous read entities.
-    removeLegacyEntity("binary_sensor", "tag_present");
-    removeLegacyEntity("sensor", "spool_uid");
-    removeLegacyEntity("sensor", "remaining_weight");
-    removeLegacyEntity("sensor", "material_type");
-    removeLegacyEntity("sensor", "color");
-    removeLegacyEntity("sensor", "printer_state");
-    // Remove old openprinttag_-prefixed control entities (renamed to spoolsense_).
-    removeLegacyEntity("number", "set_remaining_weight");
-    removeLegacyEntity("number", "set_initial_weight");
-    removeLegacyEntity("number", "set_spoolman_id");
-    removeLegacyEntity("select", "set_material_type");
-    removeLegacyEntity("text", "set_manufacturer");
+    // Legacy openprinttag_ entity cleanup removed — no users on the old naming.
 
     // UID is carried in command topic; payload contains only values.
     char updateRemainingCmdTpl[128];
@@ -808,7 +797,7 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
     Serial.printf("HomeAssistantManager: Command received: %s payload=%s\n", topic, payload);
 
     // Parse topic to extract command name (and optional uid suffix)
-    // Format: openprinttag/{id}/cmd/{command}[/uid]
+    // Format: spoolsense/{id}/cmd/{command}[/uid]
     char cmdPrefix[64];
     snprintf(cmdPrefix, sizeof(cmdPrefix), "spoolsense/%s/cmd/", deviceId_);
 
