@@ -186,6 +186,7 @@ public:
         automationMode = AutomationMode::SELF_DIRECTED;
         keypadBuffer_[0] = '\0';
         keypadBufferLen_ = 0;
+        lastHAStateJson_[0] = '\0';
     }
 #endif
 
