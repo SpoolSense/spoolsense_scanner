@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.6.2] - 2026-03-31
+
+### Added
+
+- **WiFi reconnection** — automatic reconnect with exponential backoff (5s→60s) when WiFi drops. Display shows "WiFi Lost" / "WiFi OK" on state change. mDNS re-initializes on reconnect. NFC scanning continues uninterrupted. (#29)
+- **Bambu AMS blueprint** — Home Assistant blueprint pushes scanned spool data (material, color, temps) into Bambu Lab AMS trays automatically. Scan a tag, load the tray, done.
+- **Bambu → Spoolman deduction blueprint** — after a Bambu print finishes or is canceled, automatically deducts filament weight from Spoolman per tray. Requires spoolman-homeassistant integration.
+- **Bambu filament ID map** — 34 material types mapped to Bambu generic filament IDs for accurate AMS tray identification.
+
+### Fixed
+
+- **OTA on TFT builds** — free 57.6KB TFT sprite before OTA download, fixing SSL memory allocation failure. Progress bar shown on TFT during update. (#59)
+- **S3-Zero TFT pins** — corrected pin assignments for side headers, PN532 only.
+
+---
+
 ## [1.6.1] - 2026-03-30
 
 ### Added

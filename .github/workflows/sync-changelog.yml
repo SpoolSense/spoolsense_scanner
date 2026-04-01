@@ -9,10 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout scanner
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout docs site
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: SpoolSense/spoolsense.org
           token: ${{ secrets.DOCS_PUSH_TOKEN }}

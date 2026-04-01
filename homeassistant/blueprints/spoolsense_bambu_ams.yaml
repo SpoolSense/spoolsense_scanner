@@ -112,3 +112,15 @@ actions:
       tray_color: "{{ spool_color_rgba }}"
       nozzle_temp_min: "{{ spool_nozzle_min }}"
       nozzle_temp_max: "{{ spool_nozzle_max }}"
+
+  - action: input_text.set_value
+    target:
+      entity_id: "input_text.spoolsense_{{ loaded_tray | replace('sensor.', '') }}_uid"
+    data:
+      value: "{{ trigger.to_state.attributes.uid }}"
+
+  - action: input_text.set_value
+    target:
+      entity_id: "input_text.spoolsense_{{ loaded_tray | replace('sensor.', '') }}_spoolman_id"
+    data:
+      value: "{{ trigger.to_state.attributes.spoolman_id | default(-1) }}"

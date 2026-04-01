@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <time.h>
+#include <ESPmDNS.h>
 #include <cstring>
 
 #include "ConfigurationManager.h"
@@ -30,6 +31,16 @@ char g_apSSID[24] = {0};
 
 // PrusaLink strategy (file-scope so it outlives setup)
 static PrusaLinkStrategy prusaLinkStrategy;
+
+// WiFi reconnection watchdog state
+static bool g_wifiWasConnected = false;
+static unsigned long g_lastWifiCheckMs = 0;
+static unsigned long g_wifiReconnectDelay = 5000;
+static unsigned long g_lastReconnectAttemptMs = 0;
+static constexpr unsigned long WIFI_CHECK_INTERVAL_MS = 5000;
+static constexpr unsigned long WIFI_RECONNECT_INITIAL_MS = 5000;
+static constexpr unsigned long WIFI_RECONNECT_MAX_MS = 60000;
+static constexpr uint16_t HTTP_PORT = 80;
 
 // Always declared; only initialized if isLcdEnabled() at runtime
 LCDManager lcdManager(0x27, 16, 2);
@@ -127,10 +138,71 @@ void initWiFi() {
     }
 
     delay(2000);
+    g_wifiWasConnected = true;
   } else {
     Serial.println("");
     Serial.println("WiFi connection failed - starting AP mode");
     startAPMode();
+  }
+}
+
+void checkWiFi() {
+  // Skip in AP mode — no WiFi to reconnect
+  if (g_apModeActive) return;
+
+  unsigned long now = millis();
+  if (now - g_lastWifiCheckMs < WIFI_CHECK_INTERVAL_MS) return;
+  g_lastWifiCheckMs = now;
+
+  bool connected = (WiFi.status() == WL_CONNECTED);
+
+  if (g_wifiWasConnected && !connected) {
+    // WiFi just dropped
+    Serial.println("WiFi: Connection lost — starting reconnection");
+    auto& config = ConfigurationManager::getInstance();
+    if (config.isTftEnabled()) {
+      tftManager.showText("WiFi Lost", "Reconnecting...");
+    } else if (config.isLcdEnabled()) {
+      lcdManager.updateScreen("WiFi Lost", "Reconnecting...");
+    }
+    g_wifiReconnectDelay = WIFI_RECONNECT_INITIAL_MS;
+    g_lastReconnectAttemptMs = now;
+    WiFi.reconnect();
+    g_wifiWasConnected = false;
+  } else if (!connected && !g_wifiWasConnected) {
+    // Still disconnected — retry with backoff
+    if (now - g_lastReconnectAttemptMs >= g_wifiReconnectDelay) {
+      Serial.printf("WiFi: Reconnect attempt (backoff %lums)\n", g_wifiReconnectDelay);
+      WiFi.reconnect();
+      g_lastReconnectAttemptMs = now;
+      if (g_wifiReconnectDelay < WIFI_RECONNECT_MAX_MS) {
+        g_wifiReconnectDelay *= 2;
+        if (g_wifiReconnectDelay > WIFI_RECONNECT_MAX_MS) {
+          g_wifiReconnectDelay = WIFI_RECONNECT_MAX_MS;
+        }
+      }
+    }
+  } else if (!g_wifiWasConnected && connected) {
+    // WiFi just reconnected
+    Serial.printf("WiFi: Reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+    auto& config = ConfigurationManager::getInstance();
+    if (config.isTftEnabled()) {
+      tftManager.showText("WiFi OK", WiFi.localIP().toString().c_str());
+    } else if (config.isLcdEnabled()) {
+      lcdManager.updateScreen("WiFi OK", WiFi.localIP().toString().c_str());
+    }
+
+    // Re-initialize mDNS (IP may have changed)
+    MDNS.end();
+    if (MDNS.begin("spoolsense")) {
+      MDNS.addService("http", "tcp", HTTP_PORT);
+      Serial.println("WiFi: mDNS restarted (spoolsense.local)");
+    } else {
+      Serial.println("WiFi: mDNS restart failed — reachable by IP only");
+    }
+
+    g_wifiReconnectDelay = WIFI_RECONNECT_INITIAL_MS;
+    g_wifiWasConnected = true;
   }
 }
 
@@ -304,6 +376,9 @@ void loop() {
   if (ConfigurationManager::getInstance().isKeypadEnabled()) {
     InputManager::getInstance().poll();
   }
+
+  // WiFi reconnection watchdog (non-AP mode only, throttled to WIFI_CHECK_INTERVAL_MS)
+  checkWiFi();
 
   // LCD and NFC scanning are handled by their own tasks
   delay(10);
