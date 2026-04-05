@@ -2,6 +2,7 @@
 #define HOME_ASSISTANT_MANAGER_H
 
 #include <cstdint>
+#include <atomic>
 #include "NFCTypes.h"
 
 #ifndef NATIVE_TEST
@@ -56,12 +57,12 @@ private:
     PubSubClient mqttClient;
     TaskHandle_t taskHandle = nullptr;
     SemaphoreHandle_t taskControlMutex = nullptr;
-    volatile bool stopRequested_ = false;
+    std::atomic<bool> stopRequested_{false};
     volatile int lastMqttState_ = -1;
 #endif
 
     QueueHandle_t publishQueue = nullptr;
-    volatile bool connected_ = false;
+    std::atomic<bool> connected_{false};
 
     // Reconnect backoff
     uint32_t reconnectDelay_ = 1000;

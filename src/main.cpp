@@ -147,6 +147,19 @@ void initWiFi() {
   }
 }
 
+void retryNTP() {
+  static bool timeObtained = false;
+  static unsigned long lastAttempt = 0;
+
+  if (timeObtained || g_apModeActive) return;
+  if (time(nullptr) > 1700000000) { timeObtained = true; return; }
+  if (millis() - lastAttempt < 30000) return;
+
+  lastAttempt = millis();
+  Serial.println("NTP: Retrying...");
+  configTime(0, 0, "pool.ntp.org");
+}
+
 void checkWiFi() {
   // Skip in AP mode — no WiFi to reconnect
   if (g_apModeActive) return;
@@ -386,6 +399,9 @@ void loop() {
 
   // WiFi reconnection watchdog (non-AP mode only, throttled to WIFI_CHECK_INTERVAL_MS)
   checkWiFi();
+
+  // NTP retry if boot-time sync failed (30s interval, non-blocking)
+  retryNTP();
 
   // LCD and NFC scanning are handled by their own tasks
   delay(10);

@@ -1,5 +1,6 @@
 .pio/
 .vscode/
+.editorconfig
 include/UserConfig.h
 serial.log
 test/
