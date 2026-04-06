@@ -27,6 +27,10 @@ public:
     virtual uint8_t getLastSAK() const { return 0; }
     virtual uint16_t getLastATQA() const { return 0; }
 
+    // NTAG GET_VERSION (0x60) — returns 8-byte version info for NTAG/Ultralight EV1.
+    // versionOut must point to an 8-byte buffer. Returns true on success.
+    virtual bool ntagGetVersion(uint8_t* versionOut) { return false; }
+
     // Set current UID for addressed read/write commands
     virtual void setCurrentUid(const uint8_t* uid, uint8_t length) = 0;
 

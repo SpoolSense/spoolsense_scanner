@@ -130,6 +130,7 @@ private:
     void sendTagRemovedMessage();
     void processWriteQueue();
     bool executeWrite(const NFCWriteRequest& request);
+    bool checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType);
     void sendSpoolUpdatedMessage(uint32_t request_id, NFCWriteType type, bool success);
 
     // Deduplication

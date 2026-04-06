@@ -24,6 +24,7 @@ public:
     bool writeISO14443Pages(uint8_t startPage, uint8_t pageCount, const uint8_t* data, uint16_t dataLen) override;
     uint8_t getLastSAK() const override { return lastSAK_; }
     uint16_t getLastATQA() const override { return lastATQA_; }
+    bool ntagGetVersion(uint8_t* versionOut) override;
     void getReaderInfo(char* buf, size_t len) const override;
     // Diagnostics: log RF_STATUS, IRQ_STATUS, SYSTEM_STATUS registers
     void logDiagnostics() override;
