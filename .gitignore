@@ -18,13 +18,14 @@ docs/superpowers/
 .mcp.json
 CODE-REVIEW.md
 .mex/
+.mex.backup-*/
+.mex.old-clone/
 test-preview/
 .gstack/
 build/
 .worktrees/
 .cocoindex_code/
 lancedb/
-.mex/
 .ragcode/
 .DS_Store
 .superpowers/
