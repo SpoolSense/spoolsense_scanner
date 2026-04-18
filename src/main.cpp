@@ -104,6 +104,9 @@ void initWiFi() {
 
   WiFi.setHostname(config.getHostname());
   WiFi.begin(config.getWiFiSSID(), config.getWiFiPassword());
+  // Keep-awake disables WIFI_PS_MIN_MODEM (Arduino default). Users on weak
+  // networks report ~10 dB better RSSI with modem sleep off; costs idle current.
+  WiFi.setSleep(!config.isWifiKeepAwakeEnabled());
 
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30) {

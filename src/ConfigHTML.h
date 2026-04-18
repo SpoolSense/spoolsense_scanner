@@ -96,6 +96,16 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                 </div>
               </div>
             </div>
+            <div class="toggle-row" style="margin-top:10px">
+              <div>
+                <span class="toggle-label">Keep WiFi radio awake</span>
+                <div style="font-size:11px;color:#71717A;margin-top:4px">Disables modem sleep. Improves RSSI and response time on weak signals, uses slightly more power.</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="wifi_keep_awake" />
+                <span class="toggle-track"></span>
+              </label>
+            </div>
           </section>
 
           <section>
@@ -284,6 +294,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
       });
       if (cfg.nfc_reader) document.getElementById('nfc_reader').value = cfg.nfc_reader;
       document.getElementById('bambu_dashboard').checked = !!cfg.bambu_dashboard;
+      document.getElementById('wifi_keep_awake').checked = !!cfg.wifi_keep_awake;
       maybeSetValue('moonraker_url', cfg.moonraker_url);
       // Password placeholders
       if (cfg.wifi_pass_set) document.getElementById('wifi_pass').placeholder = '(set) Leave blank to keep';
@@ -342,7 +353,8 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
         prusalink_on: document.getElementById('prusalink_on').checked ? 1 : 0,
         prusalink_url: document.getElementById('prusalink_url').value.trim(),
         prusalink_api_key: document.getElementById('prusalink_api_key').value,
-        bambu_dashboard: document.getElementById('bambu_dashboard').checked ? 1 : 0
+        bambu_dashboard: document.getElementById('bambu_dashboard').checked ? 1 : 0,
+        wifi_keep_awake: document.getElementById('wifi_keep_awake').checked ? 1 : 0
       };
 
       fetch('/api/config', {

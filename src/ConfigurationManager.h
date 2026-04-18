@@ -40,6 +40,7 @@ struct ConfigUpdate {
     char hostname[33];   // max 32 chars + null
     uint16_t low_spool_threshold_g;  // grams below which LED breathes (default 100)
     uint8_t bambu_dashboard;
+    uint8_t wifi_keep_awake;  // disable WiFi modem sleep (better RSSI, more power)
 };
 
 class ConfigurationManager {
@@ -88,6 +89,10 @@ public:
     uint16_t getLowSpoolThreshold() const;
 
     bool isBambuDashboardEnabled() const;
+
+    // When true, firmware calls WiFi.setSleep(false) after WiFi.begin so the
+    // radio stays fully powered. Trades idle current for better RSSI/latency.
+    bool isWifiKeepAwakeEnabled() const;
 
     // Web config support
     void getCurrentConfig(ConfigUpdate& out) const;
@@ -139,6 +144,7 @@ private:
     char _tftDriver[8] = "st7789";
     uint16_t _lowSpoolThreshold = 100;  // grams
     bool _bambuDashboard = false;
+    bool _wifiKeepAwake = false;
 
     bool _initialized = false;
 };
