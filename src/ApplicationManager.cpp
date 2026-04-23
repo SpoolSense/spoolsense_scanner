@@ -843,6 +843,12 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
         msg.payload.spoolmanSynced.success ? "true" : "false",
         msg.payload.spoolmanSynced.spoolman_id);
 
+    // Publish resolved spoolman_id to Klipper for toolchanger auto-assign (no-op if Moonraker URL unset)
+    if (msg.payload.spoolmanSynced.success && msg.payload.spoolmanSynced.is_uid_lookup
+            && msg.payload.spoolmanSynced.spoolman_id > 0) {
+        publishPendingSpool(msg.payload.spoolmanSynced.spoolman_id);
+    }
+
     char materialName[32] = {0};
     strncpy(materialName, msg.payload.spoolmanSynced.material_name, sizeof(materialName) - 1);
     float kgRemaining = msg.payload.spoolmanSynced.kg_remaining;
@@ -1438,5 +1444,52 @@ bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
 #else
     (void)toolNumber;
     return true;  // Native test: pretend success
+#endif
+}
+
+bool ApplicationManager::publishPendingSpool(int spoolmanId) {
+    // Publish scanned spool to Klipper via Moonraker — enables toolchanger auto-assign (Snapmaker U1 etc.)
+#ifndef NATIVE_TEST
+    if (spoolmanId <= 0) return false;
+
+    const char* moonrakerUrl = ConfigurationManager::getInstance().getMoonrakerURL();
+    if (!moonrakerUrl || moonrakerUrl[0] == '\0') return false;
+
+    extern SemaphoreHandle_t g_httpMutex;
+    if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        Serial.println("ApplicationManager: HTTP mutex busy for publishPendingSpool");
+        return false;
+    }
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s/printer/gcode/script", moonrakerUrl);
+
+    // Two SET_GCODE_VARIABLE calls in one script: spoolman ID + monotonic timestamp for macro-side TTL
+    uint32_t ts = (uint32_t)(millis() / 1000);
+    char gcode[192];
+    snprintf(gcode, sizeof(gcode),
+             "SET_GCODE_VARIABLE MACRO=SPOOLSENSE_STATE VARIABLE=pending_spool_id VALUE=%d\\n"
+             "SET_GCODE_VARIABLE MACRO=SPOOLSENSE_STATE VARIABLE=pending_ts VALUE=%u",
+             spoolmanId, (unsigned)ts);
+
+    char postBody[256];
+    snprintf(postBody, sizeof(postBody), "{\"script\":\"%s\"}", gcode);
+
+    WiFiClient client;
+    HTTPClient http;
+    http.setConnectTimeout(1000);
+    http.setTimeout(2000);
+    http.begin(client, url);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(postBody);
+    http.end();
+
+    if (g_httpMutex) xSemaphoreGive(g_httpMutex);
+
+    Serial.printf("ApplicationManager: publishPendingSpool id=%d — HTTP %d\n", spoolmanId, code);
+    return code == 200;
+#else
+    (void)spoolmanId;
+    return true;
 #endif
 }

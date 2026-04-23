@@ -281,6 +281,7 @@ private:
     void handleTrayUpdate();
     void handleTrayAssign();
     bool sendAssignSpool(const char* toolNumber);
+    bool publishPendingSpool(int spoolmanId);
     void finishPrint(float gramsUsed, bool canceled);
     void enqueueSpoolmanSync(const SpoolDetectedPayload& spool);
     void publishToHA(const char* topicSuffix, const char* payload, bool retained);
