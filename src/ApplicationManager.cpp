@@ -843,11 +843,19 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
         msg.payload.spoolmanSynced.success ? "true" : "false",
         msg.payload.spoolmanSynced.spoolman_id);
 
-    // Publish resolved spoolman_id to Klipper for toolchanger auto-assign (no-op if Moonraker URL unset)
+    // Publish resolved spoolman_id to Klipper for toolchanger auto-assign — generic UID tags only.
+    // Smart tags (TigerTag, OpenTag3D, OpenSpool, OpenPrintTag) carry their own data and follow
+    // a separate write/enrichment flow; we deliberately skip the auto-publish there.
+#ifndef NATIVE_TEST
     if (msg.payload.spoolmanSynced.success && msg.payload.spoolmanSynced.is_uid_lookup
             && msg.payload.spoolmanSynced.spoolman_id > 0) {
-        publishPendingSpool(msg.payload.spoolmanSynced.spoolman_id);
+        CurrentSpoolState pubState;
+        if (NFCManager::getInstance().getCurrentSpoolState(pubState)
+                && pubState.kind == TagKind::GenericUidTag) {
+            publishPendingSpool(msg.payload.spoolmanSynced.spoolman_id);
+        }
     }
+#endif
 
     char materialName[32] = {0};
     strncpy(materialName, msg.payload.spoolmanSynced.material_name, sizeof(materialName) - 1);
@@ -1385,8 +1393,41 @@ void ApplicationManager::handleTrayAssign() {
     Serial.printf("ApplicationManager: tray_assign — index %d not in current dashboard, assignment ignored\n", idx);
 }
 
+int ApplicationManager::postGcodeScript(const char* gcode, uint32_t mutexTimeoutMs) {
+#ifndef NATIVE_TEST
+    const char* moonrakerUrl = ConfigurationManager::getInstance().getMoonrakerURL();
+    if (!moonrakerUrl || moonrakerUrl[0] == '\0') return -1000;
+
+    extern SemaphoreHandle_t g_httpMutex;
+    if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(mutexTimeoutMs)) != pdTRUE) {
+        return -1001;
+    }
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s/printer/gcode/script", moonrakerUrl);
+
+    char postBody[320];
+    snprintf(postBody, sizeof(postBody), "{\"script\":\"%s\"}", gcode);
+
+    WiFiClient client;
+    HTTPClient http;
+    http.setConnectTimeout(1000);
+    http.setTimeout(2000);
+    http.begin(client, url);
+    http.addHeader("Content-Type", "application/json");
+    int code = http.POST(postBody);
+    http.end();
+
+    if (g_httpMutex) xSemaphoreGive(g_httpMutex);
+    return code;
+#else
+    (void)gcode; (void)mutexTimeoutMs;
+    return 200;
+#endif
+}
+
 bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
-    // Send ASSIGN_SPOOL TOOL=Tn gcode to Moonraker (Klipper-AFC integration)
+    // Send ASSIGN_SPOOL TOOL=Tn gcode to Moonraker (Klipper-AFC integration, keypad path)
 #ifndef NATIVE_TEST
     // Input validation: tool number must be digits-only (prevent GCode injection)
     for (const char* p = toolNumber; *p; p++) {
@@ -1396,43 +1437,22 @@ bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
         }
     }
 
-    // Require Moonraker URL (cannot send GCode without it)
-    const char* moonrakerUrl = ConfigurationManager::getInstance().getMoonrakerURL();
-    if (!moonrakerUrl || moonrakerUrl[0] == '\0') {
+    char gcode[64];
+    snprintf(gcode, sizeof(gcode), "ASSIGN_SPOOL TOOL=T%s", toolNumber);
+
+    // Keypad is human-paced — wait up to 3s for the HTTP mutex
+    int code = postGcodeScript(gcode, 3000);
+
+    if (code == -1000) {
         Serial.println("ApplicationManager: Moonraker URL not configured — cannot assign spool");
         if (display_) display_->showText("Moonraker URL", "Not configured");
         return false;
     }
-
-    // Serialize HTTP access: prevent concurrent requests from Spoolman/HA/Printer tasks
-    extern SemaphoreHandle_t g_httpMutex;
-    if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+    if (code == -1001) {
         Serial.println("ApplicationManager: Could not acquire HTTP mutex for ASSIGN_SPOOL");
         if (display_) display_->showText("Assign failed", "HTTP busy");
         return false;
     }
-
-    // Moonraker /printer/gcode/script endpoint (runs arbitrary Klipper GCode)
-    char url[192];
-    snprintf(url, sizeof(url), "%s/printer/gcode/script", moonrakerUrl);
-
-    char gcode[64];
-    snprintf(gcode, sizeof(gcode), "ASSIGN_SPOOL TOOL=T%s", toolNumber);
-
-    char postBody[96];
-    snprintf(postBody, sizeof(postBody), "{\"script\":\"%s\"}", gcode);
-
-    WiFiClient client;
-    HTTPClient http;
-    http.setConnectTimeout(1000);  // 1s timeout: WiFi may be degraded
-    http.setTimeout(2000);          // 2s response timeout
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    int code = http.POST(postBody);
-    http.end();
-
-    // Release mutex for other HTTP clients
-    if (g_httpMutex) xSemaphoreGive(g_httpMutex);
 
     Serial.printf("ApplicationManager: ASSIGN_SPOOL T%s — HTTP %d\n", toolNumber, code);
 
@@ -1449,44 +1469,43 @@ bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
 
 bool ApplicationManager::publishPendingSpool(int spoolmanId) {
     // Publish scanned spool to Klipper via Moonraker — enables toolchanger auto-assign (Snapmaker U1 etc.)
+    // Runs on every successful generic-UID Spoolman lookup, so this path must NOT block the dispatch loop.
 #ifndef NATIVE_TEST
     if (spoolmanId <= 0) return false;
 
-    const char* moonrakerUrl = ConfigurationManager::getInstance().getMoonrakerURL();
-    if (!moonrakerUrl || moonrakerUrl[0] == '\0') return false;
-
-    extern SemaphoreHandle_t g_httpMutex;
-    if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
-        Serial.println("ApplicationManager: HTTP mutex busy for publishPendingSpool");
+    // Backoff: skip if Moonraker was unreachable recently (avoid 1s connect + 2s timeout on every scan)
+    uint32_t now = millis();
+    if (moonrakerBackoffUntilMs_ != 0 && (int32_t)(now - moonrakerBackoffUntilMs_) < 0) {
         return false;
     }
 
-    char url[192];
-    snprintf(url, sizeof(url), "%s/printer/gcode/script", moonrakerUrl);
-
     // Two SET_GCODE_VARIABLE calls in one script: spoolman ID + monotonic timestamp for macro-side TTL
-    uint32_t ts = (uint32_t)(millis() / 1000);
+    uint32_t ts = (uint32_t)(now / 1000);
     char gcode[192];
     snprintf(gcode, sizeof(gcode),
              "SET_GCODE_VARIABLE MACRO=SPOOLSENSE_STATE VARIABLE=pending_spool_id VALUE=%d\\n"
              "SET_GCODE_VARIABLE MACRO=SPOOLSENSE_STATE VARIABLE=pending_ts VALUE=%u",
              spoolmanId, (unsigned)ts);
 
-    char postBody[256];
-    snprintf(postBody, sizeof(postBody), "{\"script\":\"%s\"}", gcode);
-
-    WiFiClient client;
-    HTTPClient http;
-    http.setConnectTimeout(1000);
-    http.setTimeout(2000);
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    int code = http.POST(postBody);
-    http.end();
-
-    if (g_httpMutex) xSemaphoreGive(g_httpMutex);
+    // Auto-publish runs on every scan — short mutex wait + skip-if-busy
+    int code = postGcodeScript(gcode, 250);
 
     Serial.printf("ApplicationManager: publishPendingSpool id=%d — HTTP %d\n", spoolmanId, code);
+
+    if (code == -1000 || code == -1001) {
+        // No URL configured or mutex busy — neither warrants a backoff window
+        return false;
+    }
+    if (code < 0) {
+        // HTTPClient transport failure (connect refused, timeout, etc.) — back off so the next
+        // scan doesn't re-block the dispatch loop on the same unreachable host
+        moonrakerBackoffUntilMs_ = millis() + MOONRAKER_BACKOFF_MS;
+        Serial.printf("ApplicationManager: Moonraker unreachable — backing off %u ms\n",
+                      (unsigned)MOONRAKER_BACKOFF_MS);
+        return false;
+    }
+    // Server responded — clear any prior backoff regardless of HTTP status
+    moonrakerBackoffUntilMs_ = 0;
     return code == 200;
 #else
     (void)spoolmanId;

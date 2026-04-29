@@ -263,6 +263,11 @@ private:
     uint32_t dashboardRevertAt_ = 0;
     static constexpr uint32_t DASHBOARD_REVERT_DELAY_MS = 5000;
 
+    // Moonraker reachability backoff — skip publishPendingSpool after a transport failure
+    // so a misconfigured / offline Moonraker URL doesn't block the dispatch loop on every scan.
+    uint32_t moonrakerBackoffUntilMs_ = 0;
+    static constexpr uint32_t MOONRAKER_BACKOFF_MS = 30000;
+
     // Handlers
     void handlePrintStarted(const AppMessage& msg);
     void handlePrintEnded(const AppMessage& msg);
@@ -282,6 +287,10 @@ private:
     void handleTrayAssign();
     bool sendAssignSpool(const char* toolNumber);
     bool publishPendingSpool(int spoolmanId);
+    // Posts {"script": gcode} to Moonraker /printer/gcode/script.
+    // Returns HTTP response code, -1000 if Moonraker URL unset, -1001 if mutex busy,
+    // or a negative HTTPC_ERROR_* code on transport failure.
+    int postGcodeScript(const char* gcode, uint32_t mutexTimeoutMs);
     void finishPrint(float gramsUsed, bool canceled);
     void enqueueSpoolmanSync(const SpoolDetectedPayload& spool);
     void publishToHA(const char* topicSuffix, const char* payload, bool retained);
