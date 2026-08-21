@@ -84,6 +84,42 @@
   #define PIN_TFT_RST        9
   #define PIN_TFT_BL        -1
 
+#elif defined(BOARD_SEEED_XIAO_ESP32_C6)
+  // --- Seeed Studio XIAO ESP32-C6 pin mapping ---
+  // Uses the XIAO D8/D9/D10 hardware SPI pins plus three free GPIO control lines.
+  #define PIN_PN5180_SCK   19  // D8
+  #define PIN_PN5180_MISO  20  // D9
+  #define PIN_PN5180_MOSI  18  // D10
+  #define PIN_PN5180_NSS   21  // D3
+  #define PIN_PN5180_BUSY  16  // D6
+  #define PIN_PN5180_RST   17  // D7
+  #define PIN_PN5180_GPIO  -1
+  #define PIN_PN5180_IRQ   -1
+  #define PIN_PN5180_AUX   -1
+  #define PIN_PN532_SCK    PIN_PN5180_SCK
+  #define PIN_PN532_MOSI   PIN_PN5180_MOSI
+  #define PIN_PN532_MISO   PIN_PN5180_MISO
+  #define PIN_PN532_SS     PIN_PN5180_NSS
+  #define PIN_PN532_IRQ    PIN_PN5180_IRQ
+  #define PIN_PN532_RST    PIN_PN5180_RST
+  #define PIN_LCD_SDA      22  // D4
+  #define PIN_LCD_SCL      23  // D5
+  #define PIN_STATUS_LED   15
+  #define PIN_KEYPAD_ROW1  -1
+  #define PIN_KEYPAD_ROW2  -1
+  #define PIN_KEYPAD_ROW3  -1
+  #define PIN_KEYPAD_ROW4  -1
+  #define PIN_KEYPAD_COL1  -1
+  #define PIN_KEYPAD_COL2  -1
+  #define PIN_KEYPAD_COL3  -1
+  #define PIN_TFT_MOSI     PIN_PN5180_MOSI
+  #define PIN_TFT_SCLK     PIN_PN5180_SCK
+  #define PIN_TFT_MISO     -1
+  #define PIN_TFT_CS       -1
+  #define PIN_TFT_DC       -1
+  #define PIN_TFT_RST      -1
+  #define PIN_TFT_BL       -1
+
 #elif defined(BOARD_ESP32_C6)
   // --- ESP32-C6-DevKitC-1 pin mapping ---
   // NFC uses the sole general-purpose SPI controller. GPIO 12/13 remain free
