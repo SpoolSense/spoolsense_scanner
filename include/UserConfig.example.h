@@ -33,7 +33,7 @@
 
 /* Optional hardware features */
 #define ENABLE_LCD 0
-#define ENABLE_STATUS_LED 1  // Onboard on S3-Zero/C5/C6; optional external wiring on WROOM
+#define ENABLE_STATUS_LED 1  // Onboard on S3-Zero/C5/C6/XIAO; optional external wiring on WROOM
 #define ENABLE_KEYPAD 0
 #define ENABLE_BAMBU_DASHBOARD 0      // 3x4 matrix keypad — wiring per BoardPins.h
                              // Note: Using LCD + keypad together on S3 is not recommended due to limited GPIO.

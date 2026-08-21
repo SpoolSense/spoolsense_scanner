@@ -104,6 +104,7 @@
   #define PIN_PN532_RST    PIN_PN5180_RST
   #define PIN_LCD_SDA      22  // D4
   #define PIN_LCD_SCL      23  // D5
+  // Status LED — onboard single-color user LED on GPIO15, active low
   #define PIN_STATUS_LED   15
   #define PIN_KEYPAD_ROW1  -1
   #define PIN_KEYPAD_ROW2  -1

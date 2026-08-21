@@ -227,7 +227,7 @@ The S3-Zero has a smaller pin count. The PN5180 and LCD (if used) share the same
 
 > **Note:** The LCD module needs 5V on VCC for display contrast. The I2C SDA/SCL lines run at 3.3V logic, which the PCF8574 backpack accepts without a level shifter.
 
-**Status LED:** The S3-Zero, C6 DevKitC-1, and C5 DevKitC-1 have onboard addressable RGB LEDs (GPIO 21, 8, and 27 respectively) — no external LED or wiring needed. If compiling from source, enable it with `#define ENABLE_STATUS_LED 1` in `UserConfig.h`. The installer enables it by default.
+**Status LED:** The S3-Zero, C6 DevKitC-1, and C5 DevKitC-1 have onboard addressable RGB LEDs (GPIO 21, 8, and 27 respectively) — no external LED or wiring needed. The XIAO ESP32-C6 has an onboard single-color active-low user LED on GPIO15. If compiling from source, enable it with `#define ENABLE_STATUS_LED 1` in `UserConfig.h`. The installer enables it by default.
 
 **C5/C6 display support:** both targets support a shared-SPI TFT (write-only display plus either NFC reader on one bus). C6 is hardware-validated with a 3.5" ILI9488 landscape dashboard; C5 is compile-enabled via a build-time LovyanGFX patch (`scripts/patch_lovyangfx_c5.py`) and pending hardware validation. Keypad remains disabled on both targets. See `docs/shared-spi-bench-checklist.md` for wiring and validation status.
 
@@ -249,7 +249,7 @@ The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 
 
 > **Note:** Some PN5180 breakout boards require both 5V and 3.3V connected. If the reader self-test fails during initialization, confirm both power rails and common ground before changing pins.
 
-**Serial:** The S3-Zero uses USB CDC — just plug in a USB-C cable, no external UART adapter needed.
+**Serial:** The S3-Zero and Seeed XIAO ESP32-C6 use USB CDC — just plug in a USB-C cable, no external UART adapter needed.
 
 # Configuration
 
