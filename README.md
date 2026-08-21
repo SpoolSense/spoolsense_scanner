@@ -136,7 +136,7 @@ Once the scanner is running, open **`http://spoolsense.local`** in your browser.
 *   USB-C cable
 *   Jumper wires: female-to-female Dupont wires (8 minimum, more if adding extras)
 *   LCD Screen: [16x2 I2C LCD](https://a.co/d/dryhwvd) (optional)
-*   Status LED: SK6812 RGBW (WROOM, optional external) or onboard WS2812 RGB (S3-Zero, built in)
+*   Status LED: SK6812 RGBW (WROOM, optional external), onboard WS2812 RGB (S3-Zero/C5/C6 DevKitC), or onboard active-low user LED (XIAO ESP32-C6)
 *   3x4 Matrix Keypad: [membrane keypad](https://www.amazon.com/dp/B0DZ26VVR7) (optional, for toolchanger tool assignment)
 
 ## Enclosures
@@ -233,7 +233,7 @@ The S3-Zero has a smaller pin count. The PN5180 and LCD (if used) share the same
 
 ## Wiring — Seeed Studio XIAO ESP32-C6
 
-The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 reader. It uses the XIAO hardware SPI pins and leaves TFT/keypad wiring disabled.
+The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 reader. It uses the XIAO hardware SPI pins and disables TFT/keypad support at compile time.
 
 | PN5180 Pin | XIAO ESP32-C6 Pin | ESP32-C6 GPIO | Direction | Notes |
 |------------|-------------------|---------------|-----------|-------|
