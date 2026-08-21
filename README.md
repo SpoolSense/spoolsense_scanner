@@ -103,6 +103,7 @@ Configuration is stored in NVS (non-volatile storage) and survives OTA firmware 
    - **WROOM:** `pio run -e esp32dev -t upload`
    - **S3-Zero:** `pio run -e esp32s3zero -t upload`
    - **C6 DevKitC-1:** `pio run -e esp32c6 -t upload`
+   - **Seeed XIAO ESP32-C6:** `pio run -e seeed_xiao_esp32c6 -t upload`
    - **C5 DevKitC-1:** `pio run -e esp32c5 -t upload`
 5. **Important for OTA updates:** Run the installer in "Config only" mode to write your settings to NVS. Without this, OTA updates will overwrite your compiled-in settings with defaults.
    ```bash
@@ -129,12 +130,13 @@ Once the scanner is running, open **`http://spoolsense.local`** in your browser.
     - **ESP32-S3-Zero / S3-Zero-M** — Smaller form factor with onboard WS2812 RGB LED. M variant has pre-soldered pin headers.
     - **ESP32-S3-DevKitC-1-N16R8** — Larger flash + PSRAM, separate SPI buses for PN5180 and TFT.
     - **ESP32-C3 SuperMini** — Smallest variant. NFC reader + LCD + LED only (no TFT/keypad).
+    - **Seeed Studio XIAO ESP32-C6** — Compact 4MB ESP32-C6 board for NFC-only builds with PN5180.
 
     See [spoolsense.org/getting-started/choose-board](https://spoolsense.org/getting-started/choose-board/) for trade-offs and recommendations.
 *   USB-C cable
 *   Jumper wires: female-to-female Dupont wires (8 minimum, more if adding extras)
 *   LCD Screen: [16x2 I2C LCD](https://a.co/d/dryhwvd) (optional)
-*   Status LED: SK6812 RGBW (WROOM, optional external) or onboard WS2812 RGB (S3-Zero, built in)
+*   Status LED: SK6812 RGBW (WROOM, optional external), onboard WS2812 RGB (S3-Zero/C5/C6 DevKitC), or onboard active-low user LED (XIAO ESP32-C6)
 *   3x4 Matrix Keypad: [membrane keypad](https://www.amazon.com/dp/B0DZ26VVR7) (optional, for toolchanger tool assignment)
 
 ## Enclosures
@@ -225,11 +227,29 @@ The S3-Zero has a smaller pin count. The PN5180 and LCD (if used) share the same
 
 > **Note:** The LCD module needs 5V on VCC for display contrast. The I2C SDA/SCL lines run at 3.3V logic, which the PCF8574 backpack accepts without a level shifter.
 
-**Status LED:** The S3-Zero, C6 DevKitC-1, and C5 DevKitC-1 have onboard addressable RGB LEDs (GPIO 21, 8, and 27 respectively) — no external LED or wiring needed. If compiling from source, enable it with `#define ENABLE_STATUS_LED 1` in `UserConfig.h`. The installer enables it by default.
+**Status LED:** The S3-Zero, C6 DevKitC-1, and C5 DevKitC-1 have onboard addressable RGB LEDs (GPIO 21, 8, and 27 respectively) — no external LED or wiring needed. The XIAO ESP32-C6 has an onboard single-color active-low user LED on GPIO15. If compiling from source, enable it with `#define ENABLE_STATUS_LED 1` in `UserConfig.h`. The installer enables it by default.
 
 **C5/C6 display support:** both targets support a shared-SPI TFT (write-only display plus either NFC reader on one bus). C6 is hardware-validated with a 3.5" ILI9488 landscape dashboard; C5 is compile-enabled via a build-time LovyanGFX patch (`scripts/patch_lovyangfx_c5.py`) and pending hardware validation. Keypad remains disabled on both targets. See `docs/shared-spi-bench-checklist.md` for wiring and validation status.
 
-**Serial:** The S3-Zero uses USB CDC — just plug in a USB-C cable, no external UART adapter needed.
+## Wiring — Seeed Studio XIAO ESP32-C6
+
+The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 reader. It uses the XIAO hardware SPI pins and disables TFT/keypad support at compile time.
+
+| PN5180 Pin | XIAO ESP32-C6 Pin | ESP32-C6 GPIO | Direction | Notes |
+|------------|-------------------|---------------|-----------|-------|
+| RST        | D7                | GPIO 17       | Output    | Hardware reset (active low) |
+| NSS        | D3                | GPIO 21       | Output    | SPI chip select (active low) |
+| MOSI       | D10               | GPIO 18       | Output    | SPI data to PN5180 |
+| MISO       | D9                | GPIO 20       | Input     | SPI data from PN5180 |
+| SCK        | D8                | GPIO 19       | Output    | SPI clock |
+| BUSY       | D6                | GPIO 16       | Input     | SPI flow control |
+| VIN        | 5V                | -             | Power     | PN5180 reader power |
+| 3.3V       | 3V3               | -             | Power     | PN5180 logic supply |
+| GND        | GND               | -             | Power     | Common ground |
+
+> **Note:** Some PN5180 breakout boards require both 5V and 3.3V connected. If the reader self-test fails during initialization, confirm both power rails and common ground before changing pins.
+
+**Serial:** The S3-Zero and Seeed XIAO ESP32-C6 use USB CDC — just plug in a USB-C cable, no external UART adapter needed.
 
 # Configuration
 
@@ -246,6 +266,7 @@ The S3-Zero has a smaller pin count. The PN5180 and LCD (if used) share the same
    - **WROOM:** `pio run -e esp32dev -t upload`
    - **S3-Zero:** `pio run -e esp32s3zero -t upload`
    - **C6 DevKitC-1:** `pio run -e esp32c6 -t upload`
+   - **Seeed XIAO ESP32-C6:** `pio run -e seeed_xiao_esp32c6 -t upload`
    - **C5 DevKitC-1:** `pio run -e esp32c5 -t upload`
 
 > **Note:** If you used the SpoolSense Installer, configuration is stored in NVS and you don't need `UserConfig.h`.
