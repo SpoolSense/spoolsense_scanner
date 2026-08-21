@@ -48,7 +48,10 @@ void LEDManager::begin(uint8_t pin) {
     _activeLowGpio = (pin == PIN_STATUS_LED);
     if (_activeLowGpio) {
         pinMode(pin, OUTPUT);
-        ledcAttach(pin, XIAO_LED_PWM_HZ, XIAO_LED_PWM_BITS);
+        if (!ledcAttach(pin, XIAO_LED_PWM_HZ, XIAO_LED_PWM_BITS)) {
+            _activeLowGpio = false;
+            return;
+        }
         ledcWrite(pin, 255);  // active-low user LED off
         _initialized = true;
         return;
