@@ -512,13 +512,21 @@ void DiagnosticsManager::checkReaderRegisters() {
     if (readerSnap_.bus_wedged) {
         addResult(DiagnosticTest::NFC_REGISTER_HEALTH, DiagnosticStatus::FAIL, 0, 0,
                   "PN5180 SPI bus is wedged (fail-fast latched)",
-                  "A transaction hung. Power-cycle the board; if it recurs check 5V supply/decoupling and SPI wiring.");
+                  "A transaction hung. Power-cycle the board; if it recurs check 5V supply/decoupling and SPI wiring. /logs shows which BUSY handshake stalled.");
         return;
     }
     char summary[96];
     snprintf(summary, sizeof(summary), "RF=0x%08lX IRQ=0x%08lX SYS=0x%08lX",
              (unsigned long)readerSnap_.rf_status, (unsigned long)readerSnap_.irq_status,
              (unsigned long)readerSnap_.system_status);
+    // All-ones on MISO means nothing drove the bus during the read — a dead,
+    // unpowered, or miswired module — and must not report as healthy (#293).
+    if (readerSnap_.rf_status == 0xFFFFFFFF || readerSnap_.system_status == 0xFFFFFFFF) {
+        addResult(DiagnosticTest::NFC_REGISTER_HEALTH, DiagnosticStatus::FAIL, 0, 0, summary,
+                  "Registers read all-ones — the reader is not responding on SPI. "
+                  "Check module power and MISO wiring; if wiring is good the module is likely faulty.");
+        return;
+    }
     addResult(DiagnosticTest::NFC_REGISTER_HEALTH, DiagnosticStatus::PASS, 0, 0, summary, "");
 }
 
