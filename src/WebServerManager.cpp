@@ -1329,6 +1329,7 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d)) return;
 
     JsonObject obj = doc.createNestedObject("opentag3d");
+    obj["tag_version"] = ot3d.tag_version;
     obj["base_material"] = ot3d.base_material;
     if (ot3d.material_modifiers[0]) obj["modifiers"] = ot3d.material_modifiers;
     obj["manufacturer"] = ot3d.manufacturer;
@@ -1347,8 +1348,17 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     uint16_t bedTemp = (uint16_t)opentag3d_temp_c(ot3d.bed_temp_encoded);
     if (printTemp > 0) obj["print_temp"] = printTemp;
     if (bedTemp > 0) obj["bed_temp"] = bedTemp;
+    uint16_t chamberTemp = (uint16_t)opentag3d_temp_c(ot3d.chamber_temp_encoded);
+    if (chamberTemp > 0) obj["chamber_temp"] = chamberTemp;
 
     if (ot3d.has_extended) {
+        if (ot3d.sku[0]) obj["sku"] = ot3d.sku;
+        if (ot3d.barcode > 0) {
+            char bc[24];
+            snprintf(bc, sizeof(bc), "%llu", (unsigned long long)ot3d.barcode);
+            obj["barcode"] = bc;
+        }
+        if (ot3d.min_nozzle_diameter > 0) obj["min_nozzle_mm"] = ot3d.min_nozzle_diameter / 10.0f;
         if (ot3d.measured_filament_weight_g > 0) obj["measured_weight_g"] = ot3d.measured_filament_weight_g;
         if (ot3d.empty_spool_weight_g > 0) obj["empty_spool_g"] = ot3d.empty_spool_weight_g;
         if (ot3d.serial_number[0]) obj["serial_number"] = ot3d.serial_number;
