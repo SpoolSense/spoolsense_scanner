@@ -230,7 +230,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="field">
                   <label for="transmission_distance">Transmission Dist. (&times;0.1mm)</label>
-                  <input id="transmission_distance" type="number" min="0" max="65535" />
+                  <input id="transmission_distance" type="number" min="0" max="250" />
                 </div>
               </div>
               <div class="grid-3">
@@ -240,7 +240,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="field">
                   <label for="barcode">Barcode (UPC/GTIN)</label>
-                  <input id="barcode" type="text" maxlength="13" inputmode="numeric" pattern="[0-9]*" placeholder="digits only" />
+                  <input id="barcode" type="text" maxlength="15" inputmode="numeric" pattern="[0-9]*" placeholder="digits only" />
                 </div>
                 <div class="field">
                   <label for="min_nozzle_diameter_mm">Min Nozzle (mm)</label>
@@ -628,7 +628,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        if (ot.chamber_temp) setVal('chamber_temp_c', ot.chamber_temp);
+        setVal('chamber_temp_c', ot.chamber_temp || 0);
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);
@@ -638,9 +638,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         setVal('serial_number', ot.serial_number || '');
         setVal('measured_filament_weight_g', ot.measured_weight_g || '');
         setVal('empty_spool_weight_g', ot.empty_spool_g || '');
-        if (ot.sku) setVal('sku', ot.sku);
-        if (ot.barcode) setVal('barcode', String(ot.barcode));
-        if (ot.min_nozzle_mm) setVal('min_nozzle_diameter_mm', ot.min_nozzle_mm);
+        setVal('sku', ot.sku || '');
+        setVal('barcode', ot.barcode ? String(ot.barcode) : '');
+        setVal('min_nozzle_diameter_mm', ot.min_nozzle_mm || '');
         var matEl = document.getElementById('base_material');
         if (matEl) matEl.dispatchEvent(new Event('input'));
       },

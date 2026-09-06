@@ -9,7 +9,9 @@
 ### Fixed
 
 - **PN532 readers can now reach NTAG pages beyond 63** — the page methods previously used refuse pages 64 and up, which a 252-byte v2 payload needs (pages 4–66): reads fell back to a generic UID and a v2 write would have aborted halfway through. Both paths now use the library's NTAG-specific methods; behavior on v1 tags is unchanged. (#297)
-- **Tags from a newer OpenTag3D minor revision are never rewritten lossily** — a tag stamped 2.001+ (or 1.001+) parses with a warning, but re-encoding it from current-spec knowledge would zero fields the newer revision defines. The encoder now refuses such writes, and a pending weight deduction stays queued instead of being consumed. (#297)
+- **Tags from a newer OpenTag3D minor revision are never rewritten lossily** — a tag stamped 2.001+ (or 1.001+) parses with a warning, but re-encoding it from current-spec knowledge would zero fields the newer revision defines. The encoder now refuses such writes, and a pending weight deduction is routed to Spoolman when configured or stays queued instead of being consumed. (#297)
+- **Writer page no longer silently drops optional fields** — the write endpoint only kept the URL, manufacture date, weights, dry profile, temperature ranges, and speeds when the form also carried a serial number or a minimum print temperature; anything else in that group was written as zero with a success response. All fields are now read unconditionally. (#297)
+- **Weight deductions never shrink a v2 tag's nominal size** — the v2 spec defines the weight field as the spool's target size, not a remaining counter. A v2 tag without a measured weight now sends the deduction to Spoolman instead of corrupting the target value. Writes are also bounded to the tag's user memory, so a payload can no longer spill into the configuration pages of a small or unidentified tag. (#297)
 
 ## [1.10.1] - 2026-09-06
 

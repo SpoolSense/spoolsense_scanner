@@ -26,6 +26,62 @@ static void read_str(const uint8_t *src, size_t src_len, char *dst, size_t dst_s
     }
 }
 
+/* v2.000 field mapping — every struct member reads from its OT3D_V2_OFF_*
+ * constant; opentag3d_encode_v2 mirrors this list exactly. Caller has already
+ * verified len >= OT3D_V2_MAP_SIZE. */
+static void opentag3d_decode_v2_fields(const uint8_t *payload, opentag3d_t *out) {
+    out->has_extended = 1;  /* v2 has no core/extended split */
+
+    read_str(payload + OT3D_V2_OFF_MATERIAL, OT3D_V2_LEN_MATERIAL, out->base_material, sizeof(out->base_material));
+    read_str(payload + OT3D_V2_OFF_MATERIAL_MOD, OT3D_V2_LEN_MATERIAL_MOD, out->material_modifiers, sizeof(out->material_modifiers));
+    read_str(payload + OT3D_V2_OFF_MANUFACTURER, OT3D_V2_LEN_MANUFACTURER, out->manufacturer, sizeof(out->manufacturer));
+    read_str(payload + OT3D_V2_OFF_COLOR_NAME, OT3D_V2_LEN_COLOR_NAME, out->color_name, sizeof(out->color_name));
+
+    memcpy(out->color_rgba[0], payload + OT3D_V2_OFF_COLOR_1, 4);
+    memcpy(out->color_rgba[1], payload + OT3D_V2_OFF_COLOR_2, 4);
+    memcpy(out->color_rgba[2], payload + OT3D_V2_OFF_COLOR_3, 4);
+    memcpy(out->color_rgba[3], payload + OT3D_V2_OFF_COLOR_4, 4);
+
+    read_str(payload + OT3D_V2_OFF_SERIAL, OT3D_V2_LEN_SERIAL, out->serial_number, sizeof(out->serial_number));
+    read_str(payload + OT3D_V2_OFF_SKU, OT3D_V2_LEN_SKU, out->sku, sizeof(out->sku));
+    out->barcode = read_u48(payload + OT3D_V2_OFF_BARCODE);
+
+    out->manufacture_year   = read_u16(payload + OT3D_V2_OFF_MFG_DATE);
+    out->manufacture_month  = payload[OT3D_V2_OFF_MFG_DATE + 2];
+    out->manufacture_day    = payload[OT3D_V2_OFF_MFG_DATE + 3];
+    out->manufacture_hour   = payload[OT3D_V2_OFF_MFG_TIME + 0];
+    out->manufacture_minute = payload[OT3D_V2_OFF_MFG_TIME + 1];
+    out->manufacture_second = payload[OT3D_V2_OFF_MFG_TIME + 2];
+
+    out->diameter_um            = read_u16(payload + OT3D_V2_OFF_DIAMETER);
+    out->measured_tolerance_um  = payload[OT3D_V2_OFF_TOLERANCE];
+    out->min_nozzle_diameter    = payload[OT3D_V2_OFF_NOZZLE_DIAMETER];
+    out->print_temp_encoded     = payload[OT3D_V2_OFF_PRINT_TEMP];
+    out->min_print_temp_encoded = payload[OT3D_V2_OFF_MIN_PRINT_TEMP];
+    out->max_print_temp_encoded = payload[OT3D_V2_OFF_MAX_PRINT_TEMP];
+    out->chamber_temp_encoded   = payload[OT3D_V2_OFF_CHAMBER_TEMP];
+    out->bed_temp_encoded       = payload[OT3D_V2_OFF_BED_TEMP];
+    out->min_bed_temp_encoded   = payload[OT3D_V2_OFF_MIN_BED_TEMP];
+    out->max_bed_temp_encoded   = payload[OT3D_V2_OFF_MAX_BED_TEMP];
+    out->target_volumetric_speed = payload[OT3D_V2_OFF_TARGET_VSO];
+    out->min_volumetric_speed    = payload[OT3D_V2_OFF_MIN_VSO];
+    out->max_volumetric_speed    = payload[OT3D_V2_OFF_MAX_VSO];
+    out->max_dry_temp_encoded    = payload[OT3D_V2_OFF_MAX_DRY_TEMP];
+    out->dry_time_hours          = payload[OT3D_V2_OFF_DRY_TIME];
+
+    out->density_ugcm3            = read_u16(payload + OT3D_V2_OFF_DENSITY);
+    out->target_weight_g          = read_u16(payload + OT3D_V2_OFF_WEIGHT);
+    out->empty_spool_weight_g     = read_u16(payload + OT3D_V2_OFF_EMPTY_SPOOL_WEIGHT);
+    out->measured_filament_length_m = read_u16(payload + OT3D_V2_OFF_MEASURED_LENGTH);
+    out->measured_filament_weight_g = read_u16(payload + OT3D_V2_OFF_MEASURED_WEIGHT);
+    out->spool_core_diameter_mm   = payload[OT3D_V2_OFF_SPOOL_CORE_DIAMETER];
+    out->transmission_distance    = payload[OT3D_V2_OFF_TD];
+    out->mfi_temp_encoded         = payload[OT3D_V2_OFF_MFI_TEMP];
+    out->mfi_load                 = payload[OT3D_V2_OFF_MFI_LOAD];
+    out->mfi_value                = payload[OT3D_V2_OFF_MFI_VALUE];
+    read_str(payload + OT3D_V2_OFF_DATA_URL, OT3D_V2_LEN_DATA_URL, out->online_url, sizeof(out->online_url));
+}
+
 opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3d_t *out) {
     if (out == NULL || payload == NULL) return OT3D_PARSE_ERROR;
     memset(out, 0, sizeof(opentag3d_t));
@@ -50,57 +106,7 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
         /* v2 payloads are always the full 224-byte map */
         if (len < OT3D_V2_MAP_SIZE) return OT3D_PARSE_ERROR;
 
-        out->has_extended = 1;  /* v2 has no core/extended split */
-
-        read_str(payload + OT3D_V2_OFF_MATERIAL, OT3D_V2_LEN_MATERIAL, out->base_material, sizeof(out->base_material));
-        read_str(payload + OT3D_V2_OFF_MATERIAL_MOD, OT3D_V2_LEN_MATERIAL_MOD, out->material_modifiers, sizeof(out->material_modifiers));
-        read_str(payload + OT3D_V2_OFF_MANUFACTURER, OT3D_V2_LEN_MANUFACTURER, out->manufacturer, sizeof(out->manufacturer));
-        read_str(payload + OT3D_V2_OFF_COLOR_NAME, OT3D_V2_LEN_COLOR_NAME, out->color_name, sizeof(out->color_name));
-
-        memcpy(out->color_rgba[0], payload + OT3D_V2_OFF_COLOR_1, 4);
-        memcpy(out->color_rgba[1], payload + OT3D_V2_OFF_COLOR_2, 4);
-        memcpy(out->color_rgba[2], payload + OT3D_V2_OFF_COLOR_3, 4);
-        memcpy(out->color_rgba[3], payload + OT3D_V2_OFF_COLOR_4, 4);
-
-        read_str(payload + OT3D_V2_OFF_SERIAL, OT3D_V2_LEN_SERIAL, out->serial_number, sizeof(out->serial_number));
-        read_str(payload + OT3D_V2_OFF_SKU, OT3D_V2_LEN_SKU, out->sku, sizeof(out->sku));
-        out->barcode = read_u48(payload + OT3D_V2_OFF_BARCODE);
-
-        out->manufacture_year   = read_u16(payload + OT3D_V2_OFF_MFG_DATE);
-        out->manufacture_month  = payload[OT3D_V2_OFF_MFG_DATE + 2];
-        out->manufacture_day    = payload[OT3D_V2_OFF_MFG_DATE + 3];
-        out->manufacture_hour   = payload[OT3D_V2_OFF_MFG_TIME + 0];
-        out->manufacture_minute = payload[OT3D_V2_OFF_MFG_TIME + 1];
-        out->manufacture_second = payload[OT3D_V2_OFF_MFG_TIME + 2];
-
-        out->diameter_um            = read_u16(payload + OT3D_V2_OFF_DIAMETER);
-        out->measured_tolerance_um  = payload[OT3D_V2_OFF_TOLERANCE];
-        out->min_nozzle_diameter    = payload[OT3D_V2_OFF_NOZZLE_DIAMETER];
-        out->print_temp_encoded     = payload[OT3D_V2_OFF_PRINT_TEMP];
-        out->min_print_temp_encoded = payload[OT3D_V2_OFF_MIN_PRINT_TEMP];
-        out->max_print_temp_encoded = payload[OT3D_V2_OFF_MAX_PRINT_TEMP];
-        out->chamber_temp_encoded   = payload[OT3D_V2_OFF_CHAMBER_TEMP];
-        out->bed_temp_encoded       = payload[OT3D_V2_OFF_BED_TEMP];
-        out->min_bed_temp_encoded   = payload[OT3D_V2_OFF_MIN_BED_TEMP];
-        out->max_bed_temp_encoded   = payload[OT3D_V2_OFF_MAX_BED_TEMP];
-        out->target_volumetric_speed = payload[OT3D_V2_OFF_TARGET_VSO];
-        out->min_volumetric_speed    = payload[OT3D_V2_OFF_MIN_VSO];
-        out->max_volumetric_speed    = payload[OT3D_V2_OFF_MAX_VSO];
-        out->max_dry_temp_encoded    = payload[OT3D_V2_OFF_MAX_DRY_TEMP];
-        out->dry_time_hours          = payload[OT3D_V2_OFF_DRY_TIME];
-
-        out->density_ugcm3            = read_u16(payload + OT3D_V2_OFF_DENSITY);
-        out->target_weight_g          = read_u16(payload + OT3D_V2_OFF_WEIGHT);
-        out->empty_spool_weight_g     = read_u16(payload + OT3D_V2_OFF_EMPTY_SPOOL_WEIGHT);
-        out->measured_filament_length_m = read_u16(payload + OT3D_V2_OFF_MEASURED_LENGTH);
-        out->measured_filament_weight_g = read_u16(payload + OT3D_V2_OFF_MEASURED_WEIGHT);
-        out->spool_core_diameter_mm   = payload[OT3D_V2_OFF_SPOOL_CORE_DIAMETER];
-        out->transmission_distance    = payload[OT3D_V2_OFF_TD];
-        out->mfi_temp_encoded         = payload[OT3D_V2_OFF_MFI_TEMP];
-        out->mfi_load                 = payload[OT3D_V2_OFF_MFI_LOAD];
-        out->mfi_value                = payload[OT3D_V2_OFF_MFI_VALUE];
-        read_str(payload + OT3D_V2_OFF_DATA_URL, OT3D_V2_LEN_DATA_URL, out->online_url, sizeof(out->online_url));
-
+        opentag3d_decode_v2_fields(payload, out);
         return version_result;
     }
 
@@ -190,7 +196,7 @@ static void write_u48(uint8_t *p, uint64_t val) {
  * field lands at the same OT3D_V2_OFF_* constant the decoder reads it from. */
 static int opentag3d_encode_v2(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
     if (buflen < OT3D_V2_MAP_SIZE) return -1;
-    memset(buf, 0, OT3D_V2_MAP_SIZE);
+    memset(buf, 0, buflen);  /* whole caller buffer, matching the v1 path's contract */
 
     write_u16(buf + OT3D_V2_OFF_TAG_VERSION, tag->tag_version);
     write_str(tag->base_material, buf + OT3D_V2_OFF_MATERIAL, OT3D_V2_LEN_MATERIAL);
@@ -322,14 +328,7 @@ static int opentag3d_encode_v1(const opentag3d_t *tag, uint8_t *buf, size_t bufl
  * keeping the higher version stamp. */
 int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
     if (tag == NULL || buf == NULL) return -1;
-    uint16_t major = tag->tag_version / 1000;
-    if (major >= 3) return -1;                       /* never write a layout we do not know */
-    if (major == 2) {
-        if (tag->tag_version > OT3D_SUPPORTED_V2) return -1;  /* newer minor: re-encoding
-                                                                 from 2.000 knowledge would
-                                                                 zero its extra fields */
-        return opentag3d_encode_v2(tag, buf, buflen);
-    }
-    if (tag->tag_version > OT3D_SUPPORTED_V1) return -1;      /* same rule for v1 minors */
+    if (!opentag3d_can_encode(tag->tag_version)) return -1;
+    if (opentag3d_major(tag->tag_version) == 2) return opentag3d_encode_v2(tag, buf, buflen);
     return opentag3d_encode_v1(tag, buf, buflen);
 }

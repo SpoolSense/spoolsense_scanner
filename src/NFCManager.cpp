@@ -341,11 +341,10 @@ uint16_t NFCManager::readNdefPayload(const NdefRecord& rec, const uint8_t* pageD
     // Never request past the tag's last usable page: NTAG READ rolls over to
     // page 0 beyond the end, which would silently corrupt the tail of an
     // over-asked payload (garbage payloadLen on a malformed tag)
-    if (maxPages > 0) {
-        if (startPage >= maxPages) return 0;
-        if ((uint16_t)startPage + pagesNeeded > maxPages) {
-            pagesNeeded = maxPages - startPage;
-        }
+    if (maxPages == 0) maxPages = 64;  // unknown variant: historical page<64 read ceiling
+    if (startPage >= maxPages) return 0;
+    if ((uint16_t)startPage + pagesNeeded > maxPages) {
+        pagesNeeded = maxPages - startPage;
     }
 
     uint8_t extBuf[256] = {0};
@@ -404,8 +403,10 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
                         if (res == OT3D_VERSION_WARNING) {
+                            uint16_t known = (opentag3d_major(ot3dData.tag_version) >= 2)
+                                             ? OT3D_SUPPORTED_V2 : OT3D_SUPPORTED_V1;
                             Serial.printf("NFCManager: OpenTag3D tag version %u ahead of supported %u — parsing anyway\n",
-                                          ot3dData.tag_version, OT3D_SUPPORTED_VERSION);
+                                          ot3dData.tag_version, known);
                         }
                     } else if (res == OT3D_VERSION_ERROR) {
                         Serial.printf("NFCManager: OpenTag3D major version too new (%u) — cannot parse\n",
@@ -1899,10 +1900,14 @@ void NFCManager::forceRescan() {
 
 // ── Per-format write functions ──────────────────────────────
 
-// Reject writes that exceed the tag's page capacity (requires prior GET_VERSION)
+// Reject writes that exceed the tag's USER memory (requires prior GET_VERSION).
+// Bounds against ntagUserMemoryEnd, not ntagUsablePages — the last pages of the
+// die are dynamic-lock/CFG/PWD, and payload bytes written there can leave the
+// tag password-protected with a password nobody knows.
 bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType) {
-    uint16_t maxPages = ntagUsablePages(currentSpool.variant);
-    if (maxPages == 0) return true;  // unknown variant — skip check
+    uint16_t maxPages = ntagUserMemoryEnd(currentSpool.variant);
+    if (maxPages == 0) maxPages = 64;  // unknown variant: keep the historical page<64
+                                       // ceiling the PN532 library used to enforce
     if (startPage + pageCount > maxPages) {
         Serial.printf("NFCManager: %s rejected — needs %d pages (start=%d), tag has %d (%s)\n",
             writeType, pageCount, startPage, maxPages, ntagVariantName(currentSpool.variant));
@@ -2061,7 +2066,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
     rawWritePending_ = false;
 
-    size_t encodeSize = (ot3d.tag_version / 1000 >= 2) ? OT3D_V2_MAP_SIZE
+    size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
                     : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
     uint8_t payloadBuf[OT3D_V2_MAP_SIZE];
     int payloadLen = opentag3d_encode(&ot3d, payloadBuf, encodeSize);

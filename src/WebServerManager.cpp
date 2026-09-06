@@ -1831,9 +1831,7 @@ void WebServerManager::handleApiWriteTigerTag() {
 void WebServerManager::handleApiWriteOpenTag3D() {
     Serial.println("WebServerManager: POST /api/write-opentag3d received");
 
-    // 768: a fully-populated v2 payload (32-char serial/url, sku, barcode,
-    // all temps) overflows the old 512-byte pool and 400'd as "Invalid JSON"
-    StaticJsonDocument<768> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, _server.arg("plain"));
     if (err) {
         sendError(400, "Invalid JSON");
@@ -1850,6 +1848,21 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     memset(&ot3d, 0, sizeof(ot3d));
 
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
+
+    // A v2 NDEF is 252 padded bytes = 63 pages starting at page 4, so user
+    // memory must reach page 67. Refuse up front when the tag on the reader is
+    // known to be smaller — otherwise the queue accepts it, the capacity check
+    // rejects it later on the NFC task, and the browser only sees a timeout.
+    if (opentag3d_major(ot3d.tag_version) >= 2) {
+        CurrentSpoolState cur;
+        if (NFCManager::getInstance().getCurrentSpoolState(cur)) {
+            uint16_t endPage = ntagUserMemoryEnd(cur.variant);
+            if (endPage > 0 && endPage < 67) {
+                sendError(400, "Tag too small for OpenTag3D v2.000 — needs NTAG215 or larger");
+                return;
+            }
+        }
+    }
 
     const char* baseMat = doc["base_material"] | "PLA";
     strncpy(ot3d.base_material, baseMat, sizeof(ot3d.base_material) - 1);
@@ -1882,48 +1895,54 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     const char* sku = doc["sku"] | "";
     strncpy(ot3d.sku, sku, sizeof(ot3d.sku) - 1);
 
-    const char* barcodeStr = doc["barcode"] | "";
-    ot3d.barcode = strtoull(barcodeStr, NULL, 10);
+    if (doc["barcode"].is<const char*>()) {
+        ot3d.barcode = strtoull(doc["barcode"] | "", NULL, 10);
+    } else {
+        ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
+    }
 
     uint16_t chamberTemp = doc["chamber_temp_c"] | (uint16_t)0;
     ot3d.chamber_temp_encoded = (uint8_t)(chamberTemp / 5);
 
     ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;
 
-    if (doc.containsKey("serial_number") || doc.containsKey("min_print_temp_c")) {
-        ot3d.has_extended = 1;
+    // Always parse these — the old two-key gate silently dropped any of them
+    // that arrived without serial_number/min_print_temp_c, and a v2 encode
+    // writes the full 224-byte map either way. has_extended only sizes v1
+    // encodes: always full for v2, probe-based for an explicit v1 post.
+    ot3d.has_extended = (opentag3d_major(ot3d.tag_version) >= 2) ||
+                        doc.containsKey("serial_number") || doc.containsKey("min_print_temp_c");
 
-        const char* serial = doc["serial_number"] | "";
-        strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
+    const char* serial = doc["serial_number"] | "";
+    strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
 
-        const char* url = doc["online_url"] | "";
-        strncpy(ot3d.online_url, url, sizeof(ot3d.online_url) - 1);
+    const char* url = doc["online_url"] | "";
+    strncpy(ot3d.online_url, url, sizeof(ot3d.online_url) - 1);
 
-        ot3d.manufacture_year = doc["manufacture_year"] | (uint16_t)0;
-        ot3d.manufacture_month = doc["manufacture_month"] | (uint8_t)0;
-        ot3d.manufacture_day = doc["manufacture_day"] | (uint8_t)0;
+    ot3d.manufacture_year = doc["manufacture_year"] | (uint16_t)0;
+    ot3d.manufacture_month = doc["manufacture_month"] | (uint8_t)0;
+    ot3d.manufacture_day = doc["manufacture_day"] | (uint8_t)0;
 
-        ot3d.empty_spool_weight_g = doc["empty_spool_weight_g"] | (uint16_t)0;
-        ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
-        ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
+    ot3d.empty_spool_weight_g = doc["empty_spool_weight_g"] | (uint16_t)0;
+    ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
+    ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
 
-        uint16_t maxDryTemp = doc["max_dry_temp_c"] | (uint16_t)0;
-        ot3d.max_dry_temp_encoded = (uint8_t)(maxDryTemp / 5);
-        ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
+    uint16_t maxDryTemp = doc["max_dry_temp_c"] | (uint16_t)0;
+    ot3d.max_dry_temp_encoded = (uint8_t)(maxDryTemp / 5);
+    ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
 
-        uint16_t minPrint = doc["min_print_temp_c"] | (uint16_t)0;
-        uint16_t maxPrint = doc["max_print_temp_c"] | (uint16_t)0;
-        uint16_t minBed = doc["min_bed_temp_c"] | (uint16_t)0;
-        uint16_t maxBed = doc["max_bed_temp_c"] | (uint16_t)0;
-        ot3d.min_print_temp_encoded = (uint8_t)(minPrint / 5);
-        ot3d.max_print_temp_encoded = (uint8_t)(maxPrint / 5);
-        ot3d.min_bed_temp_encoded = (uint8_t)(minBed / 5);
-        ot3d.max_bed_temp_encoded = (uint8_t)(maxBed / 5);
+    uint16_t minPrint = doc["min_print_temp_c"] | (uint16_t)0;
+    uint16_t maxPrint = doc["max_print_temp_c"] | (uint16_t)0;
+    uint16_t minBed = doc["min_bed_temp_c"] | (uint16_t)0;
+    uint16_t maxBed = doc["max_bed_temp_c"] | (uint16_t)0;
+    ot3d.min_print_temp_encoded = (uint8_t)(minPrint / 5);
+    ot3d.max_print_temp_encoded = (uint8_t)(maxPrint / 5);
+    ot3d.min_bed_temp_encoded = (uint8_t)(minBed / 5);
+    ot3d.max_bed_temp_encoded = (uint8_t)(maxBed / 5);
 
-        ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
-        ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
-        ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
-    }
+    ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
+    ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
+    ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));

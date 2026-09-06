@@ -166,7 +166,7 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
       var t = s.opentag3d || {};
       var html = '';
       html += row('Format', 'OpenTag3D');
-      if (t.tag_version) html += row('Spec', 'v' + Math.floor(t.tag_version / 1000) + '.' + ('00' + (t.tag_version % 1000)).slice(-3));
+      if (t.tag_version !== undefined) html += row('Spec', 'v' + Math.floor(t.tag_version / 1000) + '.' + ('00' + (t.tag_version % 1000)).slice(-3));
       html += row('UID', s.uid || '&mdash;');
       if (t.base_material) html += row('Material', t.base_material + (t.modifiers ? ' (' + t.modifiers + ')' : ''));
       if (t.manufacturer) html += row('Manufacturer', t.manufacturer);

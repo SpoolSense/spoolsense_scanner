@@ -353,8 +353,10 @@ int main(void) {
     CHECK(buf[OT3D_V2_OFF_WEIGHT] == (uint8_t)(800 >> 8) && buf[OT3D_V2_OFF_WEIGHT + 1] == (uint8_t)(800 & 0xFF),
           "L: weight bytes == BE(800)");
     {
-        uint8_t want_bc[6];
-        put_u48(want_bc, 12345543210ULL);
+        /* Hard literal, NOT put_u48 — comparing the encoder against a copy of
+         * itself would pass even if both were little-endian. 12345543210 =
+         * 0x02DFDA0A2A, big-endian in 6 bytes: */
+        static const uint8_t want_bc[6] = {0x00, 0x02, 0xDF, 0xDA, 0x0A, 0x2A};
         CHECK(memcmp(buf + OT3D_V2_OFF_BARCODE, want_bc, 6) == 0, "L: barcode bytes == BE(12345543210)");
     }
 
@@ -418,6 +420,16 @@ int main(void) {
     src.tag_version = 2000;
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
     CHECK(n == OT3D_V2_MAP_SIZE, "P: v2 2000 still encodes (regression guard)");
+
+    /* Q: the shared version predicates every write-side guard relies on. */
+    printf("[Q] version predicate helpers\n");
+    CHECK(opentag3d_major(2000) == 2 && opentag3d_major(1999) == 1 &&
+          opentag3d_major(999) == 0, "Q: opentag3d_major splits correctly");
+    CHECK(opentag3d_can_encode(1000) && opentag3d_can_encode(2000),
+          "Q: can_encode accepts supported versions");
+    CHECK(!opentag3d_can_encode(1001) && !opentag3d_can_encode(2001) &&
+          !opentag3d_can_encode(3000), "Q: can_encode refuses minor-ahead and future majors");
+    CHECK(opentag3d_can_encode(0), "Q: can_encode accepts legacy version 0 (v1 path)");
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

@@ -116,14 +116,28 @@ static float applyOpenTag3D(const char* uid, float pending) {
         return 0.0f;
     }
 
-    // Minor-ahead tags decode with OT3D_VERSION_WARNING but re-encoding them
-    // from our 2.000/1.000 knowledge would zero fields the newer minor defines.
-    // Keep the deduction in NVS and leave the tag untouched.
-    if (ot3d.tag_version > OT3D_SUPPORTED_V2 ||
-        (ot3d.tag_version < 2000 && ot3d.tag_version > OT3D_SUPPORTED_V1)) {
-        Serial.printf("DeductionManager: OpenTag3D %s is a newer minor format (%u) — deduction kept in NVS, tag left untouched\n",
-                      uid, ot3d.tag_version);
-        return 0.0f;
+    // Cases where the tag itself must not be written: a newer minor format
+    // (re-encoding would zero fields it defines), or a v2 tag without a
+    // measured weight — v2 defines the weight field as the NOMINAL spool size,
+    // and deducting from it would corrupt the tag's identity. Route the grams
+    // to Spoolman when configured; otherwise keep them pending in NVS.
+    const char* skipReason = NULL;
+    if (!opentag3d_can_encode(ot3d.tag_version)) {
+        skipReason = "newer minor format";
+    } else if (opentag3d_major(ot3d.tag_version) >= 2 && ot3d.measured_filament_weight_g == 0) {
+        skipReason = "v2 tag has no measured weight (target weight is nominal)";
+    }
+    if (skipReason) {
+        Serial.printf("DeductionManager: OpenTag3D %s (v%u) — %s; tag left untouched\n",
+                      uid, ot3d.tag_version, skipReason);
+        if (SpoolmanManager::getInstance().isConfigured()) {
+            float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending);
+            if (spDeducted > 0.0f) {
+                DeductionManager::getInstance().clearPending(uid);
+                return spDeducted;
+            }
+        }
+        return 0.0f;  // pending stays in NVS for retry
     }
 
     // Use measured weight if available, otherwise target weight
