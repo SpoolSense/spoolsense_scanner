@@ -136,8 +136,16 @@ static float applyOpenTag3D(const char* uid, float pending) {
                 DeductionManager::getInstance().clearPending(uid);
                 return spDeducted;
             }
+            return 0.0f;  // Spoolman may be down — keep pending and retry next scan
         }
-        return 0.0f;  // pending stays in NVS for retry
+        // No writable target anywhere — terminal, mirroring the non-writable-kind
+        // branch: an every-scan retry would loop forever and only log to serial.
+        LogBuffer::getInstance().logPrintf("Deduction %.1fg dropped: OpenTag3D %s %s, no Spoolman\n",
+                                           pending, uid, skipReason);
+        Serial.printf("DeductionManager: %s and Spoolman not configured — clearing %.1fg pending\n",
+                      skipReason, pending);
+        DeductionManager::getInstance().clearPending(uid);
+        return 0.0f;
     }
 
     // Use measured weight if available, otherwise target weight

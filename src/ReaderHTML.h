@@ -168,9 +168,9 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
       html += row('Format', 'OpenTag3D');
       if (t.tag_version !== undefined) html += row('Spec', 'v' + Math.floor(t.tag_version / 1000) + '.' + ('00' + (t.tag_version % 1000)).slice(-3));
       html += row('UID', s.uid || '&mdash;');
-      if (t.base_material) html += row('Material', t.base_material + (t.modifiers ? ' (' + t.modifiers + ')' : ''));
-      if (t.manufacturer) html += row('Manufacturer', t.manufacturer);
-      if (t.color_hex) html += row('Color', colorValue(t.color_hex) + (t.color_name ? ' ' + t.color_name : ''));
+      if (t.base_material) html += row('Material', esc(t.base_material) + (t.modifiers ? ' (' + esc(t.modifiers) + ')' : ''));
+      if (t.manufacturer) html += row('Manufacturer', esc(t.manufacturer));
+      if (t.color_hex) html += row('Color', colorValue(t.color_hex) + (t.color_name ? ' ' + esc(t.color_name) : ''));
       if (t.target_weight_g !== undefined) html += row('Weight', t.target_weight_g + ' g');
       if (t.measured_weight_g) html += row('Measured Weight', t.measured_weight_g + ' g');
       if (t.diameter_mm) html += row('Diameter', t.diameter_mm + ' mm');
@@ -187,9 +187,9 @@ const char READER_HTML[] PROGMEM = R"rawliteral(
       }
       if (t.chamber_temp) html += row('Chamber Temp', t.chamber_temp + ' \u00B0C');
       if (t.dry_temp) html += row('Dry', t.dry_temp + ' \u00B0C / ' + (t.dry_time_hours || '?') + ' hrs');
-      if (t.serial_number) html += row('Serial', t.serial_number);
-      if (t.sku) html += row('SKU', t.sku);
-      if (t.barcode) html += row('Barcode', t.barcode);
+      if (t.serial_number) html += row('Serial', esc(t.serial_number));
+      if (t.sku) html += row('SKU', esc(t.sku));
+      if (t.barcode) html += row('Barcode', esc(t.barcode));
       if (t.min_nozzle_mm) html += row('Min Nozzle', t.min_nozzle_mm + ' mm');
       if (t.empty_spool_g) html += row('Empty Spool', t.empty_spool_g + ' g');
       if (s.spoolman) {

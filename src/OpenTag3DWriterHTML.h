@@ -240,7 +240,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="field">
                   <label for="barcode">Barcode (UPC/GTIN)</label>
-                  <input id="barcode" type="text" maxlength="15" inputmode="numeric" pattern="[0-9]*" placeholder="digits only" />
+                  <input id="barcode" type="text" maxlength="14" inputmode="numeric" pattern="[0-9]*" placeholder="digits only" />
                 </div>
                 <div class="field">
                   <label for="min_nozzle_diameter_mm">Min Nozzle (mm)</label>
@@ -628,7 +628,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        setVal('chamber_temp_c', ot.chamber_temp || 0);
+        if (ot.chamber_temp) setVal('chamber_temp_c', ot.chamber_temp);  // guarded like the other temps: Read must not wipe a typed value
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);

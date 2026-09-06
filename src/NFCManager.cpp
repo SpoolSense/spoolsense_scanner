@@ -341,7 +341,10 @@ uint16_t NFCManager::readNdefPayload(const NdefRecord& rec, const uint8_t* pageD
     // Never request past the tag's last usable page: NTAG READ rolls over to
     // page 0 beyond the end, which would silently corrupt the tail of an
     // over-asked payload (garbage payloadLen on a malformed tag)
-    if (maxPages == 0) maxPages = 64;  // unknown variant: historical page<64 read ceiling
+    if (maxPages == 0) maxPages = 68;  // unknown variant: a v2 payload spans pages 4..66,
+                                       // so 64 (the historical ceiling) truncated every v2
+                                       // read after a failed GET_VERSION; 68 covers v2 and
+                                       // extBuf still bounds one read at 64 pages
     if (startPage >= maxPages) return 0;
     if ((uint16_t)startPage + pagesNeeded > maxPages) {
         pagesNeeded = maxPages - startPage;
@@ -1903,14 +1906,18 @@ void NFCManager::forceRescan() {
 // Reject writes that exceed the tag's USER memory (requires prior GET_VERSION).
 // Bounds against ntagUserMemoryEnd, not ntagUsablePages — the last pages of the
 // die are dynamic-lock/CFG/PWD, and payload bytes written there can leave the
-// tag password-protected with a password nobody knows.
+// tag password-protected with a password nobody knows. For an unidentified
+// variant we keep the historical page<64 ceiling; a mid-size write to a
+// misidentified small tag can still reach its config pages, same as before —
+// closing that fully means refusing all unknown-variant writes.
 bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType) {
     uint16_t maxPages = ntagUserMemoryEnd(currentSpool.variant);
-    if (maxPages == 0) maxPages = 64;  // unknown variant: keep the historical page<64
-                                       // ceiling the PN532 library used to enforce
+    if (maxPages == 0) maxPages = 64;
     if (startPage + pageCount > maxPages) {
         Serial.printf("NFCManager: %s rejected — needs %d pages (start=%d), tag has %d (%s)\n",
             writeType, pageCount, startPage, maxPages, ntagVariantName(currentSpool.variant));
+        LogBuffer::getInstance().logPrintf("%s rejected: needs %d pages, tag has %d (%s)\n",
+            writeType, pageCount, maxPages, ntagVariantName(currentSpool.variant));
         return false;
     }
     return true;

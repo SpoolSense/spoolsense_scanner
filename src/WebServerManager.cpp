@@ -1849,16 +1849,36 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
 
+    if (!opentag3d_can_encode(ot3d.tag_version)) {
+        sendError(400, "Unsupported tag_version — this firmware writes v1.000 and v2.000");
+        return;
+    }
+
+    // Never re-mint a newer-minor tag: the queued struct carries OUR version
+    // stamp, so the encoder's write-time guard cannot see the conflict — the
+    // tag on the reader is the only evidence. (The cache clears on removal.)
+    opentag3d_t onReader;
+    if (NFCManager::getInstance().getLastOpenTag3DData(onReader) &&
+        !opentag3d_can_encode(onReader.tag_version)) {
+        sendError(409, "Tag carries a newer OpenTag3D revision — rewriting would lose its data");
+        return;
+    }
+
     // A v2 NDEF is 252 padded bytes = 63 pages starting at page 4, so user
     // memory must reach page 67. Refuse up front when the tag on the reader is
-    // known to be smaller — otherwise the queue accepts it, the capacity check
-    // rejects it later on the NFC task, and the browser only sees a timeout.
+    // known too small or cannot be identified — otherwise the queue accepts it,
+    // the capacity check rejects it later on the NFC task, and the browser only
+    // sees a verify timeout.
     if (opentag3d_major(ot3d.tag_version) >= 2) {
         CurrentSpoolState cur;
-        if (NFCManager::getInstance().getCurrentSpoolState(cur)) {
+        if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
             uint16_t endPage = ntagUserMemoryEnd(cur.variant);
             if (endPage > 0 && endPage < 67) {
                 sendError(400, "Tag too small for OpenTag3D v2.000 — needs NTAG215 or larger");
+                return;
+            }
+            if (endPage == 0) {
+                sendError(400, "Cannot verify tag size (unknown tag type) — remove and re-place the tag, then retry");
                 return;
             }
         }
@@ -1900,6 +1920,10 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     } else {
         ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
     }
+    if (ot3d.barcode > 0xFFFFFFFFFFFFULL) {  // on-tag field is 6 bytes; GTIN max is 14 digits
+        sendError(400, "Barcode exceeds the 14-digit GTIN range");
+        return;
+    }
 
     uint16_t chamberTemp = doc["chamber_temp_c"] | (uint16_t)0;
     ot3d.chamber_temp_encoded = (uint8_t)(chamberTemp / 5);
@@ -1908,11 +1932,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 
     // Always parse these — the old two-key gate silently dropped any of them
     // that arrived without serial_number/min_print_temp_c, and a v2 encode
-    // writes the full 224-byte map either way. has_extended only sizes v1
-    // encodes: always full for v2, probe-based for an explicit v1 post.
-    ot3d.has_extended = (opentag3d_major(ot3d.tag_version) >= 2) ||
-                        doc.containsKey("serial_number") || doc.containsKey("min_print_temp_c");
-
+    // writes the full 224-byte map either way.
     const char* serial = doc["serial_number"] | "";
     strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
 
@@ -1943,6 +1963,19 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
     ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
     ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
+
+    // has_extended only sizes v1 encodes (v2 always writes the full map).
+    // Derive it from the parsed data, not key probes — an explicit v1 post
+    // carrying only a URL or dry profile must still get the extended layout.
+    ot3d.has_extended = (opentag3d_major(ot3d.tag_version) >= 2) ||
+                        ot3d.serial_number[0] || ot3d.online_url[0] ||
+                        ot3d.manufacture_year || ot3d.empty_spool_weight_g ||
+                        ot3d.measured_filament_weight_g || ot3d.measured_filament_length_m ||
+                        ot3d.max_dry_temp_encoded || ot3d.dry_time_hours ||
+                        ot3d.min_print_temp_encoded || ot3d.max_print_temp_encoded ||
+                        ot3d.min_bed_temp_encoded || ot3d.max_bed_temp_encoded ||
+                        ot3d.min_volumetric_speed || ot3d.max_volumetric_speed ||
+                        ot3d.target_volumetric_speed;
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
