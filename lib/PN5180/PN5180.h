@@ -161,6 +161,15 @@ public:
   // Read the bus-wedged fail-fast latch state (for diagnostics).
   static bool isBusWedged();
 
+  // Sink for the BUSY-handshake timeout lines (the wedge-latch sites in
+  // transceiveCommand). The library stays application-agnostic: with no sink
+  // installed the lines go to Serial as before; the application may install
+  // one to mirror them elsewhere (e.g. a web log ring). The sink owns the
+  // whole line — the library does not also print. `phase` names the
+  // handshake, e.g. "BUSY-LOW pre-send".
+  typedef void (*TimeoutLogSink)(const char* phase);
+  static void setTimeoutLogSink(TimeoutLogSink sink);
+
 private:
   bool transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_t *recvBuffer = 0, size_t recvBufferLen = 0);
 
