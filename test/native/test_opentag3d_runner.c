@@ -1,8 +1,9 @@
-/* Native tests for the OpenTag3D v2.000 decoder + version dispatch.
+/* Native tests for the OpenTag3D v2.000 codec + version dispatch.
  *
  * Covers: v2 nominal parse (every mapped field), version-warning/error
- * gating, v1.000 regression, legacy version-0 passthrough, and the
- * encode guard that refuses v2 stamps. Plain C, PASS/FAIL per check,
+ * gating, v1.000 regression, legacy version-0 passthrough, and the v2.000
+ * encoder (full round-trip, raw byte spot-checks, version preservation,
+ * future-major rejection, TD clamp). Plain C, PASS/FAIL per check,
  * non-zero exit on any failure. */
 #include <stdio.h>
 #include <string.h>
@@ -156,8 +157,9 @@ static void check_v2_fields(const opentag3d_t *o) {
 }
 
 int main(void) {
-    printf("=== OpenTag3D v2 decoder + dispatch ===\n");
+    printf("=== OpenTag3D v2 codec + dispatch ===\n");
     opentag3d_t out;
+    opentag3d_t out2;
     uint8_t buf[OT3D_V2_MAP_SIZE];
     opentag3d_result_t r;
 
@@ -235,10 +237,11 @@ int main(void) {
     /* I: encode guard + v1 round-trip */
     printf("[I] encode guard + v1 round-trip\n");
     opentag3d_t src;
+    uint8_t small[OT3D_V2_MAP_SIZE - 1];
     memset(&src, 0, sizeof(src));
     src.tag_version = 2000;
-    int n = opentag3d_encode(&src, buf, OT3D_EXTENDED_MIN);
-    CHECK(n == -1, "I: encode refuses v2 stamp");
+    int n = opentag3d_encode(&src, small, sizeof(small));
+    CHECK(n == -1, "I: encode refuses too-small v2 buffer (223B)");
 
     memset(&src, 0, sizeof(src));
     src.tag_version = 1000;
@@ -266,6 +269,137 @@ int main(void) {
     r = opentag3d_decode(buf, OT3D_CORE_SIZE, &out);
     CHECK(r == OT3D_OK, "J: version 0 parses via v1 path (OT3D_OK)");
     CHECK(out.tag_version == 0 && out.diameter_um == 1750, "J: version 0 fields parsed");
+
+    /* K: v2 full round-trip — struct -> encode -> decode -> compare.
+     * Every encodable member carries a distinct nonzero value. */
+    printf("[K] v2 full round-trip\n");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 2000;
+    strcpy(src.base_material, "ABS");
+    strcpy(src.material_modifiers, "GF");
+    strcpy(src.manufacturer, "Prusa Research");
+    strcpy(src.color_name, "Graphite");
+    memcpy(src.color_rgba[0], (uint8_t[]){200, 100, 50, 25}, 4);
+    memcpy(src.color_rgba[1], (uint8_t[]){10, 20, 30, 40}, 4);
+    memcpy(src.color_rgba[2], (uint8_t[]){111, 122, 133, 144}, 4);
+    memcpy(src.color_rgba[3], (uint8_t[]){5, 6, 7, 8}, 4);
+    strcpy(src.serial_number, V2_SERIAL);
+    strcpy(src.sku, "SKU-K1");
+    src.barcode = 12345543210ULL;
+    src.manufacture_year = 2025; src.manufacture_month = 7; src.manufacture_day = 15;
+    src.manufacture_hour = 12; src.manufacture_minute = 34; src.manufacture_second = 56;
+    src.diameter_um = 285;
+    src.measured_tolerance_um = 8;
+    src.min_nozzle_diameter = 3;
+    src.print_temp_encoded = 40; src.min_print_temp_encoded = 36; src.max_print_temp_encoded = 44;
+    src.chamber_temp_encoded = 20;
+    src.bed_temp_encoded = 15; src.min_bed_temp_encoded = 10; src.max_bed_temp_encoded = 14;
+    src.target_volumetric_speed = 70; src.min_volumetric_speed = 25; src.max_volumetric_speed = 110;
+    src.max_dry_temp_encoded = 11; src.dry_time_hours = 9;
+    src.density_ugcm3 = 1300;
+    src.target_weight_g = 800; src.empty_spool_weight_g = 120;
+    src.measured_filament_length_m = 400; src.measured_filament_weight_g = 810;
+    src.spool_core_diameter_mm = 55;
+    src.transmission_distance = 118;
+    src.mfi_temp_encoded = 200; src.mfi_load = 210; src.mfi_value = 60;
+    strcpy(src.online_url, "pfil.us/roundtrip");
+
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == OT3D_V2_MAP_SIZE, "K: v2 encode returns MAP_SIZE");
+    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
+    CHECK(r == OT3D_OK, "K: round-trip decodes OK");
+    CHECK(out.has_extended == 1, "K: has_extended == 1");
+    CHECK(strcmp(out.base_material, "ABS") == 0, "K: base_material");
+    CHECK(strcmp(out.material_modifiers, "GF") == 0, "K: material_modifiers");
+    CHECK(strcmp(out.manufacturer, "Prusa Research") == 0, "K: manufacturer");
+    CHECK(strcmp(out.color_name, "Graphite") == 0, "K: color_name");
+    CHECK(out.color_rgba[0][0] == 200 && out.color_rgba[0][1] == 100 &&
+          out.color_rgba[0][2] == 50 && out.color_rgba[0][3] == 25, "K: color_rgba[0]");
+    CHECK(out.color_rgba[1][0] == 10 && out.color_rgba[1][3] == 40, "K: color_rgba[1]");
+    CHECK(out.color_rgba[2][0] == 111 && out.color_rgba[2][3] == 144, "K: color_rgba[2]");
+    CHECK(out.color_rgba[3][0] == 5 && out.color_rgba[3][3] == 8, "K: color_rgba[3]");
+    CHECK(strcmp(out.serial_number, V2_SERIAL) == 0 && strlen(out.serial_number) == 32, "K: serial (32B)");
+    CHECK(strcmp(out.sku, "SKU-K1") == 0, "K: sku");
+    CHECK(out.barcode == 12345543210ULL, "K: barcode (u48)");
+    CHECK(out.manufacture_year == 2025 && out.manufacture_month == 7 && out.manufacture_day == 15, "K: date");
+    CHECK(out.manufacture_hour == 12 && out.manufacture_minute == 34 && out.manufacture_second == 56, "K: time");
+    CHECK(out.diameter_um == 285, "K: diameter");
+    CHECK(out.measured_tolerance_um == 8, "K: tolerance");
+    CHECK(out.min_nozzle_diameter == 3, "K: nozzle diameter");
+    CHECK(out.print_temp_encoded == 40, "K: print temp");
+    CHECK(out.min_print_temp_encoded == 36 && out.max_print_temp_encoded == 44, "K: print temp range");
+    CHECK(out.chamber_temp_encoded == 20, "K: chamber temp");
+    CHECK(out.bed_temp_encoded == 15, "K: bed temp");
+    CHECK(out.min_bed_temp_encoded == 10 && out.max_bed_temp_encoded == 14, "K: bed temp range");
+    CHECK(out.target_volumetric_speed == 70, "K: target vso");
+    CHECK(out.min_volumetric_speed == 25 && out.max_volumetric_speed == 110, "K: vso range");
+    CHECK(out.max_dry_temp_encoded == 11 && out.dry_time_hours == 9, "K: dry temp/time");
+    CHECK(out.density_ugcm3 == 1300, "K: density");
+    CHECK(out.target_weight_g == 800, "K: target weight");
+    CHECK(out.empty_spool_weight_g == 120, "K: empty spool weight");
+    CHECK(out.measured_filament_length_m == 400, "K: measured length");
+    CHECK(out.measured_filament_weight_g == 810, "K: measured weight");
+    CHECK(out.spool_core_diameter_mm == 55, "K: spool core diameter");
+    CHECK(out.transmission_distance == 118, "K: transmission distance");
+    CHECK(out.mfi_temp_encoded == 200 && out.mfi_load == 210 && out.mfi_value == 60, "K: mfi triple");
+    CHECK(strcmp(out.online_url, "pfil.us/roundtrip") == 0, "K: online_url");
+
+    /* L: raw byte spot-checks on the K-encoded buffer — guards against a
+     * mirrored encode/decode bug that round-trips cleanly but is wrong on the wire. */
+    printf("[L] v2 raw byte spot-checks\n");
+    CHECK(buf[OT3D_V2_OFF_TAG_VERSION] == 0x07 && buf[OT3D_V2_OFF_TAG_VERSION + 1] == 0xD0,
+          "L: tag_version bytes {07 D0} (2000)");
+    CHECK(buf[OT3D_V2_OFF_CHAMBER_TEMP] == 20, "L: chamber byte == 20");
+    CHECK(buf[OT3D_V2_OFF_WEIGHT] == (uint8_t)(800 >> 8) && buf[OT3D_V2_OFF_WEIGHT + 1] == (uint8_t)(800 & 0xFF),
+          "L: weight bytes == BE(800)");
+    {
+        uint8_t want_bc[6];
+        put_u48(want_bc, 12345543210ULL);
+        CHECK(memcmp(buf + OT3D_V2_OFF_BARCODE, want_bc, 6) == 0, "L: barcode bytes == BE(12345543210)");
+    }
+
+    /* M: version preservation (deduction write-back keeps a tag's layout). */
+    printf("[M] version preservation\n");
+    build_v1_nominal(buf, 1000);
+    r = opentag3d_decode(buf, OT3D_EXTENDED_MIN, &out);
+    CHECK(r == OT3D_OK, "M: v1 decode OK");
+    n = opentag3d_encode(&out, buf, OT3D_EXTENDED_MIN);   /* tag_version still 1000 -> v1 path */
+    CHECK(n == OT3D_EXTENDED_MIN, "M: v1-stamped re-encode returns EXTENDED_MIN");
+    r = opentag3d_decode(buf, OT3D_EXTENDED_MIN, &out2);
+    CHECK(r == OT3D_OK, "M: re-encoded v1 decodes OK");
+    CHECK(out2.tag_version == 1000, "M: re-encoded v1 keeps v1 version");
+    CHECK(out2.diameter_um == 1750 && out2.target_weight_g == 1000 &&
+          out2.transmission_distance == 118 && out2.density_ugcm3 == 1240, "M: v1 numerics survive");
+    CHECK(strcmp(out2.serial_number, "SN-V1") == 0 && strcmp(out2.online_url, "pfil.us?i=8078-RQSR") == 0, "M: v1 strings survive");
+    CHECK(out2.measured_filament_length_m == 336 && out2.measured_filament_weight_g == 1002, "M: v1 extended numerics survive");
+
+    build_v2_nominal(buf);
+    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
+    CHECK(r == OT3D_OK && out.tag_version == 2000, "M: v2 decode OK (version 2000)");
+    n = opentag3d_encode(&out, buf, OT3D_V2_MAP_SIZE);     /* tag_version still 2000 -> v2 path */
+    CHECK(n == OT3D_V2_MAP_SIZE, "M: v2-stamped re-encode returns MAP_SIZE");
+    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out2);
+    CHECK(r == OT3D_OK, "M: re-encoded v2 decodes OK");
+    CHECK(out2.barcode == 12345543210ULL && out2.chamber_temp_encoded == 12 &&
+          out2.min_nozzle_diameter == 4 && out2.transmission_distance == 118, "M: v2-only fields survive");
+    CHECK(strcmp(out2.sku, "G00-A01") == 0 && strcmp(out2.serial_number, V2_SERIAL) == 0, "M: v2 strings survive");
+
+    /* N: future major refused — never write an unknown layout. */
+    printf("[N] future major (3000)\n");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 3000;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == -1, "N: encode refuses major >= 3 (v3000)");
+
+    /* O: transmission distance clamped to the 25.0mm (250) spec cap. */
+    printf("[O] transmission distance clamp\n");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 2000;
+    src.transmission_distance = 400;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == OT3D_V2_MAP_SIZE, "O: v2 encode returns MAP_SIZE");
+    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
+    CHECK(out.transmission_distance == 250, "O: td 400 clamped to 250");
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

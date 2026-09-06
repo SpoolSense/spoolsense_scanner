@@ -181,11 +181,74 @@ static void write_str(const char *src, uint8_t *dst, size_t field_len) {
     }
 }
 
-int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
-    if (tag == NULL || buf == NULL) return -1;
-    if (tag->tag_version >= 2000) return -1;  /* v2 encode lands in the next pass —
-                                                 refusing beats writing a v1 layout
-                                                 under a v2 version stamp */
+/* Write big-endian uint48 (6 bytes) to buffer */
+static void write_u48(uint8_t *p, uint64_t val) {
+    for (int i = 5; i >= 0; i--) { p[i] = (uint8_t)(val & 0xFF); val >>= 8; }
+}
+
+/* v2.000 encode: exact mirror of the v2 decode mapping above — every struct
+ * field lands at the same OT3D_V2_OFF_* constant the decoder reads it from. */
+static int opentag3d_encode_v2(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
+    if (buflen < OT3D_V2_MAP_SIZE) return -1;
+    memset(buf, 0, OT3D_V2_MAP_SIZE);
+
+    write_u16(buf + OT3D_V2_OFF_TAG_VERSION, tag->tag_version);
+    write_str(tag->base_material, buf + OT3D_V2_OFF_MATERIAL, OT3D_V2_LEN_MATERIAL);
+    write_str(tag->material_modifiers, buf + OT3D_V2_OFF_MATERIAL_MOD, OT3D_V2_LEN_MATERIAL_MOD);
+    write_str(tag->manufacturer, buf + OT3D_V2_OFF_MANUFACTURER, OT3D_V2_LEN_MANUFACTURER);
+    write_str(tag->color_name, buf + OT3D_V2_OFF_COLOR_NAME, OT3D_V2_LEN_COLOR_NAME);
+
+    memcpy(buf + OT3D_V2_OFF_COLOR_1, tag->color_rgba[0], 4);
+    memcpy(buf + OT3D_V2_OFF_COLOR_2, tag->color_rgba[1], 4);
+    memcpy(buf + OT3D_V2_OFF_COLOR_3, tag->color_rgba[2], 4);
+    memcpy(buf + OT3D_V2_OFF_COLOR_4, tag->color_rgba[3], 4);
+
+    write_str(tag->serial_number, buf + OT3D_V2_OFF_SERIAL, OT3D_V2_LEN_SERIAL);
+    write_str(tag->sku, buf + OT3D_V2_OFF_SKU, OT3D_V2_LEN_SKU);
+    write_u48(buf + OT3D_V2_OFF_BARCODE, tag->barcode);
+
+    write_u16(buf + OT3D_V2_OFF_MFG_DATE, tag->manufacture_year);
+    buf[OT3D_V2_OFF_MFG_DATE + 2] = tag->manufacture_month;
+    buf[OT3D_V2_OFF_MFG_DATE + 3] = tag->manufacture_day;
+    buf[OT3D_V2_OFF_MFG_TIME + 0] = tag->manufacture_hour;
+    buf[OT3D_V2_OFF_MFG_TIME + 1] = tag->manufacture_minute;
+    buf[OT3D_V2_OFF_MFG_TIME + 2] = tag->manufacture_second;
+
+    write_u16(buf + OT3D_V2_OFF_DIAMETER, tag->diameter_um);
+    buf[OT3D_V2_OFF_TOLERANCE] = tag->measured_tolerance_um;
+    buf[OT3D_V2_OFF_NOZZLE_DIAMETER] = tag->min_nozzle_diameter;
+    buf[OT3D_V2_OFF_PRINT_TEMP] = tag->print_temp_encoded;
+    buf[OT3D_V2_OFF_MIN_PRINT_TEMP] = tag->min_print_temp_encoded;
+    buf[OT3D_V2_OFF_MAX_PRINT_TEMP] = tag->max_print_temp_encoded;
+    buf[OT3D_V2_OFF_CHAMBER_TEMP] = tag->chamber_temp_encoded;
+    buf[OT3D_V2_OFF_BED_TEMP] = tag->bed_temp_encoded;
+    buf[OT3D_V2_OFF_MIN_BED_TEMP] = tag->min_bed_temp_encoded;
+    buf[OT3D_V2_OFF_MAX_BED_TEMP] = tag->max_bed_temp_encoded;
+    buf[OT3D_V2_OFF_TARGET_VSO] = tag->target_volumetric_speed;
+    buf[OT3D_V2_OFF_MIN_VSO] = tag->min_volumetric_speed;
+    buf[OT3D_V2_OFF_MAX_VSO] = tag->max_volumetric_speed;
+    buf[OT3D_V2_OFF_MAX_DRY_TEMP] = tag->max_dry_temp_encoded;
+    buf[OT3D_V2_OFF_DRY_TIME] = tag->dry_time_hours;
+
+    write_u16(buf + OT3D_V2_OFF_DENSITY, tag->density_ugcm3);
+    write_u16(buf + OT3D_V2_OFF_WEIGHT, tag->target_weight_g);
+    write_u16(buf + OT3D_V2_OFF_EMPTY_SPOOL_WEIGHT, tag->empty_spool_weight_g);
+    write_u16(buf + OT3D_V2_OFF_MEASURED_LENGTH, tag->measured_filament_length_m);
+    write_u16(buf + OT3D_V2_OFF_MEASURED_WEIGHT, tag->measured_filament_weight_g);
+    buf[OT3D_V2_OFF_SPOOL_CORE_DIAMETER] = tag->spool_core_diameter_mm;
+    /* transmission_distance is uint16_t in the struct but 1 byte on-tag; the
+     * spec caps TD at 25.0mm (250), so clamp to avoid silent byte truncation. */
+    buf[OT3D_V2_OFF_TD] = (uint8_t)(tag->transmission_distance > 250 ? 250 : tag->transmission_distance);
+    buf[OT3D_V2_OFF_MFI_TEMP] = tag->mfi_temp_encoded;
+    buf[OT3D_V2_OFF_MFI_LOAD] = tag->mfi_load;
+    buf[OT3D_V2_OFF_MFI_VALUE] = tag->mfi_value;
+    write_str(tag->online_url, buf + OT3D_V2_OFF_DATA_URL, OT3D_V2_LEN_DATA_URL);
+
+    return OT3D_V2_MAP_SIZE;
+}
+
+/* v1.000 encode (also handles legacy version-0 tags). */
+static int opentag3d_encode_v1(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
     if (buflen < OT3D_CORE_SIZE) return -1;
 
     memset(buf, 0, buflen);
@@ -249,4 +312,15 @@ int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
     }
 
     return written;
+}
+
+/* Version-aware dispatcher: a struct's tag_version decides the on-tag layout.
+ * Structs decoded from a v1 tag re-encode as v1; structs stamped 2xxx encode
+ * as v2. That is how deduction write-back preserves a tag's version. */
+int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
+    if (tag == NULL || buf == NULL) return -1;
+    uint16_t major = tag->tag_version / 1000;
+    if (major >= 3) return -1;   /* never write a layout we do not know */
+    if (major == 2) return opentag3d_encode_v2(tag, buf, buflen);
+    return opentag3d_encode_v1(tag, buf, buflen);   /* major <= 1 */
 }
