@@ -150,27 +150,35 @@ bool HardwareNFCConnection::begin() {
 
     // BUSY signal indicates RF subsystem boot state; timeout detects dead/unreliable chips
     unsigned long start = millis();
+    bool busyLow = true;
     while (digitalRead(pinBusy_) == HIGH) {
         if (millis() - start > 2000) {
             logBuf.logPrintf("HardwareNFCConnection: TIMEOUT waiting for BUSY LOW after reset!\n");
+            busyLow = false;
             break;
         }
         delay(1);
     }
-    logBuf.logPrintf("HardwareNFCConnection: BUSY went LOW after %lums\n", millis() - start);
+    if (busyLow) {
+        logBuf.logPrintf("HardwareNFCConnection: BUSY went LOW after %lums\n", millis() - start);
+    }
 
     // IDLE_IRQ_STAT (bit 2) confirms RF initialization complete; without it, transceive fails
     start = millis();
     uint32_t irqStatus = 0;
+    bool idleIrq = true;
     while (0 == (irqStatus & (1 << 2))) {
         nfc_->readRegister(IRQ_STATUS, &irqStatus);
         if (millis() - start > 2000) {
             logBuf.logPrintf("HardwareNFCConnection: TIMEOUT waiting for IDLE IRQ! IRQ=0x%08lX\n", irqStatus);
+            idleIrq = false;
             break;
         }
         delay(1);
     }
-    logBuf.logPrintf("HardwareNFCConnection: IDLE IRQ after %lums, IRQ=0x%08lX\n", millis() - start, irqStatus);
+    if (idleIrq) {
+        logBuf.logPrintf("HardwareNFCConnection: IDLE IRQ after %lums, IRQ=0x%08lX\n", millis() - start, irqStatus);
+    }
     nfc_->clearIRQStatus(0xffffffff);  // clear IDLE_IRQ and all pending flags before transceive
     logBuf.logPrintf("HardwareNFCConnection: Reset complete\n");
 
@@ -198,7 +206,7 @@ bool HardwareNFCConnection::begin() {
     hal_.is_present = nullptr;  // unused for ISO15693 tags
     hal_.user_ctx = this;
 
-    Serial.println("HardwareNFCConnection: Initialized successfully");
+    logBuf.logPrintf("HardwareNFCConnection: Initialized successfully\n");
     return true;
 }
 
