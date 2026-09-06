@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **OpenTag3D v2.000 support — read, write, and weight deduction** — the spec's breaking revision (opentag3d.info) repacks the tag into a single 224-byte map, adds SKU, barcode, chamber temperature, and minimum nozzle diameter, doubles the serial number to 32 characters, and drops NTAG213 (NTAG215 is the new minimum). The scanner reads both v1 and v2 tags; the writer page writes v2 with the new fields; the reader page shows the tag's spec version. Existing v1 tags keep working, and deduction write-back preserves each tag's own version. (#297)
+
+### Fixed
+
+- **PN532 readers can now reach NTAG pages beyond 63** — the page methods previously used refuse pages 64 and up, which a 252-byte v2 payload needs (pages 4–66): reads fell back to a generic UID and a v2 write would have aborted halfway through. Both paths now use the library's NTAG-specific methods; behavior on v1 tags is unchanged. (#297)
+- **Tags from a newer OpenTag3D minor revision are never rewritten lossily** — a tag stamped 2.001+ (or 1.001+) parses with a warning, but re-encoding it from current-spec knowledge would zero fields the newer revision defines. The encoder now refuses such writes, and a pending weight deduction stays queued instead of being consumed. (#297)
+
 ## [1.10.1] - 2026-09-06
 
 ### Added
