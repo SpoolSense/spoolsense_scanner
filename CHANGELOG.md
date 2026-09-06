@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.10.1] - 2026-09-06
+
+### Added
+
+- **NFC reader boot and bus-timeout lines now appear in the web log (`/logs`)** — the PN5180 startup sequence (pin map, SPI clock, reset handshake, firmware version, RF setup) and the BUSY-handshake timeout lines are mirrored into the web log, so a reader that fails in the field can be diagnosed from the browser without a USB cable. Timeout lines are rate-limited in the web log (first and every 20th, with a running count) so a failing reader cannot scroll away the rest of the log; USB serial keeps every line. (#293)
+
+### Fixed
+
+- **Self-test no longer reports a dead reader as healthy** — register health now fails with its own recommendation when the status registers read all-ones (nothing driving the SPI bus: a dead, unpowered, or miswired module). The bus-wedge result also points at `/logs` to show which handshake stalled.
+
+### Build
+
+- **The JSON streaming library is now bundled with the firmware source** — the package registry deleted the exact pinned release the parsers are validated against, which broke every fresh build. Building from source no longer depends on that registry for it.
+
 ## [1.10.0] - 2026-08-07
 
 Major memory recovery for boards without PSRAM using a TFT display. No
