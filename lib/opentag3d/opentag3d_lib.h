@@ -50,7 +50,7 @@ typedef struct {
     /* Extended fields (zero if not present) */
     uint8_t  has_extended;           /* Non-zero if extended fields were parsed */
     char     online_url[33];         /* 32 bytes + null, no https:// prefix */
-    char     serial_number[17];      /* 16 bytes + null */
+    char     serial_number[33];      /* 32 bytes + null (v2 stores 32; v1 stores 16 — copies bound by sizeof) */
     uint16_t manufacture_year;
     uint8_t  manufacture_month;
     uint8_t  manufacture_day;
@@ -74,6 +74,13 @@ typedef struct {
     uint8_t  min_volumetric_speed;   /* mm³/s */
     uint8_t  max_volumetric_speed;   /* mm³/s */
     uint8_t  target_volumetric_speed;/* mm³/s */
+
+    /* Fields that exist only in the v2.000 memory map
+     * (zero when a v1 tag was parsed) */
+    char     sku[17];                  /* 16 bytes + null (v2) */
+    uint64_t barcode;                  /* UPC13/GTIN, 6-byte big-endian int on tag (v2) */
+    uint8_t  chamber_temp_encoded;     /* °C ÷ 5 — required field in v2 */
+    uint8_t  min_nozzle_diameter;      /* mm ÷ 0.1 (v2) */
 } opentag3d_t;
 
 /**
