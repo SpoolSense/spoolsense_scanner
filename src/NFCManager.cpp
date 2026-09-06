@@ -1,4 +1,5 @@
 #include "NFCManager.h"
+#include "opentag3d_v2_map.h"
 #include <esp_system.h>
 #include "ConversionUtils.h"
 #include "WriteUidGuard.h"
@@ -336,7 +337,7 @@ uint16_t NFCManager::readNdefPayload(const NdefRecord& rec, const uint8_t* pageD
     // Extended read — payload spans beyond the initial 40-byte read
     uint8_t startPage = 4 + (rec.payloadOffset / 4);
     uint16_t pagesNeeded = (uint16_t)((rec.payloadLen + 3) / 4) + 1;
-    if (pagesNeeded > 50) pagesNeeded = 50;
+    if (pagesNeeded > 64) pagesNeeded = 64;  /* extBuf holds 256 B = 64 pages */
     // Never request past the tag's last usable page: NTAG READ rolls over to
     // page 0 beyond the end, which would silently corrupt the tail of an
     // over-asked payload (garbage payloadLen on a malformed tag)
@@ -394,7 +395,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         if (rec.found) {
             const char* ot3dMime = OT3D_MIME_TYPE;
             if (rec.mimeLen == strlen(ot3dMime) && memcmp(rec.mimeType, ot3dMime, rec.mimeLen) == 0) {
-                uint8_t payload[OT3D_EXTENDED_MIN];
+                uint8_t payload[OT3D_V2_MAP_SIZE];
                 SCAN_PHASE(22);
                 uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
                                                         ntagUserMemoryEnd(scan.variant));
@@ -2060,8 +2061,9 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
     rawWritePending_ = false;
 
-    size_t encodeSize = ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE;
-    uint8_t payloadBuf[OT3D_EXTENDED_MIN];
+    size_t encodeSize = (ot3d.tag_version / 1000 >= 2) ? OT3D_V2_MAP_SIZE
+                    : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
+    uint8_t payloadBuf[OT3D_V2_MAP_SIZE];
     int payloadLen = opentag3d_encode(&ot3d, payloadBuf, encodeSize);
     if (payloadLen <= 0) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - encode failed");
