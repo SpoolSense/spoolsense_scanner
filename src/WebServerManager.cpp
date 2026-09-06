@@ -1821,7 +1821,9 @@ void WebServerManager::handleApiWriteTigerTag() {
 void WebServerManager::handleApiWriteOpenTag3D() {
     Serial.println("WebServerManager: POST /api/write-opentag3d received");
 
-    StaticJsonDocument<512> doc;
+    // 768: a fully-populated v2 payload (32-char serial/url, sku, barcode,
+    // all temps) overflows the old 512-byte pool and 400'd as "Invalid JSON"
+    StaticJsonDocument<768> doc;
     DeserializationError err = deserializeJson(doc, _server.arg("plain"));
     if (err) {
         sendError(400, "Invalid JSON");
@@ -1866,6 +1868,17 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 
     ot3d.density_ugcm3 = doc["density_ugcm3"] | (uint16_t)0;
     ot3d.transmission_distance = doc["transmission_distance"] | (uint16_t)0;
+
+    const char* sku = doc["sku"] | "";
+    strncpy(ot3d.sku, sku, sizeof(ot3d.sku) - 1);
+
+    const char* barcodeStr = doc["barcode"] | "";
+    ot3d.barcode = strtoull(barcodeStr, NULL, 10);
+
+    uint16_t chamberTemp = doc["chamber_temp_c"] | (uint16_t)0;
+    ot3d.chamber_temp_encoded = (uint8_t)(chamberTemp / 5);
+
+    ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;
 
     if (doc.containsKey("serial_number") || doc.containsKey("min_print_temp_c")) {
         ot3d.has_extended = 1;

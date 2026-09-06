@@ -162,6 +162,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 <label for="bed_temp_c">Bed Temperature</label>
                 <input id="bed_temp_c" type="number" min="0" max="1275" step="5" value="60" required />
               </div>
+              <div class="field">
+                <label for="chamber_temp_c">Chamber Temp (&deg;C)</label>
+                <input id="chamber_temp_c" type="number" min="0" max="1275" step="5" value="0" />
+                <div class="hint">Required by the v2 spec; 0 = no chamber.</div>
+              </div>
             </div>
           </section>
 
@@ -175,7 +180,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
               <div class="grid-2">
                 <div class="field">
                   <label for="serial_number">Serial Number</label>
-                  <input id="serial_number" type="text" maxlength="16" />
+                  <input id="serial_number" type="text" maxlength="32" />
                 </div>
                 <div class="field">
                   <label for="online_url">Online URL (no https://)</label>
@@ -228,6 +233,20 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                   <input id="transmission_distance" type="number" min="0" max="65535" />
                 </div>
               </div>
+              <div class="grid-3">
+                <div class="field">
+                  <label for="sku">SKU</label>
+                  <input id="sku" type="text" maxlength="16" />
+                </div>
+                <div class="field">
+                  <label for="barcode">Barcode (UPC/GTIN)</label>
+                  <input id="barcode" type="text" maxlength="13" inputmode="numeric" pattern="[0-9]*" placeholder="digits only" />
+                </div>
+                <div class="field">
+                  <label for="min_nozzle_diameter_mm">Min Nozzle (mm)</label>
+                  <input id="min_nozzle_diameter_mm" type="number" min="0" max="25.5" step="0.1" placeholder="0.4" />
+                </div>
+              </div>
             </div>
           </section>
 
@@ -252,6 +271,8 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
           <div id="readPrompt" class="hidden write-warning" style="background:#0d2a1a;border-color:#2a7a4a;color:#4adf8a;text-align:center;padding:10px">
             Place tag on reader&hellip; <span style="font-size:11px;color:#5a9a6a">hold still until detected</span>
           </div>
+
+          <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.000 &mdash; requires NTAG215 or larger.</div>
 
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
@@ -319,7 +340,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       </div>
     </section>
 
-    <div class="footer-note">OpenTag3D v1.000 &mdash; NTAG215/216</div>
+    <div class="footer-note">OpenTag3D v2.000 &mdash; NTAG215/216</div>
   </div>
 
   <script src="/js/shared.js?v=)rawliteral" FIRMWARE_VERSION R"rawliteral("></script>
@@ -493,6 +514,13 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (strVal('transmission_distance')) body.transmission_distance = intVal('transmission_distance', 0);
       }
 
+      body.sku = strVal('sku');
+      var barcodeDigits = strVal('barcode');
+      if (barcodeDigits) body.barcode = barcodeDigits;
+      body.chamber_temp_c = intVal('chamber_temp_c', 0);
+      var minNozzleMm = floatVal('min_nozzle_diameter_mm', -1);
+      if (minNozzleMm >= 0) body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
+
       return body;
     }
 
@@ -600,6 +628,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
+        if (ot.chamber_temp) setVal('chamber_temp_c', ot.chamber_temp);
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);
@@ -609,6 +638,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         setVal('serial_number', ot.serial_number || '');
         setVal('measured_filament_weight_g', ot.measured_weight_g || '');
         setVal('empty_spool_weight_g', ot.empty_spool_g || '');
+        if (ot.sku) setVal('sku', ot.sku);
+        if (ot.barcode) setVal('barcode', String(ot.barcode));
+        if (ot.min_nozzle_mm) setVal('min_nozzle_diameter_mm', ot.min_nozzle_mm);
         var matEl = document.getElementById('base_material');
         if (matEl) matEl.dispatchEvent(new Event('input'));
       },
