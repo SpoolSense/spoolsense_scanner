@@ -1171,7 +1171,9 @@ void ApplicationManager::enqueueSpoolmanSync(const SpoolDetectedPayload& spool) 
     req.material_type = spool.material_type;
     strncpy(req.manufacturer, spool.manufacturer, sizeof(req.manufacturer) - 1);
     memcpy(req.color, spool.primary_color, 4);
-    req.remaining_weight_g = spool.kg_remaining * 1000.0f;
+    // A nominal-only weight rides the existing weightless-tag path: 0 means
+    // "no remaining-weight data", and updateSpool never PATCHes remaining=0.
+    req.remaining_weight_g = spool.weight_is_nominal ? 0.0f : spool.kg_remaining * 1000.0f;
     req.initial_weight_g = spool.initial_weight_g;
 
     // Use tag density if available; fallback to material defaults if missing

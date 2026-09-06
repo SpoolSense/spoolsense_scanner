@@ -1721,7 +1721,8 @@ int SpoolmanManager::findSpoolIdByUidNoLock(const char* uid) {
     return streamFindSpoolByNfcId("/api/v1/spool", uid);
 }
 
-float SpoolmanManager::deductFromSpoolman(const char* uid, float grams) {
+float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* success) {
+    if (success) *success = false;
     if (!isConfigured()) return 0.0f;
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
         Serial.println("SpoolmanManager: deductFromSpoolman — mutex timeout");
@@ -1759,6 +1760,16 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams) {
     float newRemaining = currentRemaining - deduction;
     if (newRemaining < 0.0f) newRemaining = 0.0f;
 
+    if (deduction <= 0.0f) {
+        // Spool is already at 0 g — the deduction is absorbed as nothing to
+        // subtract. That is a SUCCESS (the pending record must clear), and
+        // skipping the 0->0 PATCH saves the round-trip.
+        Serial.printf("SpoolmanManager: spool %d already empty — 0g deducted\n", spoolId);
+        xSemaphoreGive(httpMutex_);
+        if (success) *success = true;
+        return 0.0f;
+    }
+
     // PATCH with new remaining weight
     StaticJsonDocument<JSON_SMALL_CAPACITY> patchDoc;
     patchDoc["remaining_weight"] = newRemaining;
@@ -1772,6 +1783,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams) {
         Serial.printf("SpoolmanManager: Deducted %.1fg from spool %d (%.1fg -> %.1fg)\n",
                       deduction, spoolId, currentRemaining, newRemaining);
         LogBuffer::getInstance().logPrintf("Spoolman: Deducted %.1fg from spool %d\n", deduction, spoolId);
+        if (success) *success = true;
         return deduction;
     }
 

@@ -628,7 +628,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        if (ot.chamber_temp) setVal('chamber_temp_c', ot.chamber_temp);  // guarded like the other temps: Read must not wipe a typed value
+        // Present-key guard: a v2 read carries chamber_temp even at 0 (so 0 is
+        // applied), while a v1 read omits it and leaves a typed value alone.
+        if (ot.chamber_temp !== undefined) setVal('chamber_temp_c', ot.chamber_temp);
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);

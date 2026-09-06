@@ -56,6 +56,10 @@ struct SpoolDetectedPayload {
     char spool_id[17];           // UID hex string
     uint8_t material_type;       // OPT_MATERIAL_TYPE_PLA, etc.
     float kg_remaining;          // Remaining weight in kg
+    bool weight_is_nominal;      // kg_remaining echoes the tag's nominal target
+                                 // (v2 tag without measured weight) — fine to
+                                 // display, but never sync it into Spoolman as
+                                 // remaining weight
     uint8_t primary_color[4];    // RGBA color
     bool has_color;              // false if tag has no color field (don't override LED with black)
     char material_name[32];      // Material name string

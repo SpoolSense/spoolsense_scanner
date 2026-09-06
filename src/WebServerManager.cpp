@@ -1349,7 +1349,9 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     if (printTemp > 0) obj["print_temp"] = printTemp;
     if (bedTemp > 0) obj["bed_temp"] = bedTemp;
     uint16_t chamberTemp = (uint16_t)opentag3d_temp_c(ot3d.chamber_temp_encoded);
-    if (chamberTemp > 0) obj["chamber_temp"] = chamberTemp;
+    // v2 always carries the field (0 = no chamber, and the writer prefill must
+    // be able to set 0); v1 has no chamber field, so omit it there.
+    if (chamberTemp > 0 || opentag3d_major(ot3d.tag_version) >= 2) obj["chamber_temp"] = chamberTemp;
 
     if (ot3d.has_extended) {
         if (ot3d.sku[0]) obj["sku"] = ot3d.sku;
@@ -1916,16 +1918,26 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     strncpy(ot3d.sku, sku, sizeof(ot3d.sku) - 1);
 
     if (doc["barcode"].is<const char*>()) {
-        ot3d.barcode = strtoull(doc["barcode"] | "", NULL, 10);
+        const char* bcStr = doc["barcode"] | "";
+        char* bcEnd = NULL;
+        ot3d.barcode = strtoull(bcStr, &bcEnd, 10);
+        if (bcStr[0] != '\0' && (bcEnd == NULL || *bcEnd != '\0')) {
+            sendError(400, "Barcode must be digits only");
+            return;
+        }
     } else {
         ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
     }
-    if (ot3d.barcode > 0xFFFFFFFFFFFFULL) {  // on-tag field is 6 bytes; GTIN max is 14 digits
+    if (ot3d.barcode > 99999999999999ULL) {  // GTIN caps at 14 digits (also under the 6-byte field max)
         sendError(400, "Barcode exceeds the 14-digit GTIN range");
         return;
     }
 
     uint16_t chamberTemp = doc["chamber_temp_c"] | (uint16_t)0;
+    if (chamberTemp > 1275) {  // encoded max is 255 * 5 — beyond that the cast wraps
+        sendError(400, "Chamber temperature exceeds 1275");
+        return;
+    }
     ot3d.chamber_temp_encoded = (uint8_t)(chamberTemp / 5);
 
     ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;

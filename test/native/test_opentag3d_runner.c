@@ -431,6 +431,53 @@ int main(void) {
           !opentag3d_can_encode(3000), "Q: can_encode refuses minor-ahead and future majors");
     CHECK(opentag3d_can_encode(0), "Q: can_encode accepts legacy version 0 (v1 path)");
 
+    /* R: header constants pinned to the SPEC'S literal addresses. Generated
+     * directly from opentag3d-spec-v2.json, independently of the header —
+     * a wrong OT3D_V2_OFF_* constant moves the codec AND every buffer-based
+     * test together, and only these literals catch it. */
+    printf("[R] spec literal pinning\n");
+    CHECK(OT3D_V2_OFF_TAG_VERSION == 0x00 && OT3D_V2_LEN_TAG_VERSION == 2, "R: tag_version @0x00/2");
+    CHECK(OT3D_V2_OFF_MATERIAL == 0x02 && OT3D_V2_LEN_MATERIAL == 5, "R: material @0x02/5");
+    CHECK(OT3D_V2_OFF_MATERIAL_MOD == 0x07 && OT3D_V2_LEN_MATERIAL_MOD == 5, "R: material_mod @0x07/5");
+    CHECK(OT3D_V2_OFF_MANUFACTURER == 0x0C && OT3D_V2_LEN_MANUFACTURER == 16, "R: manufacturer @0x0C/16");
+    CHECK(OT3D_V2_OFF_COLOR_NAME == 0x1C && OT3D_V2_LEN_COLOR_NAME == 32, "R: color_name @0x1C/32");
+    CHECK(OT3D_V2_OFF_COLOR_1 == 0x3C && OT3D_V2_LEN_COLOR_1 == 4, "R: color_1 @0x3C/4");
+    CHECK(OT3D_V2_OFF_COLOR_2 == 0x40 && OT3D_V2_LEN_COLOR_2 == 4, "R: color_2 @0x40/4");
+    CHECK(OT3D_V2_OFF_COLOR_3 == 0x44 && OT3D_V2_LEN_COLOR_3 == 4, "R: color_3 @0x44/4");
+    CHECK(OT3D_V2_OFF_COLOR_4 == 0x48 && OT3D_V2_LEN_COLOR_4 == 4, "R: color_4 @0x48/4");
+    CHECK(OT3D_V2_OFF_SERIAL == 0x4C && OT3D_V2_LEN_SERIAL == 32, "R: serial @0x4C/32");
+    CHECK(OT3D_V2_OFF_SKU == 0x6C && OT3D_V2_LEN_SKU == 16, "R: sku @0x6C/16");
+    CHECK(OT3D_V2_OFF_BARCODE == 0x7C && OT3D_V2_LEN_BARCODE == 6, "R: barcode @0x7C/6");
+    CHECK(OT3D_V2_OFF_MFG_DATE == 0x84 && OT3D_V2_LEN_MFG_DATE == 4, "R: mfg_date @0x84/4");
+    CHECK(OT3D_V2_OFF_MFG_TIME == 0x88 && OT3D_V2_LEN_MFG_TIME == 3, "R: mfg_time @0x88/3");
+    CHECK(OT3D_V2_OFF_DIAMETER == 0x8C && OT3D_V2_LEN_DIAMETER == 2, "R: diameter @0x8C/2");
+    CHECK(OT3D_V2_OFF_TOLERANCE == 0x8E && OT3D_V2_LEN_TOLERANCE == 1, "R: tolerance @0x8E/1");
+    CHECK(OT3D_V2_OFF_NOZZLE_DIAMETER == 0x8F && OT3D_V2_LEN_NOZZLE_DIAMETER == 1, "R: nozzle_diameter @0x8F/1");
+    CHECK(OT3D_V2_OFF_PRINT_TEMP == 0x90 && OT3D_V2_LEN_PRINT_TEMP == 1, "R: print_temp @0x90/1");
+    CHECK(OT3D_V2_OFF_MIN_PRINT_TEMP == 0x91 && OT3D_V2_LEN_MIN_PRINT_TEMP == 1, "R: min_print_temp @0x91/1");
+    CHECK(OT3D_V2_OFF_MAX_PRINT_TEMP == 0x92 && OT3D_V2_LEN_MAX_PRINT_TEMP == 1, "R: max_print_temp @0x92/1");
+    CHECK(OT3D_V2_OFF_CHAMBER_TEMP == 0x93 && OT3D_V2_LEN_CHAMBER_TEMP == 1, "R: chamber_temp @0x93/1");
+    CHECK(OT3D_V2_OFF_BED_TEMP == 0x94 && OT3D_V2_LEN_BED_TEMP == 1, "R: bed_temp @0x94/1");
+    CHECK(OT3D_V2_OFF_MIN_BED_TEMP == 0x95 && OT3D_V2_LEN_MIN_BED_TEMP == 1, "R: min_bed_temp @0x95/1");
+    CHECK(OT3D_V2_OFF_MAX_BED_TEMP == 0x96 && OT3D_V2_LEN_MAX_BED_TEMP == 1, "R: max_bed_temp @0x96/1");
+    CHECK(OT3D_V2_OFF_TARGET_VSO == 0x97 && OT3D_V2_LEN_TARGET_VSO == 1, "R: target_vso @0x97/1");
+    CHECK(OT3D_V2_OFF_MIN_VSO == 0x98 && OT3D_V2_LEN_MIN_VSO == 1, "R: min_vso @0x98/1");
+    CHECK(OT3D_V2_OFF_MAX_VSO == 0x99 && OT3D_V2_LEN_MAX_VSO == 1, "R: max_vso @0x99/1");
+    CHECK(OT3D_V2_OFF_MAX_DRY_TEMP == 0x9A && OT3D_V2_LEN_MAX_DRY_TEMP == 1, "R: max_dry_temp @0x9A/1");
+    CHECK(OT3D_V2_OFF_DRY_TIME == 0x9B && OT3D_V2_LEN_DRY_TIME == 1, "R: dry_time @0x9B/1");
+    CHECK(OT3D_V2_OFF_DENSITY == 0x9C && OT3D_V2_LEN_DENSITY == 2, "R: density @0x9C/2");
+    CHECK(OT3D_V2_OFF_WEIGHT == 0x9E && OT3D_V2_LEN_WEIGHT == 2, "R: weight @0x9E/2");
+    CHECK(OT3D_V2_OFF_EMPTY_SPOOL_WEIGHT == 0xA0 && OT3D_V2_LEN_EMPTY_SPOOL_WEIGHT == 2, "R: empty_spool_weight @0xA0/2");
+    CHECK(OT3D_V2_OFF_MEASURED_LENGTH == 0xA2 && OT3D_V2_LEN_MEASURED_LENGTH == 2, "R: measured_length @0xA2/2");
+    CHECK(OT3D_V2_OFF_MEASURED_WEIGHT == 0xA4 && OT3D_V2_LEN_MEASURED_WEIGHT == 2, "R: measured_weight @0xA4/2");
+    CHECK(OT3D_V2_OFF_SPOOL_CORE_DIAMETER == 0xA6 && OT3D_V2_LEN_SPOOL_CORE_DIAMETER == 1, "R: spool_core_diameter @0xA6/1");
+    CHECK(OT3D_V2_OFF_TD == 0xA7 && OT3D_V2_LEN_TD == 1, "R: td @0xA7/1");
+    CHECK(OT3D_V2_OFF_MFI_TEMP == 0xA8 && OT3D_V2_LEN_MFI_TEMP == 1, "R: mfi_temp @0xA8/1");
+    CHECK(OT3D_V2_OFF_MFI_LOAD == 0xA9 && OT3D_V2_LEN_MFI_LOAD == 1, "R: mfi_load @0xA9/1");
+    CHECK(OT3D_V2_OFF_MFI_VALUE == 0xAA && OT3D_V2_LEN_MFI_VALUE == 1, "R: mfi_value @0xAA/1");
+    CHECK(OT3D_V2_OFF_DATA_URL == 0xB8 && OT3D_V2_LEN_DATA_URL == 32, "R: data_url @0xB8/32");
+    CHECK(OT3D_V2_MAP_SIZE == 0xE0 && OT3D_V2_VERSION == 2000, "R: map size + version constants");
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

@@ -1323,6 +1323,11 @@ void NFCManager::sendOpenTag3DMessage(const opentag3d_t& ot3d) {
     } else {
         s.initial_weight_g = ot3d.target_weight_g;
         s.kg_remaining = ot3d.target_weight_g / 1000.0f;
+        // v2 defines this field as the spool's NOMINAL size, not a remaining
+        // counter. Flag it so the Spoolman sync treats the tag as weightless —
+        // otherwise the next scan's sync PATCHes the nominal back and undoes
+        // the Spoolman-side deduction fallback.
+        s.weight_is_nominal = (opentag3d_major(ot3d.tag_version) >= 2);
     }
 
     // Density from tag if non-zero, else fallback
