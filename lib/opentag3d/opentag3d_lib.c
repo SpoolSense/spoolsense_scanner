@@ -316,11 +316,20 @@ static int opentag3d_encode_v1(const opentag3d_t *tag, uint8_t *buf, size_t bufl
 
 /* Version-aware dispatcher: a struct's tag_version decides the on-tag layout.
  * Structs decoded from a v1 tag re-encode as v1; structs stamped 2xxx encode
- * as v2. That is how deduction write-back preserves a tag's version. */
+ * as v2. That is how deduction write-back preserves a tag's version.
+ * Minor-ahead versions are refused: rebuilding the full map from our
+ * 2.000/1.000 knowledge would zero any bytes a newer minor defines while
+ * keeping the higher version stamp. */
 int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen) {
     if (tag == NULL || buf == NULL) return -1;
     uint16_t major = tag->tag_version / 1000;
-    if (major >= 3) return -1;   /* never write a layout we do not know */
-    if (major == 2) return opentag3d_encode_v2(tag, buf, buflen);
-    return opentag3d_encode_v1(tag, buf, buflen);   /* major <= 1 */
+    if (major >= 3) return -1;                       /* never write a layout we do not know */
+    if (major == 2) {
+        if (tag->tag_version > OT3D_SUPPORTED_V2) return -1;  /* newer minor: re-encoding
+                                                                 from 2.000 knowledge would
+                                                                 zero its extra fields */
+        return opentag3d_encode_v2(tag, buf, buflen);
+    }
+    if (tag->tag_version > OT3D_SUPPORTED_V1) return -1;      /* same rule for v1 minors */
+    return opentag3d_encode_v1(tag, buf, buflen);
 }

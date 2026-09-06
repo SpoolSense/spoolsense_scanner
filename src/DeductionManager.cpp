@@ -116,6 +116,16 @@ static float applyOpenTag3D(const char* uid, float pending) {
         return 0.0f;
     }
 
+    // Minor-ahead tags decode with OT3D_VERSION_WARNING but re-encoding them
+    // from our 2.000/1.000 knowledge would zero fields the newer minor defines.
+    // Keep the deduction in NVS and leave the tag untouched.
+    if (ot3d.tag_version > OT3D_SUPPORTED_V2 ||
+        (ot3d.tag_version < 2000 && ot3d.tag_version > OT3D_SUPPORTED_V1)) {
+        Serial.printf("DeductionManager: OpenTag3D %s is a newer minor format (%u) — deduction kept in NVS, tag left untouched\n",
+                      uid, ot3d.tag_version);
+        return 0.0f;
+    }
+
     // Use measured weight if available, otherwise target weight
     float remaining = (ot3d.measured_filament_weight_g > 0)
                       ? ot3d.measured_filament_weight_g

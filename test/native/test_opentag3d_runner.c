@@ -401,6 +401,24 @@ int main(void) {
     r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
     CHECK(out.transmission_distance == 250, "O: td 400 clamped to 250");
 
+    /* P: minor-ahead encode refusal — a struct stamped 2001/1001 carries a
+     * layout newer than our 2.000/1.000 knowledge; re-encoding from that
+     * knowledge would zero its extra fields, so the dispatcher refuses it.
+     * 2000 must still encode (regression guard). */
+    printf("[P] minor-ahead encode refusal\n");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 2001;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == -1, "P: encode refuses v2 minor ahead (2001)");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 1001;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == -1, "P: encode refuses v1 minor ahead (1001)");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 2000;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == OT3D_V2_MAP_SIZE, "P: v2 2000 still encodes (regression guard)");
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }
