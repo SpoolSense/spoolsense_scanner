@@ -590,6 +590,23 @@ status register contain information on the exception.
 // within one 50ms scan cycle.
 static volatile bool pn5180_busWedged = false;
 
+static PN5180::TimeoutLogSink pn5180_timeoutSink = nullptr;
+
+void PN5180::setTimeoutLogSink(TimeoutLogSink sink) {
+  pn5180_timeoutSink = sink;
+}
+
+// One line per handshake timeout, routed through the installed sink so the
+// application can mirror it into its web log (#293).
+static void logBusyTimeout(const char* phase) {
+  if (pn5180_timeoutSink) {
+    pn5180_timeoutSink(phase);
+  } else {
+    Serial.print("PN5180: TIMEOUT ");
+    Serial.println(phase);
+  }
+}
+
 void PN5180::clearBusWedged() {
   pn5180_busWedged = false;
 }
@@ -623,7 +640,7 @@ bool PN5180::transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_
     unsigned long t = millis();
     while (LOW != digitalRead(PN5180_BUSY)) { // wait until busy is low
       if (millis() - t > 1000) {
-        Serial.println("PN5180: TIMEOUT BUSY-LOW pre-send");
+        logBusyTimeout("BUSY-LOW pre-send");
         pn5180_busWedged = true;
         return false;
       }
@@ -640,7 +657,7 @@ bool PN5180::transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_
     unsigned long t = millis();
     while(HIGH != digitalRead(PN5180_BUSY)) {  // wait until BUSY is high
       if (millis() - t > 1000) {
-        Serial.println("PN5180: TIMEOUT BUSY-HIGH post-send");
+        logBusyTimeout("BUSY-HIGH post-send");
         digitalWrite(PN5180_NSS, HIGH);
         pn5180_busWedged = true;
         return false;
@@ -654,7 +671,7 @@ bool PN5180::transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_
     unsigned long t = millis();
     while (LOW != digitalRead(PN5180_BUSY)) { // wait until BUSY is low
       if (millis() - t > 1000) {
-        Serial.println("PN5180: TIMEOUT BUSY-LOW post-send");
+        logBusyTimeout("BUSY-LOW post-send");
         pn5180_busWedged = true;
         return false;
       }
@@ -677,7 +694,7 @@ bool PN5180::transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_
     unsigned long t = millis();
     while(HIGH != digitalRead(PN5180_BUSY)) {  // wait until BUSY is high
       if (millis() - t > 1000) {
-        Serial.println("PN5180: TIMEOUT BUSY-HIGH post-recv");
+        logBusyTimeout("BUSY-HIGH post-recv");
         pn5180_busWedged = true;
         digitalWrite(PN5180_NSS, HIGH);
         return false;
@@ -691,7 +708,7 @@ bool PN5180::transceiveCommand(uint8_t *sendBuffer, size_t sendBufferLen, uint8_
     unsigned long t = millis();
     while(LOW != digitalRead(PN5180_BUSY)) {  // wait until BUSY is low
       if (millis() - t > 1000) {
-        Serial.println("PN5180: TIMEOUT BUSY-LOW post-recv");
+        logBusyTimeout("BUSY-LOW post-recv");
         pn5180_busWedged = true;
         return false;
       }

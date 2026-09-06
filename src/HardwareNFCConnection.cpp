@@ -1,5 +1,6 @@
 #include "HardwareNFCConnection.h"
 #include "ConfigurationManager.h"
+#include "LogBuffer.h"
 #include <Arduino.h>
 #include <cstring>
 #include <esp_task_wdt.h>
@@ -17,6 +18,22 @@ static inline void feedTaskWatchdog() {
 
 // PN5180 ISO15693 NFC reader with ISO14443A fallback. Handles tag detection,
 // multi-block read/write caching (prevents watchdog timeout), and RF state management.
+
+// BUSY-handshake timeout sink (#293): the wedge lines are the only record of
+// WHICH handshake stalled the bus, so mirror them into the web log ring — but
+// rate-limited, because a dead reader re-wedges on every recovery cycle and
+// would scroll everything else out of the 4KB ring. Serial keeps every line;
+// the ring gets the first and every 20th, with a running count.
+static void pn5180TimeoutToLogBuffer(const char* phase) {
+    static uint32_t count = 0;
+    count++;
+    if (count % 20 == 1) {
+        LogBuffer::getInstance().logPrintf("PN5180: TIMEOUT %s (occurrence %lu)\n",
+                                           phase, (unsigned long)count);
+    } else {
+        Serial.printf("PN5180: TIMEOUT %s\n", phase);
+    }
+}
 
 //#define ENABLE_NFC_DEBUG_LOGS
 
@@ -107,51 +124,63 @@ bool HardwareNFCConnection::begin() {
     iso14443a_ = new PN5180ISO14443(pinNss_, pinBusy_, pinRst_,
                                     pinSck_, pinMiso_, pinMosi_);
 
-    Serial.println("HardwareNFCConnection: Starting PN5180...");
-    Serial.printf("HardwareNFCConnection: Pins — NSS=%d BUSY=%d RST=%d SCK=%d MISO=%d MOSI=%d\n",
+    // Boot lines go through LogBuffer (Serial + web /logs ring) so a reader
+    // that dies in the field can be diagnosed without a USB cable (#293).
+    auto& logBuf = LogBuffer::getInstance();
+    logBuf.logPrintf("HardwareNFCConnection: Starting PN5180...\n");
+    logBuf.logPrintf("HardwareNFCConnection: Pins — NSS=%d BUSY=%d RST=%d SCK=%d MISO=%d MOSI=%d\n",
                   pinNss_, pinBusy_, pinRst_,
                   pinSck_, pinMiso_, pinMosi_);
     // Bench diagnostics: confirms whether a PN5180_SPI_HZ build-flag override
     // reached this image. "Requested" because Arduino-ESP32 derives a hardware
     // divider from this — e.g. 7 MHz actually runs at ~6.67 MHz on the wire.
-    Serial.printf("HardwareNFCConnection: PN5180 requested SPI clock %lu Hz\n",
+    logBuf.logPrintf("HardwareNFCConnection: PN5180 requested SPI clock %lu Hz\n",
                   (unsigned long)PN5180_SPI_HZ);
+    PN5180::setTimeoutLogSink(pn5180TimeoutToLogBuffer);
     nfc_->begin();
     iso14443a_->begin();
-    Serial.println("HardwareNFCConnection: SPI begin done, resetting...");
-    Serial.printf("HardwareNFCConnection: BUSY pin=%d before reset\n", digitalRead(pinBusy_));
+    logBuf.logPrintf("HardwareNFCConnection: SPI begin done, resetting...\n");
+    logBuf.logPrintf("HardwareNFCConnection: BUSY pin=%d before reset\n", digitalRead(pinBusy_));
 
     // Manual reset with timeout: PN5180::reset() library call has no timeout, blocking on hung chips
     digitalWrite(pinRst_, LOW);
     delay(10);
     digitalWrite(pinRst_, HIGH);
-    Serial.println("HardwareNFCConnection: RST pin released, waiting for boot...");
+    logBuf.logPrintf("HardwareNFCConnection: RST pin released, waiting for boot...\n");
 
     // BUSY signal indicates RF subsystem boot state; timeout detects dead/unreliable chips
     unsigned long start = millis();
+    bool busyLow = true;
     while (digitalRead(pinBusy_) == HIGH) {
         if (millis() - start > 2000) {
-            Serial.println("HardwareNFCConnection: TIMEOUT waiting for BUSY LOW after reset!");
+            logBuf.logPrintf("HardwareNFCConnection: TIMEOUT waiting for BUSY LOW after reset!\n");
+            busyLow = false;
             break;
         }
         delay(1);
     }
-    Serial.printf("HardwareNFCConnection: BUSY went LOW after %lums\n", millis() - start);
+    if (busyLow) {
+        logBuf.logPrintf("HardwareNFCConnection: BUSY went LOW after %lums\n", millis() - start);
+    }
 
     // IDLE_IRQ_STAT (bit 2) confirms RF initialization complete; without it, transceive fails
     start = millis();
     uint32_t irqStatus = 0;
+    bool idleIrq = true;
     while (0 == (irqStatus & (1 << 2))) {
         nfc_->readRegister(IRQ_STATUS, &irqStatus);
         if (millis() - start > 2000) {
-            Serial.printf("HardwareNFCConnection: TIMEOUT waiting for IDLE IRQ! IRQ=0x%08lX\n", irqStatus);
+            logBuf.logPrintf("HardwareNFCConnection: TIMEOUT waiting for IDLE IRQ! IRQ=0x%08lX\n", irqStatus);
+            idleIrq = false;
             break;
         }
         delay(1);
     }
-    Serial.printf("HardwareNFCConnection: IDLE IRQ after %lums, IRQ=0x%08lX\n", millis() - start, irqStatus);
+    if (idleIrq) {
+        logBuf.logPrintf("HardwareNFCConnection: IDLE IRQ after %lums, IRQ=0x%08lX\n", millis() - start, irqStatus);
+    }
     nfc_->clearIRQStatus(0xffffffff);  // clear IDLE_IRQ and all pending flags before transceive
-    Serial.println("HardwareNFCConnection: Reset complete");
+    logBuf.logPrintf("HardwareNFCConnection: Reset complete\n");
 
     // Firmware version stored at EEPROM address; used for debugging and feature detection
     uint8_t firmwareVersion[2];
@@ -159,15 +188,15 @@ bool HardwareNFCConnection::begin() {
         fw_[0] = firmwareVersion[0];
         fw_[1] = firmwareVersion[1];
         pn5180Ready_ = true;
-        Serial.printf("HardwareNFCConnection: PN5180 firmware: %d.%d\n",
+        logBuf.logPrintf("HardwareNFCConnection: PN5180 firmware: %d.%d\n",
                       firmwareVersion[1], firmwareVersion[0]);
     } else {
-        Serial.println("HardwareNFCConnection: Failed to read PN5180 firmware version");
+        logBuf.logPrintf("HardwareNFCConnection: Failed to read PN5180 firmware version\n");
     }
 
     // Load RF config enables ISO15693 field; failure here is terminal
     if (!nfc_->setupRF()) {
-        Serial.println("HardwareNFCConnection: Failed to setup RF");
+        logBuf.logPrintf("HardwareNFCConnection: Failed to setup RF\n");
         return false;
     }
 
@@ -177,7 +206,7 @@ bool HardwareNFCConnection::begin() {
     hal_.is_present = nullptr;  // unused for ISO15693 tags
     hal_.user_ctx = this;
 
-    Serial.println("HardwareNFCConnection: Initialized successfully");
+    logBuf.logPrintf("HardwareNFCConnection: Initialized successfully\n");
     return true;
 }
 

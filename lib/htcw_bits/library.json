@@ -1,0 +1,22 @@
+{
+    "name": "htcw_bits",
+    "version": "1.0.17",
+    "description": "Provides advanced bit manipulation",
+    "keywords": ["bits","binary","data"],
+    "authors": {
+        "name":"honey the codewitch",
+        "homepage": "https://www.codeproject.com/Members/code-witch"
+    },
+    "license": "MIT",
+    "frameworks": "*",
+    "platforms": "*",
+    "build": {
+        "unflags": "-std=gnu++11",
+        "flags": "-std=gnu++14"
+    },
+    "repository":
+    {
+        "type": "git",
+        "url": "https://github.com/codewitch-honey-crisis/htcw_bits.git"
+    }
+}
