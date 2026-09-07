@@ -1876,7 +1876,10 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
             uint16_t endPage = ntagUserMemoryEnd(cur.variant);
             if (endPage > 0 && endPage < 67) {
-                sendError(400, "Tag too small for OpenTag3D v2.000 — needs NTAG215 or larger");
+                char msg[96];
+                snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
+                         ntagVariantName(cur.variant));
+                sendError(400, msg);
                 return;
             }
             if (endPage == 0) {
