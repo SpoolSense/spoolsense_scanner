@@ -4,6 +4,7 @@
 
 ### Added
 
+- **The MQTT `tag/state` payload labels its weight** — a new `weight_source` field says whether `remaining_g` is a real level (`"measured"`) or the spool's fixed nominal size (`"nominal"`, which never changes on the tag: OpenTag3D v2 without a measured weight, TigerTag, Bambu). Middleware and automations must not use a nominal value as a deduction baseline; older consumers can ignore the field. (#297)
 - **OpenTag3D v2.000 support — read, write, and weight deduction** — the spec's breaking revision (opentag3d.info) repacks the tag into a single 224-byte map, adds SKU, barcode, chamber temperature, and minimum nozzle diameter, doubles the serial number to 32 characters, and drops NTAG213 (NTAG215 is the new minimum). The scanner reads both v1 and v2 tags; the writer page writes v2 with the new fields; the reader page shows the tag's spec version. Existing v1 tags keep working, and deduction write-back preserves each tag's own version. (#297)
 
 ### Fixed

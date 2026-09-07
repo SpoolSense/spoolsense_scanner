@@ -728,6 +728,7 @@ void HomeAssistantManager::publishCurrentTagState() {
             snprintf(f.color, sizeof(f.color), "#%02X%02X%02X", tt.color_r, tt.color_g, tt.color_b);
             f.initial_weight_g = tt.weight_g;
             f.remaining_g = tt.weight_g;
+            f.weight_source = "nominal";  // TigerTag carries no consumed weight
         }
     } else if (spool.kind == TagKind::OpenTag3D) {
         opentag3d_t ot3d;
@@ -742,6 +743,8 @@ void HomeAssistantManager::publishCurrentTagState() {
                            ? ot3d.measured_filament_weight_g : ot3d.target_weight_g;
             f.initial_weight_g = weight;
             f.remaining_g = weight;
+            f.weight_source = (opentag3d_major(ot3d.tag_version) >= 2 &&
+                               ot3d.measured_filament_weight_g == 0) ? "nominal" : "measured";
         }
     } else if (spool.tag_data_valid) {
         // OpenPrintTag
@@ -768,6 +771,7 @@ void HomeAssistantManager::publishCurrentTagState() {
         opt_get_consumed_weight(&spool.tag_data, &consumed);
         f.remaining_g = f.initial_weight_g - consumed;
         if (f.remaining_g < 0) f.remaining_g = 0;
+        f.weight_source = "measured";  // OPT tracks consumed weight on-tag
         opt_get_gp_spoolman_id(&spool.tag_data, &f.spoolman_id);
     }
 
