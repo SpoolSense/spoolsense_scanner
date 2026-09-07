@@ -1874,11 +1874,16 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     if (opentag3d_major(ot3d.tag_version) >= 2) {
         CurrentSpoolState cur;
         if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
-            uint16_t endPage = ntagUserMemoryEnd(cur.variant);
+            uint16_t endPage = effectiveUserMemoryEnd(cur.variant, cur.cc_user_end);
             if (endPage > 0 && endPage < 67) {
                 char msg[96];
-                snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
-                         ntagVariantName(cur.variant));
+                if (cur.variant != NtagVariant::Unknown) {
+                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
+                             ntagVariantName(cur.variant));
+                } else {
+                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2.000 requires 504+ (NTAG215/216 class)",
+                             (unsigned)((endPage - 4) * 4));
+                }
                 sendError(400, msg);
                 return;
             }

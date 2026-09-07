@@ -400,7 +400,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                 uint8_t payload[OT3D_V2_MAP_SIZE];
                 SCAN_PHASE(22);
                 uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                                        ntagUserMemoryEnd(scan.variant));
+                                                        effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
                 if (payloadBytes >= OT3D_CORE_SIZE) {
                     opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
@@ -424,7 +424,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                     uint8_t payload[256];
                     SCAN_PHASE(23);
                     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                                            ntagUserMemoryEnd(scan.variant));
+                                                            effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
                     if (payloadBytes > 0 && parseOpenSpool(payload, payloadBytes, openSpoolData)) {
                         isOpenSpool = true;
                     }
@@ -446,6 +446,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         currentSpool.present = true;
         currentSpool.blank_tag_present = false;
         currentSpool.variant = scan.variant;
+        currentSpool.cc_user_end = scan.cc_user_end;
         memcpy(lastSeenUid, uid, uidLength);
         lastSeenUidLength = uidLength;
         lastSeenValid = true;
@@ -590,6 +591,7 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
             currentSpool.blank_tag_present = false;
             currentSpool.kind = TagKind::BambuTag;
             currentSpool.variant = NtagVariant::Unknown;
+            currentSpool.cc_user_end = 0;   // MIFARE Classic — no Type 2 CC
             currentSpool.tag_data_valid = readOk;
             lastBambuTagValid_ = readOk;
             if (readOk) lastBambuTag_ = bambuData;
@@ -676,6 +678,7 @@ void NFCManager::handleTagAbsent() {
     }
     currentSpool.present = false;
     currentSpool.blank_tag_present = false;
+    currentSpool.cc_user_end = 0;
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
@@ -1454,6 +1457,7 @@ TagScanResult NFCManager::classifyTag(const uint8_t* uid, uint8_t uid_length) {
     result.present = true;
     result.tag_data_valid = false;
     result.variant = NtagVariant::Unknown;
+    result.cc_user_end = 0;
     if (uid_length == 8) {
         result.protocol = TagProtocol::ISO15693;
         result.kind = TagKind::BlankTag;
@@ -1473,6 +1477,23 @@ TagScanResult NFCManager::classifyTag(const uint8_t* uid, uint8_t uid_length) {
                     ntagVariantName(result.variant), ntagUsablePages(result.variant));
                 LogBuffer::getInstance().logPrintf("%s (%d pages)\n",
                     ntagVariantName(result.variant), ntagUsablePages(result.variant));
+            }
+            // Unidentified chip (failed GET_VERSION or unmapped storage byte):
+            // the page-3 CC declares the data area honestly, manufacturer-
+            // independently. Trust it exactly — never pad past the die end.
+            if (result.variant == NtagVariant::Unknown) {
+                uint8_t ccBuf[4] = {0};
+                if (connection_->readISO14443Pages(3, 1, ccBuf, sizeof(ccBuf)) >= 4) {
+                    result.cc_user_end = ccUserMemoryEnd(ccBuf);
+                }
+                if (result.cc_user_end > 0) {
+                    Serial.printf("NFCManager: unknown NTAG variant — CC declares %u user pages\n",
+                                  (unsigned)(result.cc_user_end - 4));
+                    LogBuffer::getInstance().logPrintf("Unknown NTAG — CC declares %u user pages\n",
+                                  (unsigned)(result.cc_user_end - 4));
+                } else {
+                    Serial.println("NFCManager: unknown NTAG variant and no valid CC — conservative size limits apply");
+                }
             }
         }
     }
@@ -1912,11 +1933,11 @@ void NFCManager::forceRescan() {
 // Bounds against ntagUserMemoryEnd, not ntagUsablePages — the last pages of the
 // die are dynamic-lock/CFG/PWD, and payload bytes written there can leave the
 // tag password-protected with a password nobody knows. For an unidentified
-// variant we keep the historical page<64 ceiling; a mid-size write to a
-// misidentified small tag can still reach its config pages, same as before —
-// closing that fully means refusing all unknown-variant writes.
+// variant we fall back to the CC-declared size captured at classify time; the
+// historical page<64 ceiling now applies only when the CC is also absent or
+// invalid, so an honest clone gets its real capacity instead.
 bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType) {
-    uint16_t maxPages = ntagUserMemoryEnd(currentSpool.variant);
+    uint16_t maxPages = effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end);
     if (maxPages == 0) maxPages = 64;
     if (startPage + pageCount > maxPages) {
         Serial.printf("NFCManager: %s rejected — needs %d pages (start=%d), tag has %d (%s)\n",
@@ -2676,6 +2697,7 @@ if (blankStateCaptured) {
             }
             currentSpool.present = false;
             currentSpool.blank_tag_present = false;
+            currentSpool.cc_user_end = 0;
             lastSeenValid = false;
 
             // Clear suppression if tag removed
