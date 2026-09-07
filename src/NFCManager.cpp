@@ -678,7 +678,8 @@ void NFCManager::handleTagAbsent() {
     }
     currentSpool.present = false;
     currentSpool.blank_tag_present = false;
-    currentSpool.cc_user_end = 0;
+    currentSpool.variant = NtagVariant::Unknown;  // don't let the removed tag's identity
+    currentSpool.cc_user_end = 0;                 // answer size checks for the next one
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
@@ -842,6 +843,8 @@ bool NFCManager::readAndParseTag(uint8_t* uid, uint8_t uid_length) {
 
     currentSpool.present = true;
     currentSpool.tag_data_valid = true;
+    currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — no NTAG identity here
+    currentSpool.cc_user_end = 0;
 
     addToRecentSpoolsLocked();
 
@@ -1023,6 +1026,9 @@ void NFCManager::sendOpenPrintTagMessage(bool suppress_spoolman_sync) {
     }
 
     AppMessage msg;
+    memset(&msg, 0, sizeof(msg));  // every other SPOOL_DETECTED sender zeroes; an
+                                   // uninitialized weight_is_nominal here randomly
+                                   // suppressed the Spoolman weight sync
     msg.type = AppMessageType::SPOOL_DETECTED;
 
     // Copy spool ID
@@ -1152,6 +1158,8 @@ void NFCManager::sendBambuDetectedMessage() {
     msg.payload.spoolDetected.has_color = true;
 
     msg.payload.spoolDetected.kg_remaining = bt.weight_g / 1000.0f;
+    msg.payload.spoolDetected.weight_is_nominal = true;  // Bambu block 5 is the static
+                                                         // nominal size, not a level
     msg.payload.spoolDetected.initial_weight_g = bt.weight_g;
     msg.payload.spoolDetected.diameter = bt.diameter_mm;
     msg.payload.spoolDetected.min_print_temp = bt.hotend_min;
@@ -1235,6 +1243,7 @@ void NFCManager::sendTigerTagMessage(const TigerTagData& tt) {
 
     s.initial_weight_g = tt.weight_g;
     s.kg_remaining = tt.weight_g / 1000.0f;  // TigerTag has no consumed_weight, so remaining = initial
+    s.weight_is_nominal = true;              // never sync that nominal into Spoolman as remaining
 
     s.density = getDefaultDensity(s.material_type);
     s.diameter = tt.diameter_mm > 0 ? tt.diameter_mm : 1.75f;
@@ -1483,7 +1492,7 @@ TagScanResult NFCManager::classifyTag(const uint8_t* uid, uint8_t uid_length) {
             // independently. Trust it exactly — never pad past the die end.
             if (result.variant == NtagVariant::Unknown) {
                 uint8_t ccBuf[4] = {0};
-                if (connection_->readISO14443Pages(3, 1, ccBuf, sizeof(ccBuf)) >= 4) {
+                if (connection_->readISO14443Pages(3, 1, ccBuf, sizeof(ccBuf), true) >= 4) {  // keepSession — don't tear down the RF session the data read needs next
                     result.cc_user_end = ccUserMemoryEnd(ccBuf);
                 }
                 if (result.cc_user_end > 0) {
@@ -2676,6 +2685,8 @@ if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     currentSpool.tag_data_valid = false;
     currentSpool.blank_tag_present = true;
     currentSpool.kind = TagKind::BlankTag;
+    currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — a previous ISO14443 tag's
+    currentSpool.cc_user_end = 0;                 // identity must not leak into size gates
     memcpy(lastSeenUid, uid, uidLength);
     lastSeenUidLength = uidLength;
     lastSeenValid = true;

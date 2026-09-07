@@ -1474,6 +1474,8 @@ void SpoolmanManager::taskLoop() {
             }
 
             AppMessage msg;
+            memset(&msg, 0, sizeof(msg));  // write-update branch fills only a few fields;
+                                           // consumers read color_hex/temps/density from it
             msg.type = AppMessageType::SPOOLMAN_SYNCED;
             strncpy(msg.payload.spoolmanSynced.spool_id, req.spool_id,
                     sizeof(msg.payload.spoolmanSynced.spool_id) - 1);
@@ -1755,6 +1757,13 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
         return 0.0f;
     }
 
+    if (doc["remaining_weight"].isNull()) {
+        // Absent/null is NOT an empty spool — `| 0.0f` would read it as 0 and the
+        // 0 g shortcut below would claim success, silently discarding the usage.
+        Serial.printf("SpoolmanManager: spool %d has no remaining_weight — cannot deduct, keeping pending\n", spoolId);
+        xSemaphoreGive(httpMutex_);
+        return 0.0f;
+    }
     float currentRemaining = doc["remaining_weight"] | 0.0f;
     float deduction = (grams > currentRemaining) ? currentRemaining : grams;
     float newRemaining = currentRemaining - deduction;

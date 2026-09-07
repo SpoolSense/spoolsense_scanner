@@ -54,7 +54,10 @@ inline uint16_t ntagUserMemoryEnd(NtagVariant v) {
 inline uint16_t ccUserMemoryEnd(const uint8_t* ccPage) {
     if (ccPage == nullptr || ccPage[0] != 0xE1) return 0;
     uint16_t endPage = 4 + ((uint16_t)ccPage[2] * 8) / 4;
-    if (endPage < 12 || endPage > 231) return 0;  // below any real Type 2 chip, or past the largest die
+    if (endPage < 12 || endPage > ntagUserMemoryEnd(NtagVariant::NTAG216)) {
+        return 0;  // below any real Type 2 chip, or past the largest USER area —
+                   // a corrupt CC must not bless writes into 216-class config pages
+    }
     return endPage;
 }
 

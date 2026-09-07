@@ -1914,10 +1914,20 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.diameter_um = doc["diameter_um"] | (uint16_t)1750;
     ot3d.target_weight_g = doc["target_weight_g"] | (uint16_t)1000;
 
-    uint16_t printTemp = doc["print_temp_c"] | (uint16_t)0;
-    uint16_t bedTemp = doc["bed_temp_c"] | (uint16_t)0;
-    ot3d.print_temp_encoded = (uint8_t)(printTemp / 5);
-    ot3d.bed_temp_encoded = (uint8_t)(bedTemp / 5);
+    // All °C fields share one strict parse: numbers 0..1275 only. ArduinoJson's
+    // `| 0` default silently turns wrong-typed JSON into 0, and the old
+    // (uint8_t)(x / 5) casts wrapped anything past 1275 into a bogus value.
+    bool tempRangeError = false;
+    auto readTempEncoded = [&](const char* key) -> uint8_t {
+        JsonVariantConst v = doc[key];
+        if (v.isNull()) return 0;
+        if (!v.is<float>()) { tempRangeError = true; return 0; }
+        float c = v.as<float>();
+        if (c < 0.0f || c > 1275.0f) { tempRangeError = true; return 0; }
+        return (uint8_t)(((uint16_t)(c + 0.5f)) / 5);
+    };
+    ot3d.print_temp_encoded = readTempEncoded("print_temp_c");
+    ot3d.bed_temp_encoded = readTempEncoded("bed_temp_c");
 
     ot3d.density_ugcm3 = doc["density_ugcm3"] | (uint16_t)0;
     ot3d.transmission_distance = doc["transmission_distance"] | (uint16_t)0;
@@ -1927,12 +1937,15 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 
     if (doc["barcode"].is<const char*>()) {
         const char* bcStr = doc["barcode"] | "";
-        char* bcEnd = NULL;
-        ot3d.barcode = strtoull(bcStr, &bcEnd, 10);
-        if (bcStr[0] != '\0' && (bcEnd == NULL || *bcEnd != '\0')) {
-            sendError(400, "Barcode must be digits only");
-            return;
+        // Whole string must be digits — strtoull alone accepts leading
+        // whitespace and signs, and "-5" wraps in unsigned arithmetic.
+        for (const char* p = bcStr; *p; ++p) {
+            if (*p < '0' || *p > '9') {
+                sendError(400, "Barcode must be digits only");
+                return;
+            }
         }
+        ot3d.barcode = strtoull(bcStr, NULL, 10);
     } else {
         ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
     }
@@ -1941,12 +1954,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         return;
     }
 
-    uint16_t chamberTemp = doc["chamber_temp_c"] | (uint16_t)0;
-    if (chamberTemp > 1275) {  // encoded max is 255 * 5 — beyond that the cast wraps
-        sendError(400, "Chamber temperature exceeds 1275");
-        return;
-    }
-    ot3d.chamber_temp_encoded = (uint8_t)(chamberTemp / 5);
+    ot3d.chamber_temp_encoded = readTempEncoded("chamber_temp_c");
 
     ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;
 
@@ -1967,18 +1975,18 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
     ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
 
-    uint16_t maxDryTemp = doc["max_dry_temp_c"] | (uint16_t)0;
-    ot3d.max_dry_temp_encoded = (uint8_t)(maxDryTemp / 5);
+    ot3d.max_dry_temp_encoded = readTempEncoded("max_dry_temp_c");
     ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
 
-    uint16_t minPrint = doc["min_print_temp_c"] | (uint16_t)0;
-    uint16_t maxPrint = doc["max_print_temp_c"] | (uint16_t)0;
-    uint16_t minBed = doc["min_bed_temp_c"] | (uint16_t)0;
-    uint16_t maxBed = doc["max_bed_temp_c"] | (uint16_t)0;
-    ot3d.min_print_temp_encoded = (uint8_t)(minPrint / 5);
-    ot3d.max_print_temp_encoded = (uint8_t)(maxPrint / 5);
-    ot3d.min_bed_temp_encoded = (uint8_t)(minBed / 5);
-    ot3d.max_bed_temp_encoded = (uint8_t)(maxBed / 5);
+    ot3d.min_print_temp_encoded = readTempEncoded("min_print_temp_c");
+    ot3d.max_print_temp_encoded = readTempEncoded("max_print_temp_c");
+    ot3d.min_bed_temp_encoded = readTempEncoded("min_bed_temp_c");
+    ot3d.max_bed_temp_encoded = readTempEncoded("max_bed_temp_c");
+
+    if (tempRangeError) {
+        sendError(400, "Temperature fields must be numbers between 0 and 1275");
+        return;
+    }
 
     ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
     ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;

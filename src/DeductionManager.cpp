@@ -108,6 +108,19 @@ static float applyOpenPrintTag(const char* uid, float pending) {
 #endif
 }
 
+#ifndef NATIVE_TEST
+// Shared Spoolman-direct fallback. True = Spoolman accepted the deduction
+// (including 0 g on an already-empty spool) and the caller clears pending;
+// false = transport failure, keep it queued for retry.
+static bool trySpoolmanDeduct(const char* uid, float pending, float& deducted) {
+    deducted = 0.0f;
+    if (!SpoolmanManager::getInstance().isConfigured()) return false;
+    bool ok = false;
+    deducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending, &ok);
+    return ok;
+}
+#endif
+
 static float applyOpenTag3D(const char* uid, float pending) {
 #ifndef NATIVE_TEST
     opentag3d_t ot3d;
@@ -132,9 +145,8 @@ static float applyOpenTag3D(const char* uid, float pending) {
         Serial.printf("DeductionManager: OpenTag3D %s (v%u) — %s; tag left untouched\n",
                       uid, ot3d.tag_version, skipReason);
         if (SpoolmanManager::getInstance().isConfigured()) {
-            bool spOk = false;
-            float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending, &spOk);
-            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
+            float spDeducted = 0.0f;
+            if (trySpoolmanDeduct(uid, pending, spDeducted)) {
                 DeductionManager::getInstance().clearPending(uid);
                 return spDeducted;
             }
@@ -160,7 +172,9 @@ static float applyOpenTag3D(const char* uid, float pending) {
     // Subtract from the weight field the tag uses (round to avoid truncation loss)
     if (ot3d.measured_filament_weight_g > 0) {
         int newMeasured = (int)lroundf(ot3d.measured_filament_weight_g - deduction);
-        ot3d.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 0;
+        // Floor at 1 g: measured==0 reads as "never measured" (nominal) on the
+        // next scan, which would freeze the Spoolman weight sync for this tag.
+        ot3d.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 1;
     } else {
         int newTarget = (int)lroundf(ot3d.target_weight_g - deduction);
         ot3d.target_weight_g = (newTarget > 0) ? (uint16_t)newTarget : 0;
@@ -201,9 +215,8 @@ float DeductionManager::applyIfPending(const char* uid, TagKind kind) {
         default:
             // Tag can't accept weight writes — try Spoolman direct if configured
             if (SpoolmanManager::getInstance().isConfigured()) {
-                bool spOk = false;
-                float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending, &spOk);
-                if (spOk) {  // success includes a 0 g deduction on an already-empty spool
+                float spDeducted = 0.0f;
+                if (trySpoolmanDeduct(uid, pending, spDeducted)) {
                     clearPending(uid);
                     deducted = spDeducted;
                 }

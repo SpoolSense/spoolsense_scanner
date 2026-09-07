@@ -36,6 +36,10 @@ int main() {
     // chip); byte2 0xFF -> 2040 B / end 514 (past the largest die).
     const uint8_t ccZeroSize[4] = {0xE1, 0x10, 0x00, 0x00};
     const uint8_t ccHugeSize[4] = {0xE1, 0x10, 0xFF, 0x00};
+    // byte2 0x70 -> 896 B / end 228: past NTAG216's USER end (226) into the
+    // config-page window — a corrupt/dishonest CC must not bless writes there.
+    const uint8_t ccPastUserEnd[4] = {0xE1, 0x10, 0x70, 0x00};
+    CHECK(ccUserMemoryEnd(ccPastUserEnd) == 0, "byte2 0x70 rejected (past NTAG216 user end)");
     CHECK(ccUserMemoryEnd(ccZeroSize) == 0, "byte2 0 rejected (below plausibility)");
     CHECK(ccUserMemoryEnd(ccHugeSize) == 0, "byte2 0xFF rejected (past the largest die)");
 

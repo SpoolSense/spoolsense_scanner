@@ -952,14 +952,19 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             }
             // Smart tag lookup failed: tag has its own data, already displayed — no change needed
         } else {
-            // Write update failed: show error with remaining weight
+            // Write update failed: show error with remaining weight. Nominal-weight
+            // tags sync 0 g on purpose — showing "Updated: 0g" there would read as
+            // an empty spool, so skip the number.
             char line1[17];
-            snprintf(line1, sizeof(line1), "Updated: %.0fg",
-                     kgRemaining * 1000.0f);
+            if (kgRemaining > 0.0f) {
+                snprintf(line1, sizeof(line1), "Updated: %.0fg", kgRemaining * 1000.0f);
+            } else {
+                snprintf(line1, sizeof(line1), "Spool sync");
+            }
             display_->showText(line1, "Spoolman Error");
 
             // Schedule Type/Remain display after 5 seconds even on error
-            if (materialName[0] != '\0') {
+            if (materialName[0] != '\0' && kgRemaining > 0.0f) {
                 scheduleTypeRemainDisplay(materialName, kgRemaining);
             }
         }

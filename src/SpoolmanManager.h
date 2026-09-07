@@ -130,7 +130,6 @@ public:
     int findFilamentNoLock(int vendorId, const char* material, const char* colorHex6, const char* name);
 
     // Deduct weight directly in Spoolman for non-writable tags.
-    // Returns grams deducted, or 0 on failure (caller should retry later).
     // Returns grams actually deducted. `success` (optional) reports whether
     // Spoolman accepted the operation — a spool already at 0 g succeeds with a
     // 0 g deduction, which a bare 0.0f return cannot distinguish from failure.
