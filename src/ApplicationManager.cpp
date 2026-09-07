@@ -501,6 +501,20 @@ void ApplicationManager::handleSpoolDetected(const AppMessage& msg) {
         f.density = s.density;
         f.diameter_mm = s.diameter;
 
+        // Label the weight for consumers (middleware#119): nominal sizes must
+        // not be used as deduction baselines. Formats without an on-tag weight
+        // claim leave the field out entirely.
+        switch (spoolState.kind) {
+            case TagKind::OpenPrintTag:
+            case TagKind::OpenTag3D:
+            case TagKind::TigerTag:
+            case TagKind::BambuTag:
+                f.weight_source = s.weight_is_nominal ? "nominal" : "measured";
+                break;
+            default:
+                break;
+        }
+
 #ifndef NATIVE_TEST
         BambuTagData bambuData;
         if (spoolState.kind == TagKind::BambuTag && NFCManager::getInstance().getLastBambuTagData(bambuData)) {
