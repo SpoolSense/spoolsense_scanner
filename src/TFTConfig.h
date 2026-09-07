@@ -116,10 +116,12 @@ public:
             }
             // ILI9488 3.5" modules ship X-mirrored vs the ST7789 default and are
             // mounted landscape; rotation 5 = 90° + horizontal mirror-correct.
-            // ST7796 uses the ST7789 default (rotation 0, invert off): typical
-            // modules ship unmirrored and non-inverted; field confirmation pending
-            // (#301) — a tester adjusts from here if their module differs.
-            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5 : 0;
+            // ST7796 is the same 320x480 glass mounted landscape but typically
+            // unmirrored and non-inverted: rotation 1 = plain 90°, yielding the
+            // 480x320 surface the wide renderers expect. Field confirmation
+            // pending (#301) — a tester adjusts from here if their module differs.
+            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5
+                                : (driver == TFTDriver::ST7796) ? 1 : 0;
             cfg.dummy_read_pixel = 8;
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
@@ -235,10 +237,12 @@ public:
             }
             // ILI9488 3.5" modules ship X-mirrored vs the ST7789 default and are
             // mounted landscape; rotation 5 = 90° + horizontal mirror-correct.
-            // ST7796 uses the ST7789 default (rotation 0, invert off): typical
-            // modules ship unmirrored and non-inverted; field confirmation pending
-            // (#301) — a tester adjusts from here if their module differs.
-            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5 : 0;
+            // ST7796 is the same 320x480 glass mounted landscape but typically
+            // unmirrored and non-inverted: rotation 1 = plain 90°, yielding the
+            // 480x320 surface the wide renderers expect. Field confirmation
+            // pending (#301) — a tester adjusts from here if their module differs.
+            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5
+                                : (driver == TFTDriver::ST7796) ? 1 : 0;
             cfg.dummy_read_pixel = 8;
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
