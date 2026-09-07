@@ -1329,6 +1329,7 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d)) return;
 
     JsonObject obj = doc.createNestedObject("opentag3d");
+    obj["tag_version"] = ot3d.tag_version;
     obj["base_material"] = ot3d.base_material;
     if (ot3d.material_modifiers[0]) obj["modifiers"] = ot3d.material_modifiers;
     obj["manufacturer"] = ot3d.manufacturer;
@@ -1347,8 +1348,19 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     uint16_t bedTemp = (uint16_t)opentag3d_temp_c(ot3d.bed_temp_encoded);
     if (printTemp > 0) obj["print_temp"] = printTemp;
     if (bedTemp > 0) obj["bed_temp"] = bedTemp;
+    uint16_t chamberTemp = (uint16_t)opentag3d_temp_c(ot3d.chamber_temp_encoded);
+    // v2 always carries the field (0 = no chamber, and the writer prefill must
+    // be able to set 0); v1 has no chamber field, so omit it there.
+    if (chamberTemp > 0 || opentag3d_major(ot3d.tag_version) >= 2) obj["chamber_temp"] = chamberTemp;
 
     if (ot3d.has_extended) {
+        if (ot3d.sku[0]) obj["sku"] = ot3d.sku;
+        if (ot3d.barcode > 0) {
+            char bc[24];
+            snprintf(bc, sizeof(bc), "%llu", (unsigned long long)ot3d.barcode);
+            obj["barcode"] = bc;
+        }
+        if (ot3d.min_nozzle_diameter > 0) obj["min_nozzle_mm"] = ot3d.min_nozzle_diameter / 10.0f;
         if (ot3d.measured_filament_weight_g > 0) obj["measured_weight_g"] = ot3d.measured_filament_weight_g;
         if (ot3d.empty_spool_weight_g > 0) obj["empty_spool_g"] = ot3d.empty_spool_weight_g;
         if (ot3d.serial_number[0]) obj["serial_number"] = ot3d.serial_number;
@@ -1821,7 +1833,7 @@ void WebServerManager::handleApiWriteTigerTag() {
 void WebServerManager::handleApiWriteOpenTag3D() {
     Serial.println("WebServerManager: POST /api/write-opentag3d received");
 
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, _server.arg("plain"));
     if (err) {
         sendError(400, "Invalid JSON");
@@ -1838,6 +1850,49 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     memset(&ot3d, 0, sizeof(ot3d));
 
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
+
+    if (!opentag3d_can_encode(ot3d.tag_version)) {
+        sendError(400, "Unsupported tag_version — this firmware writes v1.000 and v2.000");
+        return;
+    }
+
+    // Never re-mint a newer-minor tag: the queued struct carries OUR version
+    // stamp, so the encoder's write-time guard cannot see the conflict — the
+    // tag on the reader is the only evidence. (The cache clears on removal.)
+    opentag3d_t onReader;
+    if (NFCManager::getInstance().getLastOpenTag3DData(onReader) &&
+        !opentag3d_can_encode(onReader.tag_version)) {
+        sendError(409, "Tag carries a newer OpenTag3D revision — rewriting would lose its data");
+        return;
+    }
+
+    // A v2 NDEF is 252 padded bytes = 63 pages starting at page 4, so user
+    // memory must reach page 67. Refuse up front when the tag on the reader is
+    // known too small or cannot be identified — otherwise the queue accepts it,
+    // the capacity check rejects it later on the NFC task, and the browser only
+    // sees a verify timeout.
+    if (opentag3d_major(ot3d.tag_version) >= 2) {
+        CurrentSpoolState cur;
+        if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
+            uint16_t endPage = effectiveUserMemoryEnd(cur.variant, cur.cc_user_end);
+            if (endPage > 0 && endPage < 67) {
+                char msg[96];
+                if (cur.variant != NtagVariant::Unknown) {
+                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
+                             ntagVariantName(cur.variant));
+                } else {
+                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2.000 requires 504+ (NTAG215/216 class)",
+                             (unsigned)((endPage - 4) * 4));
+                }
+                sendError(400, msg);
+                return;
+            }
+            if (endPage == 0) {
+                sendError(400, "Cannot verify tag size (unknown tag type) — remove and re-place the tag, then retry");
+                return;
+            }
+        }
+    }
 
     const char* baseMat = doc["base_material"] | "PLA";
     strncpy(ot3d.base_material, baseMat, sizeof(ot3d.base_material) - 1);
@@ -1859,48 +1914,96 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.diameter_um = doc["diameter_um"] | (uint16_t)1750;
     ot3d.target_weight_g = doc["target_weight_g"] | (uint16_t)1000;
 
-    uint16_t printTemp = doc["print_temp_c"] | (uint16_t)0;
-    uint16_t bedTemp = doc["bed_temp_c"] | (uint16_t)0;
-    ot3d.print_temp_encoded = (uint8_t)(printTemp / 5);
-    ot3d.bed_temp_encoded = (uint8_t)(bedTemp / 5);
+    // All °C fields share one strict parse: numbers 0..1275 only. ArduinoJson's
+    // `| 0` default silently turns wrong-typed JSON into 0, and the old
+    // (uint8_t)(x / 5) casts wrapped anything past 1275 into a bogus value.
+    bool tempRangeError = false;
+    auto readTempEncoded = [&](const char* key) -> uint8_t {
+        JsonVariantConst v = doc[key];
+        if (v.isNull()) return 0;
+        if (!v.is<float>()) { tempRangeError = true; return 0; }
+        float c = v.as<float>();
+        if (c < 0.0f || c > 1275.0f) { tempRangeError = true; return 0; }
+        return (uint8_t)(((uint16_t)(c + 0.5f)) / 5);
+    };
+    ot3d.print_temp_encoded = readTempEncoded("print_temp_c");
+    ot3d.bed_temp_encoded = readTempEncoded("bed_temp_c");
 
     ot3d.density_ugcm3 = doc["density_ugcm3"] | (uint16_t)0;
     ot3d.transmission_distance = doc["transmission_distance"] | (uint16_t)0;
 
-    if (doc.containsKey("serial_number") || doc.containsKey("min_print_temp_c")) {
-        ot3d.has_extended = 1;
+    const char* sku = doc["sku"] | "";
+    strncpy(ot3d.sku, sku, sizeof(ot3d.sku) - 1);
 
-        const char* serial = doc["serial_number"] | "";
-        strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
-
-        const char* url = doc["online_url"] | "";
-        strncpy(ot3d.online_url, url, sizeof(ot3d.online_url) - 1);
-
-        ot3d.manufacture_year = doc["manufacture_year"] | (uint16_t)0;
-        ot3d.manufacture_month = doc["manufacture_month"] | (uint8_t)0;
-        ot3d.manufacture_day = doc["manufacture_day"] | (uint8_t)0;
-
-        ot3d.empty_spool_weight_g = doc["empty_spool_weight_g"] | (uint16_t)0;
-        ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
-        ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
-
-        uint16_t maxDryTemp = doc["max_dry_temp_c"] | (uint16_t)0;
-        ot3d.max_dry_temp_encoded = (uint8_t)(maxDryTemp / 5);
-        ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
-
-        uint16_t minPrint = doc["min_print_temp_c"] | (uint16_t)0;
-        uint16_t maxPrint = doc["max_print_temp_c"] | (uint16_t)0;
-        uint16_t minBed = doc["min_bed_temp_c"] | (uint16_t)0;
-        uint16_t maxBed = doc["max_bed_temp_c"] | (uint16_t)0;
-        ot3d.min_print_temp_encoded = (uint8_t)(minPrint / 5);
-        ot3d.max_print_temp_encoded = (uint8_t)(maxPrint / 5);
-        ot3d.min_bed_temp_encoded = (uint8_t)(minBed / 5);
-        ot3d.max_bed_temp_encoded = (uint8_t)(maxBed / 5);
-
-        ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
-        ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
-        ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
+    if (doc["barcode"].is<const char*>()) {
+        const char* bcStr = doc["barcode"] | "";
+        // Whole string must be digits — strtoull alone accepts leading
+        // whitespace and signs, and "-5" wraps in unsigned arithmetic.
+        for (const char* p = bcStr; *p; ++p) {
+            if (*p < '0' || *p > '9') {
+                sendError(400, "Barcode must be digits only");
+                return;
+            }
+        }
+        ot3d.barcode = strtoull(bcStr, NULL, 10);
+    } else {
+        ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
     }
+    if (ot3d.barcode > 99999999999999ULL) {  // GTIN caps at 14 digits (also under the 6-byte field max)
+        sendError(400, "Barcode exceeds the 14-digit GTIN range");
+        return;
+    }
+
+    ot3d.chamber_temp_encoded = readTempEncoded("chamber_temp_c");
+
+    ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;
+
+    // Always parse these — the old two-key gate silently dropped any of them
+    // that arrived without serial_number/min_print_temp_c, and a v2 encode
+    // writes the full 224-byte map either way.
+    const char* serial = doc["serial_number"] | "";
+    strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
+
+    const char* url = doc["online_url"] | "";
+    strncpy(ot3d.online_url, url, sizeof(ot3d.online_url) - 1);
+
+    ot3d.manufacture_year = doc["manufacture_year"] | (uint16_t)0;
+    ot3d.manufacture_month = doc["manufacture_month"] | (uint8_t)0;
+    ot3d.manufacture_day = doc["manufacture_day"] | (uint8_t)0;
+
+    ot3d.empty_spool_weight_g = doc["empty_spool_weight_g"] | (uint16_t)0;
+    ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
+    ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
+
+    ot3d.max_dry_temp_encoded = readTempEncoded("max_dry_temp_c");
+    ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
+
+    ot3d.min_print_temp_encoded = readTempEncoded("min_print_temp_c");
+    ot3d.max_print_temp_encoded = readTempEncoded("max_print_temp_c");
+    ot3d.min_bed_temp_encoded = readTempEncoded("min_bed_temp_c");
+    ot3d.max_bed_temp_encoded = readTempEncoded("max_bed_temp_c");
+
+    if (tempRangeError) {
+        sendError(400, "Temperature fields must be numbers between 0 and 1275");
+        return;
+    }
+
+    ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
+    ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
+    ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
+
+    // has_extended only sizes v1 encodes (v2 always writes the full map).
+    // Derive it from the parsed data, not key probes — an explicit v1 post
+    // carrying only a URL or dry profile must still get the extended layout.
+    ot3d.has_extended = (opentag3d_major(ot3d.tag_version) >= 2) ||
+                        ot3d.serial_number[0] || ot3d.online_url[0] ||
+                        ot3d.manufacture_year || ot3d.empty_spool_weight_g ||
+                        ot3d.measured_filament_weight_g || ot3d.measured_filament_length_m ||
+                        ot3d.max_dry_temp_encoded || ot3d.dry_time_hours ||
+                        ot3d.min_print_temp_encoded || ot3d.max_print_temp_encoded ||
+                        ot3d.min_bed_temp_encoded || ot3d.max_bed_temp_encoded ||
+                        ot3d.min_volumetric_speed || ot3d.max_volumetric_speed ||
+                        ot3d.target_volumetric_speed;
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));

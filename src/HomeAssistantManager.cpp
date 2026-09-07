@@ -878,8 +878,9 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
             DeductionManager::getInstance().applyIfPending(deductSpool.spool_id, deductSpool.kind);
         } else if (SpoolmanManager::getInstance().isConfigured()) {
             // Tag not on scanner — try Spoolman direct (Bambu AMS use case)
-            float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(uidFromTopic, deductG);
-            if (spDeducted > 0.0f) {
+            bool spOk = false;
+            SpoolmanManager::getInstance().deductFromSpoolman(uidFromTopic, deductG, &spOk);
+            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
                 DeductionManager::getInstance().clearPending(uidFromTopic);
             }
         }
@@ -1004,8 +1005,9 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
         // Try Spoolman direct deduction (spool not on scanner)
         if (SpoolmanManager::getInstance().isConfigured()) {
-            float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(resolvedUid, deductG);
-            if (spDeducted > 0.0f) {
+            bool spOk = false;
+            SpoolmanManager::getInstance().deductFromSpoolman(resolvedUid, deductG, &spOk);
+            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
                 DeductionManager::getInstance().clearPending(resolvedUid);
             }
         }

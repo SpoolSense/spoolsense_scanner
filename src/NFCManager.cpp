@@ -1,4 +1,5 @@
 #include "NFCManager.h"
+#include "opentag3d_v2_map.h"
 #include <esp_system.h>
 #include "ConversionUtils.h"
 #include "WriteUidGuard.h"
@@ -336,15 +337,17 @@ uint16_t NFCManager::readNdefPayload(const NdefRecord& rec, const uint8_t* pageD
     // Extended read — payload spans beyond the initial 40-byte read
     uint8_t startPage = 4 + (rec.payloadOffset / 4);
     uint16_t pagesNeeded = (uint16_t)((rec.payloadLen + 3) / 4) + 1;
-    if (pagesNeeded > 50) pagesNeeded = 50;
+    if (pagesNeeded > 64) pagesNeeded = 64;  /* extBuf holds 256 B = 64 pages */
     // Never request past the tag's last usable page: NTAG READ rolls over to
     // page 0 beyond the end, which would silently corrupt the tail of an
     // over-asked payload (garbage payloadLen on a malformed tag)
-    if (maxPages > 0) {
-        if (startPage >= maxPages) return 0;
-        if ((uint16_t)startPage + pagesNeeded > maxPages) {
-            pagesNeeded = maxPages - startPage;
-        }
+    if (maxPages == 0) maxPages = 68;  // unknown variant: a v2 payload spans pages 4..66,
+                                       // so 64 (the historical ceiling) truncated every v2
+                                       // read after a failed GET_VERSION; 68 covers v2 and
+                                       // extBuf still bounds one read at 64 pages
+    if (startPage >= maxPages) return 0;
+    if ((uint16_t)startPage + pagesNeeded > maxPages) {
+        pagesNeeded = maxPages - startPage;
     }
 
     uint8_t extBuf[256] = {0};
@@ -394,17 +397,19 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         if (rec.found) {
             const char* ot3dMime = OT3D_MIME_TYPE;
             if (rec.mimeLen == strlen(ot3dMime) && memcmp(rec.mimeType, ot3dMime, rec.mimeLen) == 0) {
-                uint8_t payload[OT3D_EXTENDED_MIN];
+                uint8_t payload[OT3D_V2_MAP_SIZE];
                 SCAN_PHASE(22);
                 uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                                        ntagUserMemoryEnd(scan.variant));
+                                                        effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
                 if (payloadBytes >= OT3D_CORE_SIZE) {
                     opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
                         if (res == OT3D_VERSION_WARNING) {
+                            uint16_t known = (opentag3d_major(ot3dData.tag_version) >= 2)
+                                             ? OT3D_SUPPORTED_V2 : OT3D_SUPPORTED_V1;
                             Serial.printf("NFCManager: OpenTag3D tag version %u ahead of supported %u — parsing anyway\n",
-                                          ot3dData.tag_version, OT3D_SUPPORTED_VERSION);
+                                          ot3dData.tag_version, known);
                         }
                     } else if (res == OT3D_VERSION_ERROR) {
                         Serial.printf("NFCManager: OpenTag3D major version too new (%u) — cannot parse\n",
@@ -419,7 +424,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                     uint8_t payload[256];
                     SCAN_PHASE(23);
                     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                                            ntagUserMemoryEnd(scan.variant));
+                                                            effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
                     if (payloadBytes > 0 && parseOpenSpool(payload, payloadBytes, openSpoolData)) {
                         isOpenSpool = true;
                     }
@@ -441,6 +446,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         currentSpool.present = true;
         currentSpool.blank_tag_present = false;
         currentSpool.variant = scan.variant;
+        currentSpool.cc_user_end = scan.cc_user_end;
         memcpy(lastSeenUid, uid, uidLength);
         lastSeenUidLength = uidLength;
         lastSeenValid = true;
@@ -585,6 +591,7 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
             currentSpool.blank_tag_present = false;
             currentSpool.kind = TagKind::BambuTag;
             currentSpool.variant = NtagVariant::Unknown;
+            currentSpool.cc_user_end = 0;   // MIFARE Classic — no Type 2 CC
             currentSpool.tag_data_valid = readOk;
             lastBambuTagValid_ = readOk;
             if (readOk) lastBambuTag_ = bambuData;
@@ -671,6 +678,8 @@ void NFCManager::handleTagAbsent() {
     }
     currentSpool.present = false;
     currentSpool.blank_tag_present = false;
+    currentSpool.variant = NtagVariant::Unknown;  // don't let the removed tag's identity
+    currentSpool.cc_user_end = 0;                 // answer size checks for the next one
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
@@ -834,6 +843,8 @@ bool NFCManager::readAndParseTag(uint8_t* uid, uint8_t uid_length) {
 
     currentSpool.present = true;
     currentSpool.tag_data_valid = true;
+    currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — no NTAG identity here
+    currentSpool.cc_user_end = 0;
 
     addToRecentSpoolsLocked();
 
@@ -1015,6 +1026,9 @@ void NFCManager::sendOpenPrintTagMessage(bool suppress_spoolman_sync) {
     }
 
     AppMessage msg;
+    memset(&msg, 0, sizeof(msg));  // every other SPOOL_DETECTED sender zeroes; an
+                                   // uninitialized weight_is_nominal here randomly
+                                   // suppressed the Spoolman weight sync
     msg.type = AppMessageType::SPOOL_DETECTED;
 
     // Copy spool ID
@@ -1144,6 +1158,8 @@ void NFCManager::sendBambuDetectedMessage() {
     msg.payload.spoolDetected.has_color = true;
 
     msg.payload.spoolDetected.kg_remaining = bt.weight_g / 1000.0f;
+    msg.payload.spoolDetected.weight_is_nominal = true;  // Bambu block 5 is the static
+                                                         // nominal size, not a level
     msg.payload.spoolDetected.initial_weight_g = bt.weight_g;
     msg.payload.spoolDetected.diameter = bt.diameter_mm;
     msg.payload.spoolDetected.min_print_temp = bt.hotend_min;
@@ -1227,6 +1243,7 @@ void NFCManager::sendTigerTagMessage(const TigerTagData& tt) {
 
     s.initial_weight_g = tt.weight_g;
     s.kg_remaining = tt.weight_g / 1000.0f;  // TigerTag has no consumed_weight, so remaining = initial
+    s.weight_is_nominal = true;              // never sync that nominal into Spoolman as remaining
 
     s.density = getDefaultDensity(s.material_type);
     s.diameter = tt.diameter_mm > 0 ? tt.diameter_mm : 1.75f;
@@ -1318,6 +1335,11 @@ void NFCManager::sendOpenTag3DMessage(const opentag3d_t& ot3d) {
     } else {
         s.initial_weight_g = ot3d.target_weight_g;
         s.kg_remaining = ot3d.target_weight_g / 1000.0f;
+        // v2 defines this field as the spool's NOMINAL size, not a remaining
+        // counter. Flag it so the Spoolman sync treats the tag as weightless —
+        // otherwise the next scan's sync PATCHes the nominal back and undoes
+        // the Spoolman-side deduction fallback.
+        s.weight_is_nominal = (opentag3d_major(ot3d.tag_version) >= 2);
     }
 
     // Density from tag if non-zero, else fallback
@@ -1444,6 +1466,7 @@ TagScanResult NFCManager::classifyTag(const uint8_t* uid, uint8_t uid_length) {
     result.present = true;
     result.tag_data_valid = false;
     result.variant = NtagVariant::Unknown;
+    result.cc_user_end = 0;
     if (uid_length == 8) {
         result.protocol = TagProtocol::ISO15693;
         result.kind = TagKind::BlankTag;
@@ -1463,6 +1486,23 @@ TagScanResult NFCManager::classifyTag(const uint8_t* uid, uint8_t uid_length) {
                     ntagVariantName(result.variant), ntagUsablePages(result.variant));
                 LogBuffer::getInstance().logPrintf("%s (%d pages)\n",
                     ntagVariantName(result.variant), ntagUsablePages(result.variant));
+            }
+            // Unidentified chip (failed GET_VERSION or unmapped storage byte):
+            // the page-3 CC declares the data area honestly, manufacturer-
+            // independently. Trust it exactly — never pad past the die end.
+            if (result.variant == NtagVariant::Unknown) {
+                uint8_t ccBuf[4] = {0};
+                if (connection_->readISO14443Pages(3, 1, ccBuf, sizeof(ccBuf), true) >= 4) {  // keepSession — don't tear down the RF session the data read needs next
+                    result.cc_user_end = ccUserMemoryEnd(ccBuf);
+                }
+                if (result.cc_user_end > 0) {
+                    Serial.printf("NFCManager: unknown NTAG variant — CC declares %u user pages\n",
+                                  (unsigned)(result.cc_user_end - 4));
+                    LogBuffer::getInstance().logPrintf("Unknown NTAG — CC declares %u user pages\n",
+                                  (unsigned)(result.cc_user_end - 4));
+                } else {
+                    Serial.println("NFCManager: unknown NTAG variant and no valid CC — conservative size limits apply");
+                }
             }
         }
     }
@@ -1898,13 +1938,21 @@ void NFCManager::forceRescan() {
 
 // ── Per-format write functions ──────────────────────────────
 
-// Reject writes that exceed the tag's page capacity (requires prior GET_VERSION)
+// Reject writes that exceed the tag's USER memory (requires prior GET_VERSION).
+// Bounds against ntagUserMemoryEnd, not ntagUsablePages — the last pages of the
+// die are dynamic-lock/CFG/PWD, and payload bytes written there can leave the
+// tag password-protected with a password nobody knows. For an unidentified
+// variant we fall back to the CC-declared size captured at classify time; the
+// historical page<64 ceiling now applies only when the CC is also absent or
+// invalid, so an honest clone gets its real capacity instead.
 bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType) {
-    uint16_t maxPages = ntagUsablePages(currentSpool.variant);
-    if (maxPages == 0) return true;  // unknown variant — skip check
+    uint16_t maxPages = effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end);
+    if (maxPages == 0) maxPages = 64;
     if (startPage + pageCount > maxPages) {
         Serial.printf("NFCManager: %s rejected — needs %d pages (start=%d), tag has %d (%s)\n",
             writeType, pageCount, startPage, maxPages, ntagVariantName(currentSpool.variant));
+        LogBuffer::getInstance().logPrintf("%s rejected: needs %d pages, tag has %d (%s)\n",
+            writeType, pageCount, maxPages, ntagVariantName(currentSpool.variant));
         return false;
     }
     return true;
@@ -2060,8 +2108,9 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
     rawWritePending_ = false;
 
-    size_t encodeSize = ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE;
-    uint8_t payloadBuf[OT3D_EXTENDED_MIN];
+    size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
+                    : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
+    uint8_t payloadBuf[OT3D_V2_MAP_SIZE];
     int payloadLen = opentag3d_encode(&ot3d, payloadBuf, encodeSize);
     if (payloadLen <= 0) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - encode failed");
@@ -2636,6 +2685,8 @@ if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     currentSpool.tag_data_valid = false;
     currentSpool.blank_tag_present = true;
     currentSpool.kind = TagKind::BlankTag;
+    currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — a previous ISO14443 tag's
+    currentSpool.cc_user_end = 0;                 // identity must not leak into size gates
     memcpy(lastSeenUid, uid, uidLength);
     lastSeenUidLength = uidLength;
     lastSeenValid = true;
@@ -2657,6 +2708,7 @@ if (blankStateCaptured) {
             }
             currentSpool.present = false;
             currentSpool.blank_tag_present = false;
+            currentSpool.cc_user_end = 0;
             lastSeenValid = false;
 
             // Clear suppression if tag removed
