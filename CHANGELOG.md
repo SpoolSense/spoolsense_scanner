@@ -1,12 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [1.11.0] - 2026-09-08
 
 ### Added
 
 - **ST7796 (320×480) joins the selectable TFT drivers** — same geometry as the ILI9488, so the dashboard centers on it with the identical layout and the wide-landscape screens apply. Orientation and inversion defaults follow typical ST7796 modules (unmirrored, non-inverted) rather than the ILI9488's mirror-corrected setup; field confirmation pending — a tester whose module differs adjusts from those defaults. (#301)
 - **The MQTT `tag/state` payload labels its weight** — a new `weight_source` field says whether `remaining_g` is a real level (`"measured"`) or the spool's fixed nominal size (`"nominal"`, which never changes on the tag: OpenTag3D v2 without a measured weight, TigerTag, Bambu). Middleware and automations must not use a nominal value as a deduction baseline; older consumers can ignore the field. (#297)
-- **OpenTag3D v2.000 support — read, write, and weight deduction** — the spec's breaking revision (opentag3d.info) repacks the tag into a single 224-byte map, adds SKU, barcode, chamber temperature, and minimum nozzle diameter, doubles the serial number to 32 characters, and drops NTAG213 (NTAG215 is the new minimum). The scanner reads both v1 and v2 tags; the writer page writes v2 with the new fields; the reader page shows the tag's spec version. Existing v1 tags keep working, and deduction write-back preserves each tag's own version. (#297)
+- **OpenTag3D v2.0 support — read, write, and weight deduction** — the spec's breaking revision (opentag3d.info) repacks the tag into a single 224-byte map, adds SKU, barcode, chamber temperature, and minimum nozzle diameter, doubles the serial number to 32 characters, and drops NTAG213 (NTAG215 is the new minimum). The scanner reads both v1 and v2 tags; the writer page writes v2 with the new fields; the reader page shows the tag's spec version. Existing v1 tags keep working, and deduction write-back preserves each tag's own version. (#297)
+- **Unbranded and clone NFC tags are now sized correctly** — tags that don't identify themselves over GET_VERSION (common non-NXP NTAG215/216 clones) are measured from their on-tag Capability Container instead of a flat fallback, so a genuine full-size clone can hold an OpenTag3D v2 tag and read back correctly, while a tag too small to fit one is refused with a clear message. (#297)
 
 ### Fixed
 
