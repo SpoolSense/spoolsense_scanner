@@ -36,7 +36,7 @@ struct ConfigUpdate {
     uint8_t led_enabled;
     uint8_t keypad_enabled;
     uint8_t tft_enabled;
-    char tft_driver[8];   // "st7789" or "gc9a01"
+    char tft_driver[8];   // "st7789", "gc9a01", "ili9341", "ili9488", or "st7796"
     // Klipper / Moonraker
     char moonraker_url[128];
     // PrusaLink integration

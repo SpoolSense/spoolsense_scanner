@@ -5,16 +5,20 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -DNATIVE_TEST -I../../src -I../../include -I
 CFLAGS = -std=c11 -DNATIVE_TEST -I../../lib/openprinttag
 
 OPT_OBJS = openprinttag_lib.o cbor_native.o
+OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard
+all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_opentag3d_runner
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 cbor_native.o: ../../lib/openprinttag/cbor_native.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v2_map.h
+	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
 
 test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h $(OPT_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ test_printer_manager.cpp native_stubs.cpp $(OPT_OBJS)
@@ -37,7 +41,13 @@ test_bambutag_parser: test_bambutag_parser.cpp ../../lib/bambutag/BambuTagParser
 test_write_uid_guard: test_write_uid_guard.cpp ../../src/WriteUidGuard.h
 	$(CXX) $(CXXFLAGS) -o $@ test_write_uid_guard.cpp
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard
+test_cc_sizing: test_cc_sizing.cpp ../../src/NFCTypes.h
+	$(CXX) $(CXXFLAGS) -o $@ test_cc_sizing.cpp
+
+test_opentag3d_runner: test_opentag3d_runner.c $(OT3D_OBJS)
+	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_runner.c $(OT3D_OBJS)
+
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_opentag3d_runner
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -60,8 +70,14 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo "=== Running write UID guard tests ==="
 	@./test_write_uid_guard
 	@echo ""
+	@echo "=== Running CC sizing tests ==="
+	@./test_cc_sizing
+	@echo ""
+	@echo "=== Running OpenTag3D parser tests ==="
+	@./test_opentag3d_runner
+	@echo ""
 
 clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
-	      test_write_uid_guard *.o
+	      test_write_uid_guard test_cc_sizing test_opentag3d_runner *.o

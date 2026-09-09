@@ -46,6 +46,28 @@ inline uint16_t ntagUserMemoryEnd(NtagVariant v) {
     }
 }
 
+// NFC Forum Type 2 Capability Container (page 3): byte0 magic 0xE1,
+// byte2 = data-area size / 8. Returns the EXCLUSIVE end page of user memory
+// (4 + bytes/4), or 0 when the CC is absent or implausible. The declared size
+// is trusted exactly — never floored — because clone chips declare honestly
+// and padding past the die end aborts the whole read/write.
+inline uint16_t ccUserMemoryEnd(const uint8_t* ccPage) {
+    if (ccPage == nullptr || ccPage[0] != 0xE1) return 0;
+    uint16_t endPage = 4 + ((uint16_t)ccPage[2] * 8) / 4;
+    if (endPage < 12 || endPage > ntagUserMemoryEnd(NtagVariant::NTAG216)) {
+        return 0;  // below any real Type 2 chip, or past the largest USER area —
+                   // a corrupt CC must not bless writes into 216-class config pages
+    }
+    return endPage;
+}
+
+// Effective user-memory end: identified variant wins; otherwise the CC-declared
+// size captured at classify time; 0 when neither is known.
+inline uint16_t effectiveUserMemoryEnd(NtagVariant v, uint16_t ccEnd) {
+    uint16_t e = ntagUserMemoryEnd(v);
+    return e ? e : ccEnd;
+}
+
 inline const char* ntagVariantName(NtagVariant v) {
     switch (v) {
         case NtagVariant::NTAG213:          return "NTAG213";
@@ -72,6 +94,7 @@ struct TagScanResult {
     TagProtocol protocol;
     TagKind kind;
     NtagVariant variant;
+    uint16_t cc_user_end;  // CC-declared user-memory end page; 0 unless variant was Unknown and page 3 held a valid CC
     char uid_hex[17];
     bool present;
     bool tag_data_valid;
@@ -82,6 +105,7 @@ struct CurrentSpoolState {
     bool blank_tag_present;
     TagKind kind;
     NtagVariant variant;
+    uint16_t cc_user_end;  // CC-declared user-memory end page; 0 unless variant was Unknown and page 3 held a valid CC
     char spool_id[17];
     uint8_t uid[8];              // ISO15693 uses 8-byte UID
     uint8_t uid_length;

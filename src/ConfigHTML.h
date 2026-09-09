@@ -290,6 +290,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                   <option value="gc9a01">GC9A01 (round)</option>
                   <option value="ili9341">ILI9341 (240&times;320)</option>
                   <option value="ili9488">ILI9488 (320&times;480)</option>
+                  <option value="st7796">ST7796 (320&times;480)</option>
                 </select>
               </div>
             </div>

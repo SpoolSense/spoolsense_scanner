@@ -9,7 +9,7 @@
 #include <WiFi.h>
 #include <Arduino.h>
 
-// TFT display controller (ST7789/GC9A01 240x240, ILI9341/ILI9488). All screens
+// TFT display controller (ST7789/GC9A01 240x240, ILI9341/ILI9488/ST7796). All screens
 // render through sprites for flicker-free updates: PSRAM boards hold a
 // persistent 16-bit full framebuffer, no-PSRAM boards draw each frame through
 // a transient 16-bit strip band (see render240Frame / renderLandscapeFrame).
@@ -74,7 +74,7 @@ void TFTManager::begin() {
 #endif
     delay(100);  // panel initialization delay
     _tft.setRotation(0);
-    // Panel geometry: wide panels (ILI9488 480x320) center the 240x240 sprite;
+    // Panel geometry: wide panels (ILI9488/ST7796 480x320) center the 240x240 sprite;
     // fillScreen below now clears the whole panel so no RAM-noise border shows.
     _wide = (_tft.width() > 240 || _tft.height() > 240);
     _blitOx = _wide ? (_tft.width()  - 240) / 2 : 0;
@@ -298,26 +298,26 @@ void TFTManager::processQueue() {
             bool rendered = true;
             switch (msg.state) {
                 case TFTState::Boot:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape("SpoolSense", msg.statusText, COLOR_ACCENT);
                     else
                         rendered = renderBoot(msg.statusText);
                     break;
                 case TFTState::WifiConnecting:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape(msg.statusText, msg.statusText2[0] ? msg.statusText2 : nullptr, COLOR_TEXT);
                     else
                         rendered = renderStatus(msg.statusText, msg.statusText2[0] ? msg.statusText2 : nullptr);
                     break;
                 case TFTState::Ready:
-                    if (_driver == TFTDriver::ILI9488) {
+                    if (tftIs480Wide(_driver)) {
                         rendered = renderReadyLandscape();
                     } else {
                         rendered = renderReady();
                     }
                     break;
                 case TFTState::SpoolScanned:
-                    if (_driver == TFTDriver::ILI9488) {
+                    if (tftIs480Wide(_driver)) {
                         rendered = renderSpoolScannedLandscape(msg.spool);
                     } else {
                         rendered = renderSpoolScanned(msg.spool);
@@ -336,13 +336,13 @@ void TFTManager::processQueue() {
                     }
                     break;
                 case TFTState::Writing:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape("Writing...", msg.statusText, COLOR_TEXT);
                     else
                         rendered = renderStatus("Writing...", msg.statusText);
                     break;
                 case TFTState::WriteResult:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape(msg.writeSuccess ? "Success" : "Write Failed",
                                                        msg.statusText,
                                                        msg.writeSuccess ? COLOR_BAR_FG : COLOR_BAR_LOW);
@@ -350,13 +350,13 @@ void TFTManager::processQueue() {
                         rendered = renderWriteResult(msg.writeSuccess, msg.statusText);
                     break;
                 case TFTState::KeypadEntry:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape("Tool", msg.statusText, COLOR_ACCENT);
                     else
                         rendered = renderKeypadEntry(msg.statusText);
                     break;
                 case TFTState::Error:
-                    if (_driver == TFTDriver::ILI9488)
+                    if (tftIs480Wide(_driver))
                         rendered = renderTextLandscape("Error", msg.statusText, COLOR_BAR_LOW);
                     else
                         rendered = renderStatus("Error", msg.statusText);
