@@ -8,7 +8,7 @@
 // C5/C6 have one general-purpose SPI bus, reserved for NFC. Keeping a tiny
 // compile-time stub lets shared application code remain board-agnostic while
 // the build omits LovyanGFX and all TFT implementation objects.
-enum class TFTDriver : uint8_t { ST7789, GC9A01, ILI9341, ILI9488 };
+enum class TFTDriver : uint8_t { ST7789, GC9A01, ILI9341, ILI9488, ST7796 };
 
 class TFTManager : public DisplayI {
 public:

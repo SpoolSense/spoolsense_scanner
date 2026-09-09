@@ -501,6 +501,20 @@ void ApplicationManager::handleSpoolDetected(const AppMessage& msg) {
         f.density = s.density;
         f.diameter_mm = s.diameter;
 
+        // Label the weight for consumers (middleware#119): nominal sizes must
+        // not be used as deduction baselines. Formats without an on-tag weight
+        // claim leave the field out entirely.
+        switch (spoolState.kind) {
+            case TagKind::OpenPrintTag:
+            case TagKind::OpenTag3D:
+            case TagKind::TigerTag:
+            case TagKind::BambuTag:
+                f.weight_source = s.weight_is_nominal ? "nominal" : "measured";
+                break;
+            default:
+                break;
+        }
+
 #ifndef NATIVE_TEST
         BambuTagData bambuData;
         if (spoolState.kind == TagKind::BambuTag && NFCManager::getInstance().getLastBambuTagData(bambuData)) {
@@ -952,14 +966,19 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             }
             // Smart tag lookup failed: tag has its own data, already displayed — no change needed
         } else {
-            // Write update failed: show error with remaining weight
+            // Write update failed: show error with remaining weight. Nominal-weight
+            // tags sync 0 g on purpose — showing "Updated: 0g" there would read as
+            // an empty spool, so skip the number.
             char line1[17];
-            snprintf(line1, sizeof(line1), "Updated: %.0fg",
-                     kgRemaining * 1000.0f);
+            if (kgRemaining > 0.0f) {
+                snprintf(line1, sizeof(line1), "Updated: %.0fg", kgRemaining * 1000.0f);
+            } else {
+                snprintf(line1, sizeof(line1), "Spool sync");
+            }
             display_->showText(line1, "Spoolman Error");
 
             // Schedule Type/Remain display after 5 seconds even on error
-            if (materialName[0] != '\0') {
+            if (materialName[0] != '\0' && kgRemaining > 0.0f) {
                 scheduleTypeRemainDisplay(materialName, kgRemaining);
             }
         }
@@ -1171,7 +1190,9 @@ void ApplicationManager::enqueueSpoolmanSync(const SpoolDetectedPayload& spool) 
     req.material_type = spool.material_type;
     strncpy(req.manufacturer, spool.manufacturer, sizeof(req.manufacturer) - 1);
     memcpy(req.color, spool.primary_color, 4);
-    req.remaining_weight_g = spool.kg_remaining * 1000.0f;
+    // A nominal-only weight rides the existing weightless-tag path: 0 means
+    // "no remaining-weight data", and updateSpool never PATCHes remaining=0.
+    req.remaining_weight_g = spool.weight_is_nominal ? 0.0f : spool.kg_remaining * 1000.0f;
     req.initial_weight_g = spool.initial_weight_g;
 
     // Use tag density if available; fallback to material defaults if missing

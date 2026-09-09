@@ -186,21 +186,25 @@ uint16_t HardwareNFCConnectionPN532::readISO14443Pages(
     uint16_t totalBytes = (uint16_t)pageCount * 4;
     if (totalBytes > bufferSize) return 0;
 
-    // The NTAG READ command behind mifareultralight_ReadPage always returns
+    // The NTAG READ command behind ntag2xx_ReadPage always returns
     // 16 bytes (4 pages); the library keeps 4 and leaves the whole response in
     // its file-scope packet buffer (frame: [7]=status, [8..23]=data), which
     // this file already scrapes for ATQA/SAK. Harvesting all 16 bytes per
     // round-trip cuts radio exchanges 4x — a 10-page classify read costs 3
     // exchanges instead of 10, a 50-page NDEF read 13 instead of 50 (#242).
+    // Uses ntag2xx_ReadPage instead of mifareultralight_ReadPage: the old
+    // method refuses pages >= 64, too small for a v2 OpenTag3D payload
+    // (pages 4..66). Both send the identical radio command and fill the same
+    // packet buffer, so the harvest below is unchanged.
     uint16_t bytesRead = 0;
     for (uint16_t i = 0; i < pageCount; i += 4) {
         uint8_t page = startPage + (uint8_t)i;
         uint8_t pageBuf[4];
 
         // Per-chunk retry: tag may lose activation on RF noise; reactivate and retry once
-        if (!pn532_->mifareultralight_ReadPage(page, pageBuf)) {
+        if (!pn532_->ntag2xx_ReadPage(page, pageBuf)) {
             if (!reactivateTag()) return 0;  // reactivateTag also verifies tag hasn't changed
-            if (!pn532_->mifareultralight_ReadPage(page, pageBuf)) {
+            if (!pn532_->ntag2xx_ReadPage(page, pageBuf)) {
                 return 0;  // permanent failure after retry; caller can retry entire sequence
             }
         }
@@ -233,7 +237,7 @@ bool HardwareNFCConnectionPN532::writeISO14443Pages(
         // Retry up to 3 attempts per page: matches PN5180 reliability; reactivate before each retry
         bool written = false;
         for (int attempt = 0; attempt < 3; attempt++) {
-            if (pn532_->mifareultralight_WritePage(page, const_cast<uint8_t*>(pageData))) {
+            if (pn532_->ntag2xx_WritePage(page, const_cast<uint8_t*>(pageData))) {
                 written = true;
                 break;
             }

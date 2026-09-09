@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.11.0] - 2026-09-08
+
+### Added
+
+- **ST7796 (320×480) joins the selectable TFT drivers** — same geometry as the ILI9488, so the dashboard centers on it with the identical layout and the wide-landscape screens apply. Orientation and inversion defaults follow typical ST7796 modules (unmirrored, non-inverted) rather than the ILI9488's mirror-corrected setup; field confirmation pending — a tester whose module differs adjusts from those defaults. (#301)
+- **The MQTT `tag/state` payload labels its weight** — a new `weight_source` field says whether `remaining_g` is a real level (`"measured"`) or the spool's fixed nominal size (`"nominal"`, which never changes on the tag: OpenTag3D v2 without a measured weight, TigerTag, Bambu). Middleware and automations must not use a nominal value as a deduction baseline; older consumers can ignore the field. (#297)
+- **OpenTag3D v2.0 support — read, write, and weight deduction** — the spec's breaking revision (opentag3d.info) repacks the tag into a single 224-byte map, adds SKU, barcode, chamber temperature, and minimum nozzle diameter, doubles the serial number to 32 characters, and drops NTAG213 (NTAG215 is the new minimum). The scanner reads both v1 and v2 tags; the writer page writes v2 with the new fields; the reader page shows the tag's spec version. Existing v1 tags keep working, and deduction write-back preserves each tag's own version. (#297)
+- **Unbranded and clone NFC tags are now sized correctly** — tags that don't identify themselves over GET_VERSION (common non-NXP NTAG215/216 clones) are measured from their on-tag Capability Container instead of a flat fallback, so a genuine full-size clone can hold an OpenTag3D v2 tag and read back correctly, while a tag too small to fit one is refused with a clear message. (#297)
+
+### Fixed
+
+- **PN532 readers can now reach NTAG pages beyond 63** — the page methods previously used refuse pages 64 and up, which a 252-byte v2 payload needs (pages 4–66): reads fell back to a generic UID and a v2 write would have aborted halfway through. Both paths now use the library's NTAG-specific methods; behavior on v1 tags is unchanged. (#297)
+- **Tags from a newer OpenTag3D minor revision are never rewritten lossily** — a tag stamped 2.001+ (or 1.001+) parses with a warning, but re-encoding it from current-spec knowledge would zero fields the newer revision defines. The encoder now refuses such writes, and a pending weight deduction is routed to Spoolman when configured or stays queued instead of being consumed. (#297)
+- **Writer page no longer silently drops optional fields** — the write endpoint only kept the URL, manufacture date, weights, dry profile, temperature ranges, and speeds when the form also carried a serial number or a minimum print temperature; anything else in that group was written as zero with a success response. All fields are now read unconditionally. (#297)
+- **Weight deductions never shrink a v2 tag's nominal size** — the v2 spec defines the weight field as the spool's target size, not a remaining counter. A v2 tag without a measured weight now sends the deduction to Spoolman when configured (dropped with a visible log entry otherwise), the routine Spoolman sync no longer writes that nominal value back as remaining weight, and a deduction that lands on an already-empty spool resolves instead of retrying forever. Writes are bounded to an identified tag's user memory so a payload cannot reach its configuration pages, with a conservative page ceiling when the tag type cannot be identified. (#297)
+
+## [1.10.1] - 2026-09-06
+
+### Added
+
+- **NFC reader boot and bus-timeout lines now appear in the web log (`/logs`)** — the PN5180 startup sequence (pin map, SPI clock, reset handshake, firmware version, RF setup) and the BUSY-handshake timeout lines are mirrored into the web log, so a reader that fails in the field can be diagnosed from the browser without a USB cable. Timeout lines are rate-limited in the web log (first and every 20th, with a running count) so a failing reader cannot scroll away the rest of the log; USB serial keeps every line. (#293)
+
+### Fixed
+
+- **Self-test no longer reports a dead reader as healthy** — register health now fails with its own recommendation when the status registers read all-ones (nothing driving the SPI bus: a dead, unpowered, or miswired module). The bus-wedge result also points at `/logs` to show which handshake stalled.
+
+### Build
+
+- **The JSON streaming library is now bundled with the firmware source** — the package registry deleted the exact pinned release the parsers are validated against, which broke every fresh build. Building from source no longer depends on that registry for it.
+
 ## [1.10.0] - 2026-08-07
 
 Major memory recovery for boards without PSRAM using a TFT display. No

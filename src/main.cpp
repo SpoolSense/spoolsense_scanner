@@ -275,6 +275,8 @@ void setup() {
         tftDriver = TFTDriver::ILI9341;
     } else if (strcmp(config.getTftDriver(), "ili9488") == 0) {
         tftDriver = TFTDriver::ILI9488;
+    } else if (strcmp(config.getTftDriver(), "st7796") == 0) {
+        tftDriver = TFTDriver::ST7796;
     }
     tftManagerPtr = new TFTManager(tftDriver);
     tftManagerPtr->begin();

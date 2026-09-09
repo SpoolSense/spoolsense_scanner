@@ -28,8 +28,10 @@ static inline opt_error_t opt_adafruit_pn532_read_page(void *ctx, uint8_t page, 
     SharedSPIBus::Guard spiGuard;
     if (!spiGuard) return OPT_ERR_NFC_READ;
     Adafruit_PN532 *pn532 = (Adafruit_PN532 *)ctx;
-    /* mifareultralight_ReadPage reads 4 bytes, returns count (non-zero = success) */
-    return pn532->mifareultralight_ReadPage(page, buf) ? OPT_OK : OPT_ERR_NFC_READ;
+    /* ntag2xx_ReadPage reads 4 bytes, returns count (non-zero = success).
+     * Not mifareultralight_ReadPage: that one refuses pages >= 64, and OPT
+     * spans 78 pages — same radio command, only the range guard differs. */
+    return pn532->ntag2xx_ReadPage(page, buf) ? OPT_OK : OPT_ERR_NFC_READ;
 }
 
 /**
@@ -44,8 +46,9 @@ static inline opt_error_t opt_adafruit_pn532_write_page(void *ctx, uint8_t page,
     SharedSPIBus::Guard spiGuard;
     if (!spiGuard) return OPT_ERR_NFC_WRITE;
     Adafruit_PN532 *pn532 = (Adafruit_PN532 *)ctx;
-    /* mifareultralight_WritePage returns true on success */
-    return pn532->mifareultralight_WritePage(page, (uint8_t *)data) ? OPT_OK : OPT_ERR_NFC_WRITE;
+    /* ntag2xx_WritePage returns true on success (allows pages 4..225; the
+     * mifareultralight variant refused pages >= 64, too small for OPT) */
+    return pn532->ntag2xx_WritePage(page, (uint8_t *)data) ? OPT_OK : OPT_ERR_NFC_WRITE;
 }
 
 /**

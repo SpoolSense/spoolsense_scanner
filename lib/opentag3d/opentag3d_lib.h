@@ -9,9 +9,11 @@ extern "C" {
 #endif
 
 /* Spec version this library supports */
-#define OT3D_SUPPORTED_MAJOR  1
+#define OT3D_SUPPORTED_MAJOR  2
 #define OT3D_SUPPORTED_MINOR  0
-#define OT3D_SUPPORTED_VERSION 1000  /* v1.000 */
+#define OT3D_SUPPORTED_V1     1000  /* newest v1.x we can fully parse */
+#define OT3D_SUPPORTED_V2     2000  /* newest v2.x we can fully parse */
+#define OT3D_SUPPORTED_VERSION OT3D_SUPPORTED_V2
 
 /* NDEF MIME type for detection */
 #define OT3D_MIME_TYPE "application/opentag3d"
@@ -50,7 +52,7 @@ typedef struct {
     /* Extended fields (zero if not present) */
     uint8_t  has_extended;           /* Non-zero if extended fields were parsed */
     char     online_url[33];         /* 32 bytes + null, no https:// prefix */
-    char     serial_number[17];      /* 16 bytes + null */
+    char     serial_number[33];      /* 32 bytes + null (v2 stores 32; v1 stores 16 — copies bound by sizeof) */
     uint16_t manufacture_year;
     uint8_t  manufacture_month;
     uint8_t  manufacture_day;
@@ -74,6 +76,15 @@ typedef struct {
     uint8_t  min_volumetric_speed;   /* mm³/s */
     uint8_t  max_volumetric_speed;   /* mm³/s */
     uint8_t  target_volumetric_speed;/* mm³/s */
+
+    /* Fields that exist only in the v2.000 memory map
+     * (zero when a v1 tag was parsed) */
+    uint64_t barcode;                  /* UPC13/GTIN, 6-byte big-endian int on tag (v2);
+                                          declared before the char arrays so the u64
+                                          lands on a natural boundary with no padding */
+    char     sku[17];                  /* 16 bytes + null (v2) */
+    uint8_t  chamber_temp_encoded;     /* °C ÷ 5 — required field in v2 */
+    uint8_t  min_nozzle_diameter;      /* mm ÷ 0.1 (v2) */
 } opentag3d_t;
 
 /**
@@ -92,10 +103,28 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
  * buf: output buffer.
  * buflen: size of output buffer.
  *
- * Returns number of bytes written, or -1 on error.
- * Writes core fields only if buflen < OT3D_EXTENDED_MIN, otherwise writes all.
+ * The struct's tag_version selects the on-tag layout: 2xxx encodes the full
+ * v2 map (needs buflen >= OT3D_V2_MAP_SIZE), 1xxx/0 encodes the v1 layout
+ * (core only if buflen < OT3D_EXTENDED_MIN, otherwise core+extended).
+ *
+ * Returns number of bytes written, or -1 on error — including any version
+ * this build cannot re-encode faithfully (see opentag3d_can_encode).
  */
 int opentag3d_encode(const opentag3d_t *tag, uint8_t *buf, size_t buflen);
+
+/* Major spec revision of a raw version value (2000 → 2). */
+static inline uint16_t opentag3d_major(uint16_t version) { return version / 1000; }
+
+/* Non-zero when this build can re-encode a tag of the given version without
+ * losing data. Newer minors (2.001+, 1.001+) define bytes we would zero, and
+ * unknown majors have unknown layouts — both refuse. Single source of truth
+ * for the encoder dispatcher and every write-side guard. */
+static inline int opentag3d_can_encode(uint16_t version) {
+    uint16_t major = version / 1000;
+    if (major >= 3) return 0;
+    if (major == 2) return version <= OT3D_SUPPORTED_V2;
+    return version <= OT3D_SUPPORTED_V1;
+}
 
 /* Inline helpers for decoded temperature/dimension values */
 static inline float opentag3d_temp_c(uint8_t encoded) { return encoded * 5.0f; }

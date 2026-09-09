@@ -108,11 +108,57 @@ static float applyOpenPrintTag(const char* uid, float pending) {
 #endif
 }
 
+#ifndef NATIVE_TEST
+// Shared Spoolman-direct fallback. True = Spoolman accepted the deduction
+// (including 0 g on an already-empty spool) and the caller clears pending;
+// false = transport failure, keep it queued for retry.
+static bool trySpoolmanDeduct(const char* uid, float pending, float& deducted) {
+    deducted = 0.0f;
+    if (!SpoolmanManager::getInstance().isConfigured()) return false;
+    bool ok = false;
+    deducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending, &ok);
+    return ok;
+}
+#endif
+
 static float applyOpenTag3D(const char* uid, float pending) {
 #ifndef NATIVE_TEST
     opentag3d_t ot3d;
     if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d)) {
         Serial.printf("DeductionManager: No cached OpenTag3D data for %s\n", uid);
+        return 0.0f;
+    }
+
+    // Cases where the tag itself must not be written: a newer minor format
+    // (re-encoding would zero fields it defines), or a v2 tag without a
+    // measured weight — v2 defines the weight field as the NOMINAL spool size,
+    // and deducting from it would corrupt the tag's identity. Route the grams
+    // to Spoolman when configured; with no Spoolman the deduction is dropped
+    // (loudly) rather than retried forever.
+    const char* skipReason = NULL;
+    if (!opentag3d_can_encode(ot3d.tag_version)) {
+        skipReason = "newer minor format";
+    } else if (opentag3d_major(ot3d.tag_version) >= 2 && ot3d.measured_filament_weight_g == 0) {
+        skipReason = "v2 tag has no measured weight (target weight is nominal)";
+    }
+    if (skipReason) {
+        Serial.printf("DeductionManager: OpenTag3D %s (v%u) — %s; tag left untouched\n",
+                      uid, ot3d.tag_version, skipReason);
+        if (SpoolmanManager::getInstance().isConfigured()) {
+            float spDeducted = 0.0f;
+            if (trySpoolmanDeduct(uid, pending, spDeducted)) {
+                DeductionManager::getInstance().clearPending(uid);
+                return spDeducted;
+            }
+            return 0.0f;  // Spoolman may be down — keep pending and retry next scan
+        }
+        // No writable target anywhere — terminal, mirroring the non-writable-kind
+        // branch: an every-scan retry would loop forever and only log to serial.
+        LogBuffer::getInstance().logPrintf("Deduction %.1fg dropped: OpenTag3D %s %s, no Spoolman\n",
+                                           pending, uid, skipReason);
+        Serial.printf("DeductionManager: %s and Spoolman not configured — clearing %.1fg pending\n",
+                      skipReason, pending);
+        DeductionManager::getInstance().clearPending(uid);
         return 0.0f;
     }
 
@@ -126,7 +172,9 @@ static float applyOpenTag3D(const char* uid, float pending) {
     // Subtract from the weight field the tag uses (round to avoid truncation loss)
     if (ot3d.measured_filament_weight_g > 0) {
         int newMeasured = (int)lroundf(ot3d.measured_filament_weight_g - deduction);
-        ot3d.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 0;
+        // Floor at 1 g: measured==0 reads as "never measured" (nominal) on the
+        // next scan, which would freeze the Spoolman weight sync for this tag.
+        ot3d.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 1;
     } else {
         int newTarget = (int)lroundf(ot3d.target_weight_g - deduction);
         ot3d.target_weight_g = (newTarget > 0) ? (uint16_t)newTarget : 0;
@@ -167,12 +215,12 @@ float DeductionManager::applyIfPending(const char* uid, TagKind kind) {
         default:
             // Tag can't accept weight writes — try Spoolman direct if configured
             if (SpoolmanManager::getInstance().isConfigured()) {
-                float spDeducted = SpoolmanManager::getInstance().deductFromSpoolman(uid, pending);
-                if (spDeducted > 0.0f) {
+                float spDeducted = 0.0f;
+                if (trySpoolmanDeduct(uid, pending, spDeducted)) {
                     clearPending(uid);
                     deducted = spDeducted;
                 }
-                // If deductFromSpoolman returned 0, keep in NVS for retry on next scan
+                // On transport failure, keep in NVS for retry on next scan
             } else {
                 Serial.printf("DeductionManager: Tag type %d has no weight writes and Spoolman not configured — clearing\n", (int)kind);
                 clearPending(uid);

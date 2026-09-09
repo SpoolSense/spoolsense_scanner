@@ -19,8 +19,14 @@ enum class TFTDriver : uint8_t {
     ST7789 = 0,
     GC9A01 = 1,
     ILI9341 = 2,   // 240x320 — dashboard centered with 40px letterbox
-    ILI9488 = 3    // 320x480 — dashboard centered
+    ILI9488 = 3,   // 320x480 — dashboard centered
+    ST7796 = 4     // 320x480 — dashboard centered, like ILI9488
 };
+
+// 480x320 panels share the centered-sprite / wide-landscape geometry.
+inline bool tftIs480Wide(TFTDriver d) {
+    return d == TFTDriver::ILI9488 || d == TFTDriver::ST7796;
+}
 
 #if defined(BOARD_ESP32_S3)
 
@@ -29,6 +35,7 @@ class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_GC9A01  _panel_gc9a01;
     lgfx::Panel_ILI9341 _panel_ili9341;
     lgfx::Panel_ILI9488 _panel_ili9488;
+    lgfx::Panel_ST7796  _panel_st7796;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
@@ -70,6 +77,8 @@ public:
             panel = &_panel_ili9341;
         } else if (driver == TFTDriver::ILI9488) {
             panel = &_panel_ili9488;
+        } else if (driver == TFTDriver::ST7796) {
+            panel = &_panel_st7796;
         } else {
             panel = &_panel_st7789;
         }
@@ -90,7 +99,7 @@ public:
                 cfg.panel_height  = 240;
                 cfg.offset_x      = 0;
                 cfg.offset_y      = 40;
-            } else if (driver == TFTDriver::ILI9488) {
+            } else if (driver == TFTDriver::ILI9488 || driver == TFTDriver::ST7796) {
                 cfg.memory_width  = 320;
                 cfg.memory_height = 480;
                 cfg.panel_width   = 320;   // full native panel (landscape via rotation)
@@ -107,11 +116,17 @@ public:
             }
             // ILI9488 3.5" modules ship X-mirrored vs the ST7789 default and are
             // mounted landscape; rotation 5 = 90° + horizontal mirror-correct.
-            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5 : 0;
+            // ST7796 is the same 320x480 glass mounted landscape but typically
+            // unmirrored and non-inverted: rotation 1 = plain 90°, yielding the
+            // 480x320 surface the wide renderers expect. Field confirmation
+            // pending (#301) — a tester adjusts from here if their module differs.
+            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5
+                                : (driver == TFTDriver::ST7796) ? 1 : 0;
             cfg.dummy_read_pixel = 8;
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
-            cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488)
+            cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488 ||
+                                driver == TFTDriver::ST7796)
                                    ? false : true;
             cfg.rgb_order    = false;
             cfg.dlen_16bit   = false;
@@ -141,6 +156,7 @@ class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_GC9A01  _panel_gc9a01;
     lgfx::Panel_ILI9341 _panel_ili9341;
     lgfx::Panel_ILI9488 _panel_ili9488;
+    lgfx::Panel_ST7796  _panel_st7796;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
@@ -182,6 +198,8 @@ public:
             panel = &_panel_ili9341;
         } else if (driver == TFTDriver::ILI9488) {
             panel = &_panel_ili9488;
+        } else if (driver == TFTDriver::ST7796) {
+            panel = &_panel_st7796;
         } else {
             panel = &_panel_st7789;
         }
@@ -202,7 +220,7 @@ public:
                 cfg.panel_height  = 240;
                 cfg.offset_x      = 0;
                 cfg.offset_y      = 40;
-            } else if (driver == TFTDriver::ILI9488) {
+            } else if (driver == TFTDriver::ILI9488 || driver == TFTDriver::ST7796) {
                 cfg.memory_width  = 320;
                 cfg.memory_height = 480;
                 cfg.panel_width   = 320;   // full native panel (landscape via rotation)
@@ -219,11 +237,17 @@ public:
             }
             // ILI9488 3.5" modules ship X-mirrored vs the ST7789 default and are
             // mounted landscape; rotation 5 = 90° + horizontal mirror-correct.
-            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5 : 0;
+            // ST7796 is the same 320x480 glass mounted landscape but typically
+            // unmirrored and non-inverted: rotation 1 = plain 90°, yielding the
+            // 480x320 surface the wide renderers expect. Field confirmation
+            // pending (#301) — a tester adjusts from here if their module differs.
+            cfg.offset_rotation = (driver == TFTDriver::ILI9488) ? 5
+                                : (driver == TFTDriver::ST7796) ? 1 : 0;
             cfg.dummy_read_pixel = 8;
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
-            cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488)
+            cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488 ||
+                                driver == TFTDriver::ST7796)
                                    ? false : true;
             cfg.rgb_order    = false;
             cfg.dlen_16bit   = false;

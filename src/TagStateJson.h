@@ -28,6 +28,11 @@ struct TagStateFields {
     float density;
     float diameter_mm;
     uint32_t filament_length_m;
+    const char* weight_source;    // "measured" = remaining_g is a real level;
+                                  // "nominal" = it is the spool's sticker size and
+                                  // never changes on-tag (middleware must not
+                                  // baseline deductions from it — middleware#119);
+                                  // NULL = tag makes no weight claim, field omitted
 };
 
 // Build full tag state JSON. Optional temp/density/diameter fields included only when non-zero.
@@ -54,6 +59,7 @@ inline size_t buildTagStateJson(char* out, size_t outSize, const TagStateFields&
     if (f.density > 0.0f)           doc["density"] = f.density;
     if (f.diameter_mm > 0.0f)       doc["diameter_mm"] = f.diameter_mm;
     if (f.filament_length_m > 0)    doc["filament_length_m"] = f.filament_length_m;
+    if (f.weight_source)            doc["weight_source"] = f.weight_source;
 
     return serializeJson(doc, out, outSize);
 }
