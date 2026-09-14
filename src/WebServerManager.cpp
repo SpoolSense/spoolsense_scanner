@@ -1852,7 +1852,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
 
     if (!opentag3d_can_encode(ot3d.tag_version)) {
-        sendError(400, "Unsupported tag_version — this firmware writes v1.000 and v2.000");
+        sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
         return;
     }
 
@@ -1878,10 +1878,10 @@ void WebServerManager::handleApiWriteOpenTag3D() {
             if (endPage > 0 && endPage < 67) {
                 char msg[96];
                 if (cur.variant != NtagVariant::Unknown) {
-                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
+                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2 requires NTAG215 or NTAG216",
                              ntagVariantName(cur.variant));
                 } else {
-                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2.000 requires 504+ (NTAG215/216 class)",
+                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2 requires 504+ (NTAG215/216 class)",
                              (unsigned)((endPage - 4) * 4));
                 }
                 sendError(400, msg);
