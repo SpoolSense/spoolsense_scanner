@@ -11,8 +11,8 @@ extern "C" {
 /* Spec version this library supports */
 #define OT3D_SUPPORTED_MAJOR  2
 #define OT3D_SUPPORTED_MINOR  0
-#define OT3D_SUPPORTED_V1     1000  /* newest v1.x we can fully parse */
-#define OT3D_SUPPORTED_V2     2000  /* newest v2.x we can fully parse */
+#define OT3D_SUPPORTED_V1     1003  /* newest v1.x we can fully parse */
+#define OT3D_SUPPORTED_V2     2002  /* newest v2.x we can fully parse */
 #define OT3D_SUPPORTED_VERSION OT3D_SUPPORTED_V2
 
 /* NDEF MIME type for detection */
