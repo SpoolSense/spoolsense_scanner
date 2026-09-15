@@ -90,6 +90,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 <label for="manufacturer">Brand / Manufacturer</label>
                 <input id="manufacturer" list="brand-list" maxlength="16" placeholder="Select or type a brand" />
                 <datalist id="brand-list">
+                  <option value="3DFuel"></option>
                   <option value="3DXTech"></option>
                   <option value="Amolen"></option>
                   <option value="Anycubic"></option>
@@ -108,9 +109,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                   <option value="Jayo"></option>
                   <option value="MatterHackers"></option>
                   <option value="Overture"></option>
+                  <option value="Polar Filament"></option>
                   <option value="Polymaker"></option>
                   <option value="Prusament"></option>
                   <option value="Proto-Pasta"></option>
+                  <option value="Push Plastics"></option>
                   <option value="Sunlu"></option>
                 </datalist>
               </div>
