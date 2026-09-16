@@ -221,10 +221,10 @@ int main(void) {
     CHECK(out.has_extended == 0, "F: has_extended == 0");
     CHECK(out.diameter_um == 1750, "F: core diameter parsed");
 
-    /* G: v1 minor ahead — 1001 warns */
-    printf("[G] v1 minor ahead (v1001)\n");
+    /* G: v1 minor ahead — 1004 warns (ceiling is OT3D_SUPPORTED_V1 = 1003) */
+    printf("[G] v1 minor ahead (v1004)\n");
     memset(buf, 0, OT3D_CORE_SIZE);
-    put_u16(buf + 0x00, 1001);
+    put_u16(buf + 0x00, 1004);
     r = opentag3d_decode(buf, OT3D_CORE_SIZE, &out);
     CHECK(r == OT3D_VERSION_WARNING, "G: result OT3D_VERSION_WARNING");
 
@@ -403,19 +403,20 @@ int main(void) {
     r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
     CHECK(out.transmission_distance == 250, "O: td 400 clamped to 250");
 
-    /* P: minor-ahead encode refusal — a struct stamped 2001/1001 carries a
-     * layout newer than our 2.000/1.000 knowledge; re-encoding from that
-     * knowledge would zero its extra fields, so the dispatcher refuses it.
+    /* P: minor-ahead encode refusal — a struct stamped past the supported
+     * ceiling (OT3D_SUPPORTED_V1/V2) carries a layout newer than our
+     * knowledge; re-encoding from that knowledge would zero its extra
+     * fields, so the dispatcher refuses it.
      * 2000 must still encode (regression guard). */
     printf("[P] minor-ahead encode refusal\n");
     memset(&src, 0, sizeof(src));
-    src.tag_version = 2001;
+    src.tag_version = 2004;
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
-    CHECK(n == -1, "P: encode refuses v2 minor ahead (2001)");
+    CHECK(n == -1, "P: encode refuses v2 minor ahead (2004)");
     memset(&src, 0, sizeof(src));
-    src.tag_version = 1001;
+    src.tag_version = 1004;
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
-    CHECK(n == -1, "P: encode refuses v1 minor ahead (1001)");
+    CHECK(n == -1, "P: encode refuses v1 minor ahead (1004)");
     memset(&src, 0, sizeof(src));
     src.tag_version = 2000;
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
@@ -425,9 +426,12 @@ int main(void) {
     printf("[Q] version predicate helpers\n");
     CHECK(opentag3d_major(2000) == 2 && opentag3d_major(1999) == 1 &&
           opentag3d_major(999) == 0, "Q: opentag3d_major splits correctly");
-    CHECK(opentag3d_can_encode(1000) && opentag3d_can_encode(2000),
+    CHECK(OT3D_SUPPORTED_V1 == 1003 && OT3D_SUPPORTED_V2 == 2003,
+          "Q: supported ceilings pinned — bumping them must update these tests");
+    CHECK(opentag3d_can_encode(1000) && opentag3d_can_encode(1003) &&
+          opentag3d_can_encode(2000) && opentag3d_can_encode(2003),
           "Q: can_encode accepts supported versions");
-    CHECK(!opentag3d_can_encode(1001) && !opentag3d_can_encode(2001) &&
+    CHECK(!opentag3d_can_encode(1004) && !opentag3d_can_encode(2004) &&
           !opentag3d_can_encode(3000), "Q: can_encode refuses minor-ahead and future majors");
     CHECK(opentag3d_can_encode(0), "Q: can_encode accepts legacy version 0 (v1 path)");
 
