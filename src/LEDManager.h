@@ -42,6 +42,8 @@ public:
 private:
     bool _initialized = false;
     bool _taskStarted = false;
+    uint8_t _pin = 0;
+    bool _activeLowGpio = false;
     Adafruit_NeoPixel _pixel;
     uint16_t _breathStep = 0;  // Breathing animation phase (task-only)
 

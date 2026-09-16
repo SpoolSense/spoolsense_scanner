@@ -3,6 +3,7 @@
 // Synchronous methods (showBooting, showReady, etc.) for pre-task setup; async state setters queue to FreeRTOS task.
 
 #include "LEDManager.h"
+#include "BoardPins.h"
 #include "UserConfig.h"
 #include "TaskUtils.h"
 
@@ -18,7 +19,16 @@
 #define M_PI 3.14159265f
 #endif
 
-#if defined(BOARD_S3_DEVKITC) || defined(BOARD_ESP32_C5) || defined(BOARD_ESP32_C6)
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+static constexpr uint8_t XIAO_LED_PWM_BITS = 8;
+static constexpr uint32_t XIAO_LED_PWM_HZ = 5000;
+#endif
+
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+// XIAO ESP32-C6 has a simple active-low user LED on GPIO15, not a NeoPixel.
+LEDManager::LEDManager()
+    : _initialized(false), _taskStarted(false), _pixel(1, 0, NEO_GRB + NEO_KHZ800) {}
+#elif defined(BOARD_S3_DEVKITC) || defined(BOARD_ESP32_C5) || defined(BOARD_ESP32_C6)
 // DevKitC WS2812B requires GRB byte order instead of standard RGB
 LEDManager::LEDManager()
     : _initialized(false), _taskStarted(false), _pixel(1, 0, NEO_GRB + NEO_KHZ800) {}
@@ -33,6 +43,21 @@ LEDManager::LEDManager()
 #endif
 
 void LEDManager::begin(uint8_t pin) {
+    _pin = pin;
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    _activeLowGpio = (pin == PIN_STATUS_LED);
+    if (_activeLowGpio) {
+        pinMode(pin, OUTPUT);
+        if (!ledcAttach(pin, XIAO_LED_PWM_HZ, XIAO_LED_PWM_BITS)) {
+            _activeLowGpio = false;
+            return;
+        }
+        ledcWrite(pin, 255);  // active-low user LED off
+        _initialized = true;
+        return;
+    }
+#endif
+
     // Reconfirm color order in case of pin conflicts that forced constructor re-init
 #if defined(BOARD_S3_DEVKITC) || defined(BOARD_ESP32_C5) || defined(BOARD_ESP32_C6)
     _pixel.updateType(NEO_GRB + NEO_KHZ800);
@@ -69,6 +94,12 @@ void LEDManager::startTask() {
 
 void LEDManager::showBooting() {
     if (!_initialized) return;
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    if (_activeLowGpio) {
+        setPixelColor(255, 255, 255);
+        return;
+    }
+#endif
 #if defined(BOARD_ESP32_S3)
     // White via RGB channels
     _pixel.setPixelColor(0, _pixel.Color(255, 255, 255));
@@ -81,20 +112,17 @@ void LEDManager::showBooting() {
 
 void LEDManager::showWifiConnected() {
     if (!_initialized) return;
-    _pixel.setPixelColor(0, _pixel.Color(0, 255, 255, 0));  // cyan
-    _pixel.show();
+    setPixelColor(0, 255, 255);  // cyan
 }
 
 void LEDManager::showWifiFailed() {
     if (!_initialized) return;
-    _pixel.setPixelColor(0, _pixel.Color(255, 0, 0, 0));
-    _pixel.show();
+    setPixelColor(255, 0, 0);
 }
 
 void LEDManager::showReady() {
     if (!_initialized) return;
-    _pixel.setPixelColor(0, _pixel.Color(0, 0, 255, 0));  // blue (system ready for scanning)
-    _pixel.show();
+    setPixelColor(0, 0, 255);  // blue (system ready for scanning)
 }
 
 // ---------------------------------------------------------------------------
@@ -175,11 +203,24 @@ void LEDManager::getTargetColor(uint8_t& r, uint8_t& g, uint8_t& b) const {
 // ---------------------------------------------------------------------------
 
 void LEDManager::setPixelColor(uint8_t r, uint8_t g, uint8_t b) {
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    if (_activeLowGpio) {
+        uint8_t brightness = max(r, max(g, b));
+        ledcWrite(_pin, 255 - brightness);
+        return;
+    }
+#endif
     _pixel.setPixelColor(0, _pixel.Color(r, g, b, 0));
     _pixel.show();
 }
 
 void LEDManager::setPixelOff() {
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    if (_activeLowGpio) {
+        ledcWrite(_pin, 255);
+        return;
+    }
+#endif
     _pixel.setPixelColor(0, _pixel.Color(0, 0, 0, 0));
     _pixel.show();
 }

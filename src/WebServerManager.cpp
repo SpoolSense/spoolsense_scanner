@@ -956,6 +956,12 @@ void WebServerManager::handleApiPostConfig() {
     update.led_enabled = doc["led_enabled"] | (uint8_t)0;
     update.keypad_enabled = doc["keypad_enabled"] | (uint8_t)0;
     update.tft_enabled = doc["tft_enabled"] | (uint8_t)0;
+#if defined(BOARD_NO_TFT)
+    // The shared config page still posts tft_enabled; on a no-TFT board the
+    // TFT/LCD exclusion below would wipe the LCD while saveToNVS forces TFT
+    // off anyway — neutralize the checkbox before it can take the LCD down.
+    update.tft_enabled = 0;
+#endif
     strncpy(update.tft_driver, doc["tft_driver"] | "st7789", sizeof(update.tft_driver) - 1);
     // TFT and LCD share GPIO 22/23 on WROOM — auto-disable LCD when TFT enabled
     if (update.tft_enabled && update.lcd_enabled) {
@@ -1047,7 +1053,11 @@ void WebServerManager::handleApiVersion() {
     StaticJsonDocument<128> doc;
     doc["version"] = FIRMWARE_VERSION;
     // Matches the PlatformIO env / release-asset naming for each target.
-#if defined(BOARD_ESP32_C6)
+    // XIAO must precede BOARD_ESP32_C6 — its env defines both flags, and the
+    // OTA page downloads spoolsense_scanner_<board>.bin by this string.
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    doc["board"] = "seeed_xiao_esp32c6";
+#elif defined(BOARD_ESP32_C6)
     doc["board"] = "esp32c6";
 #elif defined(BOARD_ESP32_C5)
     doc["board"] = "esp32c5";
@@ -1852,7 +1862,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
 
     if (!opentag3d_can_encode(ot3d.tag_version)) {
-        sendError(400, "Unsupported tag_version — this firmware writes v1.000 and v2.000");
+        sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
         return;
     }
 
@@ -1878,10 +1888,10 @@ void WebServerManager::handleApiWriteOpenTag3D() {
             if (endPage > 0 && endPage < 67) {
                 char msg[96];
                 if (cur.variant != NtagVariant::Unknown) {
-                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2.000 requires NTAG215 or NTAG216",
+                    snprintf(msg, sizeof(msg), "%s detected — OpenTag3D v2 requires NTAG215 or NTAG216",
                              ntagVariantName(cur.variant));
                 } else {
-                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2.000 requires 504+ (NTAG215/216 class)",
+                    snprintf(msg, sizeof(msg), "Tag declares %u bytes — OpenTag3D v2 requires 504+ (NTAG215/216 class)",
                              (unsigned)((endPage - 4) * 4));
                 }
                 sendError(400, msg);

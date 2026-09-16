@@ -33,7 +33,7 @@
 
 /* Optional hardware features */
 #define ENABLE_LCD 0
-#define ENABLE_STATUS_LED 1  // Onboard on S3-Zero/C5/C6; optional external wiring on WROOM
+#define ENABLE_STATUS_LED 1  // Onboard on S3-Zero/C5/C6/XIAO; optional external wiring on WROOM
 #define ENABLE_KEYPAD 0
 #define ENABLE_BAMBU_DASHBOARD 0      // 3x4 matrix keypad — wiring per BoardPins.h
                              // Note: Using LCD + keypad together on S3 is not recommended due to limited GPIO.
@@ -43,4 +43,4 @@
    Pin mapping is automatic via BoardPins.h — no need to configure pins manually. */
 #define BOARD_ESP32_WROOM
 // #define BOARD_ESP32_S3
-// C5/C6 board flags are supplied by the esp32c5/esp32c6 PlatformIO environments.
+// C5/C6/XIAO board flags are supplied by their PlatformIO environments.

@@ -90,6 +90,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 <label for="manufacturer">Brand / Manufacturer</label>
                 <input id="manufacturer" list="brand-list" maxlength="16" placeholder="Select or type a brand" />
                 <datalist id="brand-list">
+                  <option value="3DFuel"></option>
                   <option value="3DXTech"></option>
                   <option value="Amolen"></option>
                   <option value="Anycubic"></option>
@@ -108,9 +109,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                   <option value="Jayo"></option>
                   <option value="MatterHackers"></option>
                   <option value="Overture"></option>
+                  <option value="Polar Filament"></option>
                   <option value="Polymaker"></option>
                   <option value="Prusament"></option>
                   <option value="Proto-Pasta"></option>
+                  <option value="Push Plastics"></option>
                   <option value="Sunlu"></option>
                 </datalist>
               </div>
@@ -172,7 +175,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
           <section>
             <button type="button" class="advanced-toggle" id="advancedToggle" aria-expanded="false">
-              <span>Extended fields (NTAG215/216 only)</span>
+              <span>Advanced fields</span>
               <span data-toggle-text>Show</span>
             </button>
 
@@ -272,7 +275,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
             Place tag on reader&hellip; <span style="font-size:11px;color:#5a9a6a">hold still until detected</span>
           </div>
 
-          <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.000 &mdash; requires NTAG215 or larger.</div>
+          <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.003 &mdash; requires NTAG215 or larger.</div>
 
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
@@ -340,7 +343,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       </div>
     </section>
 
-    <div class="footer-note">OpenTag3D v2.000 &mdash; NTAG215/216</div>
+    <div class="footer-note">OpenTag3D v2.003 &mdash; NTAG215/216</div>
   </div>
 
   <script src="/js/shared.js?v=)rawliteral" FIRMWARE_VERSION R"rawliteral("></script>
