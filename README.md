@@ -237,17 +237,19 @@ The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 
 
 | PN5180 Pin | XIAO ESP32-C6 Pin | ESP32-C6 GPIO | Direction | Notes |
 |------------|-------------------|---------------|-----------|-------|
-| RST        | D7                | GPIO 17       | Output    | Hardware reset (active low) |
+| RST        | D6                | GPIO 16       | Output    | Hardware reset (active low) |
 | NSS        | D3                | GPIO 21       | Output    | SPI chip select (active low) |
 | MOSI       | D10               | GPIO 18       | Output    | SPI data to PN5180 |
 | MISO       | D9                | GPIO 20       | Input     | SPI data from PN5180 |
 | SCK        | D8                | GPIO 19       | Output    | SPI clock |
-| BUSY       | D6                | GPIO 16       | Input     | SPI flow control |
+| BUSY       | D7                | GPIO 17       | Input     | SPI flow control |
 | VIN        | 5V                | -             | Power     | PN5180 reader power |
 | 3.3V       | 3V3               | -             | Power     | PN5180 logic supply |
 | GND        | GND               | -             | Power     | Common ground |
 
 > **Note:** Some PN5180 breakout boards require both 5V and 3.3V connected. If the reader self-test fails during initialization, confirm both power rails and common ground before changing pins.
+
+> **Note:** D6/D7 are the XIAO's serial pins. RST deliberately sits on D6 (GPIO16 = boot console TX — its boot-time output only pulses the reader's reset, which is harmless), and BUSY on D7 (GPIO17, an input at boot). Do not swap them: the reader drives BUSY, and sharing it with the boot console makes two chips fight over one wire at every power-on.
 
 **Serial:** The S3-Zero and Seeed XIAO ESP32-C6 use USB CDC — just plug in a USB-C cable, no external UART adapter needed.
 

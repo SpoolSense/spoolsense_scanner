@@ -79,7 +79,18 @@ void sanitizeHostname(char* buf, size_t cap) {
 // #203). Blocklists are selected by the same BOARD_* flags as BoardPins.h.
 static bool boardPinUsable(uint8_t pin) {
     bool valid;
-#if defined(BOARD_ESP32_C6)
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    // XIAO ESP32-C6: only the D0-D10 pads are routed out. GPIO3/14 are the
+    // internal antenna switch (3 = RF enable, active low; 14 = int/ext select),
+    // GPIO15 is the onboard LED on a strap pin — none are safe as overrides.
+    switch (pin) {
+        case 0: case 1: case 2: case 16: case 17: case 18:
+        case 19: case 20: case 21: case 22: case 23:
+            valid = true; break;
+        default:
+            valid = false; break;
+    }
+#elif defined(BOARD_ESP32_C6)
     // C6 DevKitC-1: reject USB (12/13) and straps (4/5/9/15). GPIO8 is the
     // onboard WS2812 and is safe once reset-time strap sampling has completed.
     switch (pin) {

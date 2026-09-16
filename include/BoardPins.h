@@ -91,8 +91,12 @@
   #define PIN_PN5180_MISO  20  // D9
   #define PIN_PN5180_MOSI  18  // D10
   #define PIN_PN5180_NSS   21  // D3
-  #define PIN_PN5180_BUSY  16  // D6
-  #define PIN_PN5180_RST   17  // D7
+  // BUSY sits on D7/GPIO17 (U0RXD, input at boot) and RST on D6/GPIO16
+  // (U0TXD): the ROM drives U0TXD on every reset, so the PN5180's driven
+  // BUSY output must not share it — boot noise on RST is harmless because
+  // init hard-resets the reader anyway.
+  #define PIN_PN5180_BUSY  17  // D7
+  #define PIN_PN5180_RST   16  // D6
   #define PIN_PN5180_GPIO  -1
   #define PIN_PN5180_IRQ   -1
   #define PIN_PN5180_AUX   -1
