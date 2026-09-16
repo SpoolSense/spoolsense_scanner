@@ -26,7 +26,11 @@
 // main.cpp — ESP32 firmware entry point and hardware init. Manages WiFi, AP mode, NTP, display/LED/
 // keypad peripherals, NFC reader selection, and the main loop that dispatches to task managers
 
-// Global HTTP mutex for serializing WiFi HTTP requests (blocks SpoolmanManager + ApplicationManager + PrinterManager)
+// Serializes every outbound HTTP path (Spoolman, printer poll, U1, web proxy
+// handlers, diagnostics) except the OTA download itself: OTA holds this from
+// start through the TLS handshake as a drain barrier, then streams under
+// WebServerManager::otaExclusive() alone — periodic tickers stand down and
+// proxy handlers 503 instantly while it runs.
 SemaphoreHandle_t g_httpMutex = nullptr;
 
 // AP mode state

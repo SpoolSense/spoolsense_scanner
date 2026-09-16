@@ -20,7 +20,7 @@ cbor_native.o: ../../lib/openprinttag/cbor_native.c
 opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v2_map.h
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
 
-test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h $(OPT_OBJS)
+test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h ../../src/PrinterManager.cpp $(OPT_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ test_printer_manager.cpp native_stubs.cpp $(OPT_OBJS)
 
 test_opt_ndef_bounds: test_opt_ndef_bounds.c $(OPT_OBJS)

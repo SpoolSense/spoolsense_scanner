@@ -295,7 +295,14 @@ void WebServerManager::handleApiLogsClear() {
     _server.send(200, "application/json", "{\"success\":true}");
 }
 
+bool WebServerManager::otaStandDown503() {
+    if (!otaExclusive()) return false;
+    sendError(503, "Firmware update in progress");
+    return true;
+}
+
 void WebServerManager::handleApiRegisterUid() {
+    if (otaStandDown503()) return;
     Serial.println("WebServerManager: POST /api/register-uid received");
 
     StaticJsonDocument<1024> doc;
@@ -466,6 +473,7 @@ void WebServerManager::handleApiRegisterUid() {
 // ---------------------------------------------------------------------------
 
 void WebServerManager::handleApiSpoolmanSpools() {
+    if (otaStandDown503()) return;
 
     const char* baseUrl = ConfigurationManager::getInstance().getSpoolmanURL();
     if (!baseUrl || strlen(baseUrl) == 0) {
@@ -521,6 +529,7 @@ void WebServerManager::handleApiSpoolmanSpools() {
 }
 
 void WebServerManager::handleApiSpoolmanLink() {
+    if (otaStandDown503()) return;
 
     StaticJsonDocument<256> doc;
     DeserializationError err = deserializeJson(doc, _server.arg("plain"));
@@ -605,6 +614,7 @@ void WebServerManager::handleApiSpoolmanLink() {
 }
 
 void WebServerManager::handleApiU1Assign() {
+    if (otaStandDown503()) return;
     // Same task as the ApplicationManager dispatch loop (both run from loop()),
     // so calling the U1Manager directly is single-threaded by construction
     StaticJsonDocument<64> doc;
@@ -740,6 +750,7 @@ void WebServerManager::handleApiSelfTestReport() {
 }
 
 void WebServerManager::handleApiDiagnostics() {
+    if (otaStandDown503()) return;
 
     // 1536: task stack-hwm entries added on top of the original 1024 payload
     StaticJsonDocument<1536> doc;
@@ -1186,6 +1197,27 @@ void WebServerManager::otaDownloadTask(void* param) {
     // Pause NFC during OTA
     NFCManager::getInstance().pauseScanTask();
 
+    // Drain-and-hold: _otaState already turns away new HTTP entrants, and
+    // taking the mutex waits out any request in flight when OTA started.
+    // Taker timeouts (10s) bound acquisition, not ownership — one legal hold
+    // spans a multi-request Prusa/Spoolman cycle (~20-30s) — so a drain
+    // timeout FAILS the update instead of starting TLS beside live HTTP at
+    // the tightest heap moment. The mutex then stays held through the TLS
+    // handshake (the heap-critical window; exactly two exits below release
+    // it) and is freed for the streaming phase, where the flag alone stands
+    // the tickers down.
+    if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        Serial.println("OTA: HTTP busy, aborting");
+        NFCManager::getInstance().resumeScanTask();
+        snprintf(self->_otaError, sizeof(self->_otaError), "Device busy — try again");
+        self->_otaState = OtaState::FAILED;
+        if (self->_display) {
+            self->_display->showOTAError(self->_otaError);
+        }
+        vTaskDelete(nullptr);
+        return;
+    }
+
     // Stop display rendering and release any display buffers before the TLS
     // handshake (PSRAM boards free their persistent framebuffer; strip-
     // rendering boards reclaim an in-flight strip at most).
@@ -1205,6 +1237,7 @@ void WebServerManager::otaDownloadTask(void* param) {
     int httpCode = http.GET();
 
     if (httpCode != 200) {
+        if (g_httpMutex) xSemaphoreGive(g_httpMutex);
         Serial.printf("OTA: Download failed, HTTP %d\n", httpCode);
         http.end();
         NFCManager::getInstance().resumeScanTask();
@@ -1216,6 +1249,8 @@ void WebServerManager::otaDownloadTask(void* param) {
         vTaskDelete(nullptr);
         return;
     }
+
+    if (g_httpMutex) xSemaphoreGive(g_httpMutex);
 
     int contentLength = http.getSize();
     Serial.printf("OTA: Content length: %d bytes\n", contentLength);
@@ -2089,6 +2124,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
 // ---------------------------------------------------------------------------
 
 void WebServerManager::handleApiSpoolmanFindVendor() {
+    if (otaStandDown503()) return;
     String name = _server.arg("name");
     if (name.isEmpty()) {
         _server.send(400, "application/json", "{\"error\":\"name required\"}");
@@ -2131,6 +2167,7 @@ void WebServerManager::handleApiSpoolmanFindVendor() {
 }
 
 void WebServerManager::handleApiSpoolmanFindFilament() {
+    if (otaStandDown503()) return;
     String vendorId = _server.arg("vendor_id");
     String material = _server.arg("material");
     String colorHex = _server.arg("color_hex");
@@ -2436,6 +2473,7 @@ int WebServerManager::enrichCreateSpool(WiFiClient& client, HTTPClient& http, co
 // ── /api/spoolman/save-enrichment ───────────────────────────
 
 void WebServerManager::handleApiSpoolmanSaveEnrichment() {
+    if (otaStandDown503()) return;
 
     StaticJsonDocument<512> doc;
     if (deserializeJson(doc, _server.arg("plain"))) {

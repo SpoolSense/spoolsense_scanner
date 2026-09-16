@@ -9,12 +9,23 @@
 #endif
 
 #include "NFCTypes.h"
+#include <atomic>
 
 class DisplayI;
 
 class WebServerManager {
 public:
     static WebServerManager& getInstance();
+
+    // True while otaDownloadTask owns the network. OTA holds g_httpMutex only
+    // from drain-barrier start through the TLS handshake, then runs with the
+    // display framebuffer freed for TLS headroom — the firmware's tightest
+    // heap window. Periodic HTTP tickers stand down while this returns true.
+    // FAILED/SUCCESS must NOT count: a failed OTA does not reboot, and
+    // standing down on FAILED would kill HTTP until a power cycle.
+    bool otaExclusive() const {
+        return _otaState == OtaState::DOWNLOADING || _otaState == OtaState::FLASHING;
+    }
 
     // Call once in setup() after WiFi is connected or AP mode started.
     // Registers routes, starts mDNS as "spoolsense" (STA only).
@@ -87,6 +98,7 @@ private:
     void handleApiSpoolmanFindVendor();
     void handleApiSpoolmanFindFilament();
     void handleApiSpoolmanSaveEnrichment();
+    bool otaStandDown503();
 
     // Log viewer
     void handleLogViewer();
@@ -96,7 +108,7 @@ private:
     // OTA download state
     static void otaDownloadTask(void* param);
     enum class OtaState : uint8_t { IDLE, DOWNLOADING, FLASHING, SUCCESS, FAILED };
-    volatile OtaState _otaState = OtaState::IDLE;
+    std::atomic<OtaState> _otaState{OtaState::IDLE};
     char _otaUrl[512] = {0};
     char _otaError[64] = {0};
     volatile uint8_t _otaProgress = 0;

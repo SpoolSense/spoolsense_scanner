@@ -16,6 +16,7 @@
 #include <cmath>
 #include "openprinttag_lib.h"
 #include "LogBuffer.h"
+#include "WebServerManager.h"
 
 static constexpr size_t JSON_SMALL_CAPACITY = 256;
 static constexpr size_t JSON_MEDIUM_CAPACITY = 768;
@@ -1464,11 +1465,63 @@ void SpoolmanManager::taskFunc(void* param) {
     self->taskLoop();
 }
 
+void SpoolmanManager::processSyncRequest(const SpoolmanSyncRequest& req, AppMessage& msg) {
+    if (req.lookup_only) {
+        Serial.printf("SpoolmanManager: UID lookup for %s\n", req.spool_id);
+        SpoolDetails details = {};
+        bool found = lookupSpoolByUid(req.spool_id, details);
+        msg.payload.spoolmanSynced.success = found;
+        msg.payload.spoolmanSynced.spoolman_id = found ? details.spoolman_id : -1;
+        msg.payload.spoolmanSynced.kg_remaining = found ? details.remaining_weight_g / 1000.0f : 0.0f;
+        msg.payload.spoolmanSynced.initial_weight_g = found ? details.initial_weight_g : 0.0f;
+        strncpy(msg.payload.spoolmanSynced.material_name,
+                found ? details.material_type : "",
+                sizeof(msg.payload.spoolmanSynced.material_name) - 1);
+        msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+        strncpy(msg.payload.spoolmanSynced.manufacturer,
+                found ? details.manufacturer : "",
+                sizeof(msg.payload.spoolmanSynced.manufacturer) - 1);
+        msg.payload.spoolmanSynced.manufacturer[sizeof(msg.payload.spoolmanSynced.manufacturer) - 1] = '\0';
+        strncpy(msg.payload.spoolmanSynced.color_hex,
+                found ? details.color_hex : "",
+                sizeof(msg.payload.spoolmanSynced.color_hex) - 1);
+        msg.payload.spoolmanSynced.color_hex[sizeof(msg.payload.spoolmanSynced.color_hex) - 1] = '\0';
+        msg.payload.spoolmanSynced.extruder_temp = found ? details.extruder_temp : 0;
+        msg.payload.spoolmanSynced.bed_temp = found ? details.bed_temp : 0;
+        msg.payload.spoolmanSynced.density = found ? details.density : 0.0f;
+        msg.payload.spoolmanSynced.diameter_mm = found ? details.diameter_mm : 0.0f;
+    } else {
+        Serial.printf("SpoolmanManager: Syncing spool %s\n", req.spool_id);
+        int resolvedSpoolmanId = -1;
+        bool success = syncSpool(req, resolvedSpoolmanId);
+        msg.payload.spoolmanSynced.success = success;
+        msg.payload.spoolmanSynced.kg_remaining = req.remaining_weight_g / 1000.0f;
+        msg.payload.spoolmanSynced.spoolman_id = resolvedSpoolmanId;
+        strncpy(msg.payload.spoolmanSynced.material_name, req.material_name,
+                sizeof(msg.payload.spoolmanSynced.material_name) - 1);
+        msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+    }
+}
+
 void SpoolmanManager::taskLoop() {
     SpoolmanSyncRequest req;
+    bool otaHoldLogged = false;
     while (true) {
-        if (xQueueReceive(syncQueue, &req, portMAX_DELAY) == pdTRUE) {
+        if (xQueuePeek(syncQueue, &req, portMAX_DELAY) == pdTRUE) {
             MemoryDiagnostics::reportSelf(MemoryDiagnostics::Task::SpoolmanSync);
+            if (WebServerManager::getInstance().otaExclusive()) {
+                // Leave the request queued: a stationary tag never re-enqueues
+                // (isSkippableDuplicate), so dropping here would lose its sync
+                // after a failed OTA until the tag is lifted.
+                if (!otaHoldLogged) {
+                    Serial.println("SpoolmanManager: OTA hold");
+                    otaHoldLogged = true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+            otaHoldLogged = false;
+            xQueueReceive(syncQueue, &req, 0);
             if (!isConfigured()) {
                 continue;
             }
@@ -1482,40 +1535,15 @@ void SpoolmanManager::taskLoop() {
             msg.payload.spoolmanSynced.spool_id[sizeof(msg.payload.spoolmanSynced.spool_id) - 1] = '\0';
             msg.payload.spoolmanSynced.is_uid_lookup = req.lookup_only;
 
-            if (req.lookup_only) {
-                Serial.printf("SpoolmanManager: UID lookup for %s\n", req.spool_id);
-                SpoolDetails details = {};
-                bool found = lookupSpoolByUid(req.spool_id, details);
-                msg.payload.spoolmanSynced.success = found;
-                msg.payload.spoolmanSynced.spoolman_id = found ? details.spoolman_id : -1;
-                msg.payload.spoolmanSynced.kg_remaining = found ? details.remaining_weight_g / 1000.0f : 0.0f;
-                msg.payload.spoolmanSynced.initial_weight_g = found ? details.initial_weight_g : 0.0f;
-                strncpy(msg.payload.spoolmanSynced.material_name,
-                        found ? details.material_type : "",
-                        sizeof(msg.payload.spoolmanSynced.material_name) - 1);
-                msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
-                strncpy(msg.payload.spoolmanSynced.manufacturer,
-                        found ? details.manufacturer : "",
-                        sizeof(msg.payload.spoolmanSynced.manufacturer) - 1);
-                msg.payload.spoolmanSynced.manufacturer[sizeof(msg.payload.spoolmanSynced.manufacturer) - 1] = '\0';
-                strncpy(msg.payload.spoolmanSynced.color_hex,
-                        found ? details.color_hex : "",
-                        sizeof(msg.payload.spoolmanSynced.color_hex) - 1);
-                msg.payload.spoolmanSynced.color_hex[sizeof(msg.payload.spoolmanSynced.color_hex) - 1] = '\0';
-                msg.payload.spoolmanSynced.extruder_temp = found ? details.extruder_temp : 0;
-                msg.payload.spoolmanSynced.bed_temp = found ? details.bed_temp : 0;
-                msg.payload.spoolmanSynced.density = found ? details.density : 0.0f;
-                msg.payload.spoolmanSynced.diameter_mm = found ? details.diameter_mm : 0.0f;
-            } else {
-                Serial.printf("SpoolmanManager: Syncing spool %s\n", req.spool_id);
-                int resolvedSpoolmanId = -1;
-                bool success = syncSpool(req, resolvedSpoolmanId);
-                msg.payload.spoolmanSynced.success = success;
-                msg.payload.spoolmanSynced.kg_remaining = req.remaining_weight_g / 1000.0f;
-                msg.payload.spoolmanSynced.spoolman_id = resolvedSpoolmanId;
-                strncpy(msg.payload.spoolmanSynced.material_name, req.material_name,
-                        sizeof(msg.payload.spoolmanSynced.material_name) - 1);
-                msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+            processSyncRequest(req, msg);
+            while (!msg.payload.spoolmanSynced.success &&
+                   WebServerManager::getInstance().otaExclusive()) {
+                // A failure while OTA owns the network is a stand-down, not a
+                // Spoolman answer. Wait the OTA out and reprocess the same
+                // request in place — requeueing could drop it if the queue
+                // refilled behind the peek.
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                processSyncRequest(req, msg);
             }
 
             ApplicationManager::getInstance().sendMessage(msg);
@@ -1525,7 +1553,12 @@ void SpoolmanManager::taskLoop() {
 
 bool SpoolmanManager::lookupSpoolByUid(const char* uid, SpoolDetails& outDetails) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: lookupSpoolByUid could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: lookup mutex timeout");
+        return false;
+    }
+    if (WebServerManager::getInstance().otaExclusive()) {
+        // OTA may have started while this call waited on the mutex.
+        xSemaphoreGive(httpMutex_);
         return false;
     }
 
@@ -1726,8 +1759,12 @@ int SpoolmanManager::findSpoolIdByUidNoLock(const char* uid) {
 float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* success) {
     if (success) *success = false;
     if (!isConfigured()) return 0.0f;
+    if (WebServerManager::getInstance().otaExclusive()) {
+        Serial.println("SpoolmanManager: deduct deferred (OTA)");
+        return 0.0f;
+    }
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: deductFromSpoolman — mutex timeout");
+        Serial.println("SpoolmanManager: deduct mutex timeout");
         return 0.0f;
     }
 
@@ -1803,7 +1840,12 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
 
 bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpoolmanId) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: Could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: sync mutex timeout");
+        return false;
+    }
+    if (WebServerManager::getInstance().otaExclusive()) {
+        // OTA may have started while this call waited on the mutex.
+        xSemaphoreGive(httpMutex_);
         return false;
     }
 

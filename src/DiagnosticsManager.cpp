@@ -15,6 +15,7 @@
 #include "HomeAssistantManager.h"
 #include "LogBuffer.h"
 #include "TaskUtils.h"
+#include "WebServerManager.h"
 
 // Serializes all outbound HTTP/TLS (created in main.cpp, shared with the web +
 // Spoolman + printer tasks). The network reachability checks below take it so a
@@ -375,6 +376,11 @@ void DiagnosticsManager::checkSpoolman() {
     char safeUrl[128];
     diagRedactUrl(safeUrl, sizeof(safeUrl), cfg.spoolman_url);
 
+    if (WebServerManager::getInstance().otaExclusive()) {
+        addResult(DiagnosticTest::SPOOLMAN_REACHABILITY, DiagnosticStatus::SKIPPED, 0, 0,
+                  "Skipped — firmware update in progress", "");
+        return;
+    }
     bool held = g_httpMutex && (xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(DIAG_HTTP_MUTEX_MS)) == pdTRUE);
     if (g_httpMutex && !held) {
         // Never do unserialized outbound HTTP — that's the overlap the mutex exists to prevent.
@@ -437,6 +443,11 @@ void DiagnosticsManager::checkPrinter() {
     char safeUrl[128];
     diagRedactUrl(safeUrl, sizeof(safeUrl), baseUrl);
 
+    if (WebServerManager::getInstance().otaExclusive()) {
+        addResult(DiagnosticTest::PRINTER_REACHABILITY, DiagnosticStatus::SKIPPED, 0, 0,
+                  "Skipped — firmware update in progress", "");
+        return;
+    }
     bool held = g_httpMutex && (xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(DIAG_HTTP_MUTEX_MS)) == pdTRUE);
     if (g_httpMutex && !held) {
         addResult(DiagnosticTest::PRINTER_REACHABILITY, DiagnosticStatus::WARNING, 0, 0,
