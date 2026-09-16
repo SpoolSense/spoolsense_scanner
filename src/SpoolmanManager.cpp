@@ -1514,7 +1514,7 @@ void SpoolmanManager::taskLoop() {
                 // (isSkippableDuplicate), so dropping here would lose its sync
                 // after a failed OTA until the tag is lifted.
                 if (!otaHoldLogged) {
-                    Serial.println("SpoolmanManager: OTA in progress — holding sync requests");
+                    Serial.println("SpoolmanManager: OTA hold");
                     otaHoldLogged = true;
                 }
                 vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1553,7 +1553,7 @@ void SpoolmanManager::taskLoop() {
 
 bool SpoolmanManager::lookupSpoolByUid(const char* uid, SpoolDetails& outDetails) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: lookupSpoolByUid could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: lookup mutex timeout");
         return false;
     }
     if (WebServerManager::getInstance().otaExclusive()) {
@@ -1760,11 +1760,11 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
     if (success) *success = false;
     if (!isConfigured()) return 0.0f;
     if (WebServerManager::getInstance().otaExclusive()) {
-        Serial.println("SpoolmanManager: deductFromSpoolman — OTA in progress, deferred");
+        Serial.println("SpoolmanManager: deduct deferred (OTA)");
         return 0.0f;
     }
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: deductFromSpoolman — mutex timeout");
+        Serial.println("SpoolmanManager: deduct mutex timeout");
         return 0.0f;
     }
 
@@ -1840,7 +1840,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
 
 bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpoolmanId) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: Could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: sync mutex timeout");
         return false;
     }
     if (WebServerManager::getInstance().otaExclusive()) {

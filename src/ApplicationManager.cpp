@@ -1473,14 +1473,14 @@ bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
     // Serialize HTTP access: prevent concurrent requests from Spoolman/HA/Printer tasks
     extern SemaphoreHandle_t g_httpMutex;
     if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
-        Serial.println("ApplicationManager: Could not acquire HTTP mutex for ASSIGN_SPOOL");
+        Serial.println("ApplicationManager: assign mutex timeout");
         if (display_) display_->showText("Assign failed", "HTTP busy");
         return false;
     }
     if (WebServerManager::getInstance().otaExclusive()) {
         // OTA may have started while this call waited on the mutex.
         if (g_httpMutex) xSemaphoreGive(g_httpMutex);
-        Serial.println("ApplicationManager: ASSIGN_SPOOL deferred — firmware update in progress");
+        Serial.println("ApplicationManager: assign deferred (OTA)");
         if (display_) display_->showText("Assign failed", "Updating firmware");
         return false;
     }

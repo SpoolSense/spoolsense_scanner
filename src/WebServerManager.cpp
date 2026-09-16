@@ -297,7 +297,7 @@ void WebServerManager::handleApiLogsClear() {
 
 bool WebServerManager::otaStandDown503() {
     if (!otaExclusive()) return false;
-    sendError(503, "Firmware update in progress — try again when it finishes");
+    sendError(503, "Firmware update in progress");
     return true;
 }
 
@@ -1207,7 +1207,7 @@ void WebServerManager::otaDownloadTask(void* param) {
     // it) and is freed for the streaming phase, where the flag alone stands
     // the tickers down.
     if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(30000)) != pdTRUE) {
-        Serial.println("OTA: HTTP still busy after 30s — aborting update");
+        Serial.println("OTA: HTTP busy, aborting");
         NFCManager::getInstance().resumeScanTask();
         snprintf(self->_otaError, sizeof(self->_otaError), "Device busy — try again");
         self->_otaState = OtaState::FAILED;
