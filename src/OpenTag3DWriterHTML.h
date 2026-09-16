@@ -175,7 +175,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
           <section>
             <button type="button" class="advanced-toggle" id="advancedToggle" aria-expanded="false">
-              <span>Extended fields (NTAG215/216 only)</span>
+              <span>Advanced fields</span>
               <span data-toggle-text>Show</span>
             </button>
 
@@ -275,7 +275,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
             Place tag on reader&hellip; <span style="font-size:11px;color:#5a9a6a">hold still until detected</span>
           </div>
 
-          <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.000 &mdash; requires NTAG215 or larger.</div>
+          <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.003 &mdash; requires NTAG215 or larger.</div>
 
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
@@ -343,7 +343,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       </div>
     </section>
 
-    <div class="footer-note">OpenTag3D v2.000 &mdash; NTAG215/216</div>
+    <div class="footer-note">OpenTag3D v2.003 &mdash; NTAG215/216</div>
   </div>
 
   <script src="/js/shared.js?v=)rawliteral" FIRMWARE_VERSION R"rawliteral("></script>
