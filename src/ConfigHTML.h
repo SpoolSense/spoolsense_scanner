@@ -86,16 +86,17 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
             <div class="grid-2">
               <div class="field">
                 <label for="wifi_ssid">SSID</label>
-                <input id="wifi_ssid" type="text" placeholder="Your WiFi network" required />
+                <input id="wifi_ssid" type="text" placeholder="Your WiFi network" required autocorrect="off" autocapitalize="off" spellcheck="false" />
               </div>
               <div class="field">
                 <label for="wifi_pass">Password</label>
                 <div class="pass-wrap">
-                  <input id="wifi_pass" type="password" placeholder="Leave blank to keep current" />
+                  <input id="wifi_pass" type="password" placeholder="Leave blank to keep current" autocorrect="off" autocapitalize="off" spellcheck="false" />
                   <button type="button" class="pass-toggle" onclick="togglePass('wifi_pass',this)">Show</button>
                 </div>
               </div>
             </div>
+            <div id="smart_punct_warn" class="hidden" style="font-size:11px;color:#EAB308;margin-top:6px">Curly quote or long dash detected. Phone keyboards insert these automatically, and the SSID/password must match your network exactly. Ignore this only if yours really contains one (e.g. an iPhone hotspot).</div>
             <div class="toggle-row" style="margin-top:10px">
               <div>
                 <span id="wifi_keep_awake_label" class="toggle-label">Keep WiFi radio awake</span>
@@ -332,11 +333,25 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
       else { el.type = 'password'; btn.textContent = 'Show'; }
     }
 
+    // Smart punctuation (U+2018/2019/201C/201D quotes, U+2013/2014 dashes) breaks WiFi
+    // auth when a phone keyboard substitutes it. Warn, never block — some real SSIDs
+    // contain it (iPhone hotspots). fromCharCode keeps this source ASCII-only. (#305)
+    var SMART_PUNCT = new RegExp('[' + String.fromCharCode(0x2018, 0x2019, 0x201C, 0x201D, 0x2013, 0x2014) + ']');
+    function checkSmartPunct() {
+      var hit = SMART_PUNCT.test(document.getElementById('wifi_ssid').value) ||
+                SMART_PUNCT.test(document.getElementById('wifi_pass').value);
+      document.getElementById('smart_punct_warn').classList.toggle('hidden', !hit);
+    }
+    ['wifi_ssid', 'wifi_pass'].forEach(function(id) {
+      document.getElementById(id).addEventListener('input', checkSmartPunct);
+    });
+
     // Load current config
     api('/api/config').then(function(cfg) {
       maybeSetValue('hostname', cfg.hostname);
       if (cfg.low_spool_threshold_g !== undefined) document.getElementById('low_spool_g').value = cfg.low_spool_threshold_g;
       maybeSetValue('wifi_ssid', cfg.wifi_ssid);
+      checkSmartPunct();
       maybeSetValue('mqtt_host', cfg.mqtt_host);
       maybeSetValue('mqtt_port', cfg.mqtt_port);
       maybeSetValue('mqtt_user', cfg.mqtt_user);
