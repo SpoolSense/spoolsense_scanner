@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.11.1] - 2026-09-15
+
+### Added
+
+- **Seeed Studio XIAO ESP32-C6 board support** — a new `seeed_xiao_esp32c6` build target for compact NFC-only PN5180 scanners: XIAO hardware-SPI pin map, onboard single-color status LED (brightness-driven, active-low GPIO15), USB-CDC serial, and full CI + release-asset coverage. Community contribution, hardware-tested by the author. (#291)
+- **Three OpenTag3D manufacturer presets** — 3DFuel, Polar Filament, and Push Plastics join the writer's brand list as they adopt the format. Contributed by the OpenTag3D team. (#309)
+- **Apache-2.0 license** — the firmware now carries a formal LICENSE file. (#307)
+
+### Fixed
+
+- **Phone smart punctuation no longer breaks WiFi setup** — phone keyboards silently swap straight quotes for curly ones (and capitalize the first letter) while typing the SSID or password, and the mangled value was stored as-is, so WiFi failed with no hint. The WiFi fields now opt out of keyboard substitution, and a live warning appears whenever smart punctuation is present — on page load too, so an already-saved bad SSID is flagged. Warning only, never a block: real network names contain these characters (iPhone hotspots). (#305)
+
+### Changed
+
+- **OpenTag3D minor revisions through v1.003 and v2.003 accepted** — the published spec's minor updates changed no on-tag bytes (verified field-by-field against the spec), so tags stamped 1.001–1.003 and 2.001–2.003 now read, rewrite, and take weight deductions instead of being refused as unknown-newer. Fresh writes stamp v2.003. The lossless-rewrite guard still refuses anything past the verified ceiling. (#306)
+
 ## [1.11.0] - 2026-09-08
 
 ### Added
