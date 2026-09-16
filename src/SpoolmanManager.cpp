@@ -16,6 +16,7 @@
 #include <cmath>
 #include "openprinttag_lib.h"
 #include "LogBuffer.h"
+#include "WebServerManager.h"
 
 static constexpr size_t JSON_SMALL_CAPACITY = 256;
 static constexpr size_t JSON_MEDIUM_CAPACITY = 768;
@@ -1466,9 +1467,23 @@ void SpoolmanManager::taskFunc(void* param) {
 
 void SpoolmanManager::taskLoop() {
     SpoolmanSyncRequest req;
+    bool otaHoldLogged = false;
     while (true) {
-        if (xQueueReceive(syncQueue, &req, portMAX_DELAY) == pdTRUE) {
+        if (xQueuePeek(syncQueue, &req, portMAX_DELAY) == pdTRUE) {
             MemoryDiagnostics::reportSelf(MemoryDiagnostics::Task::SpoolmanSync);
+            if (WebServerManager::getInstance().otaExclusive()) {
+                // Leave the request queued: a stationary tag never re-enqueues
+                // (isSkippableDuplicate), so dropping here would lose its sync
+                // after a failed OTA until the tag is lifted.
+                if (!otaHoldLogged) {
+                    Serial.println("SpoolmanManager: OTA in progress — holding sync requests");
+                    otaHoldLogged = true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+            otaHoldLogged = false;
+            xQueueReceive(syncQueue, &req, 0);
             if (!isConfigured()) {
                 continue;
             }
@@ -1516,6 +1531,15 @@ void SpoolmanManager::taskLoop() {
                 strncpy(msg.payload.spoolmanSynced.material_name, req.material_name,
                         sizeof(msg.payload.spoolmanSynced.material_name) - 1);
                 msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+            }
+
+            if (!msg.payload.spoolmanSynced.success &&
+                WebServerManager::getInstance().otaExclusive()) {
+                // Failure while OTA holds the network is a stand-down, not a
+                // Spoolman answer: requeue for the hold loop instead of
+                // reporting a bogus result (full queue falls back to drop).
+                xQueueSendToFront(syncQueue, &req, 0);
+                continue;
             }
 
             ApplicationManager::getInstance().sendMessage(msg);
@@ -1726,6 +1750,10 @@ int SpoolmanManager::findSpoolIdByUidNoLock(const char* uid) {
 float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* success) {
     if (success) *success = false;
     if (!isConfigured()) return 0.0f;
+    if (WebServerManager::getInstance().otaExclusive()) {
+        Serial.println("SpoolmanManager: deductFromSpoolman — OTA in progress, deferred");
+        return 0.0f;
+    }
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
         Serial.println("SpoolmanManager: deductFromSpoolman — mutex timeout");
         return 0.0f;

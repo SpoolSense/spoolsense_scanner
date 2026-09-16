@@ -9,6 +9,7 @@
   #include "NFCTypes.h"             // CurrentSpoolState, TagKind
   #include "ConfigurationManager.h"
 #include "LogBuffer.h"
+  #include "WebServerManager.h"
   #include <Arduino.h>
   #include <WiFi.h>
   #include <HTTPClient.h>
@@ -439,6 +440,7 @@ bool U1Manager::queryLaneSensors(bool loaded[4]) {
 }
 
 void U1Manager::loopTick() {
+    if (WebServerManager::getInstance().otaExclusive()) return;
     auto& cfg = ConfigurationManager::getInstance();
     if (!cfg.isU1Enabled() || !cfg.isU1StageMode() || !cfg.isU1AutoPickEnabled()) return;
     if (!hasStagedSpool()) return;

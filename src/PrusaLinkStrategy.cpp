@@ -1,5 +1,6 @@
 #include "PrusaLinkStrategy.h"
 #include "ConfigurationManager.h"
+#include "WebServerManager.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -276,6 +277,10 @@ float PrusaLinkStrategy::fetchDeferredFilament(int expectedJobId) {
         if (attempt > 1) {
             vTaskDelay(pdMS_TO_TICKS(attempt * 1000));
         }
+
+        // An OTA that started during the unlocked backoff would otherwise see
+        // this retry re-acquire the drained mutex and run HTTP mid-download.
+        if (WebServerManager::getInstance().otaExclusive()) break;
 
         // acquire mutex only for this HTTP call, not for entire attempt sequence
         if (httpMutex_ != nullptr) {

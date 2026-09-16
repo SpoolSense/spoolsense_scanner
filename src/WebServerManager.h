@@ -16,6 +16,16 @@ class WebServerManager {
 public:
     static WebServerManager& getInstance();
 
+    // True while otaDownloadTask owns the network. OTA holds g_httpMutex only
+    // from drain-barrier start through the TLS handshake, then runs with the
+    // display framebuffer freed for TLS headroom — the firmware's tightest
+    // heap window. Periodic HTTP tickers stand down while this returns true.
+    // FAILED/SUCCESS must NOT count: a failed OTA does not reboot, and
+    // standing down on FAILED would kill HTTP until a power cycle.
+    bool otaExclusive() const {
+        return _otaState == OtaState::DOWNLOADING || _otaState == OtaState::FLASHING;
+    }
+
     // Call once in setup() after WiFi is connected or AP mode started.
     // Registers routes, starts mDNS as "spoolsense" (STA only).
     bool begin(bool apMode = false, uint16_t port = 80);
@@ -87,6 +97,7 @@ private:
     void handleApiSpoolmanFindVendor();
     void handleApiSpoolmanFindFilament();
     void handleApiSpoolmanSaveEnrichment();
+    bool otaStandDown503();
 
     // Log viewer
     void handleLogViewer();
