@@ -1047,7 +1047,11 @@ void WebServerManager::handleApiVersion() {
     StaticJsonDocument<128> doc;
     doc["version"] = FIRMWARE_VERSION;
     // Matches the PlatformIO env / release-asset naming for each target.
-#if defined(BOARD_ESP32_C6)
+    // XIAO must precede BOARD_ESP32_C6 — its env defines both flags, and the
+    // OTA page downloads spoolsense_scanner_<board>.bin by this string.
+#if defined(BOARD_SEEED_XIAO_ESP32_C6)
+    doc["board"] = "seeed_xiao_esp32c6";
+#elif defined(BOARD_ESP32_C6)
     doc["board"] = "esp32c6";
 #elif defined(BOARD_ESP32_C5)
     doc["board"] = "esp32c5";
