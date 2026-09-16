@@ -9,6 +9,7 @@
 #endif
 
 #include "NFCTypes.h"
+#include <atomic>
 
 class DisplayI;
 
@@ -107,7 +108,7 @@ private:
     // OTA download state
     static void otaDownloadTask(void* param);
     enum class OtaState : uint8_t { IDLE, DOWNLOADING, FLASHING, SUCCESS, FAILED };
-    volatile OtaState _otaState = OtaState::IDLE;
+    std::atomic<OtaState> _otaState{OtaState::IDLE};
     char _otaUrl[512] = {0};
     char _otaError[64] = {0};
     volatile uint8_t _otaProgress = 0;

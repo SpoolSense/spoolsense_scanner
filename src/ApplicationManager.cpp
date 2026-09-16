@@ -12,6 +12,7 @@
   #include "NFCManager.h"
   #include "DisplayI.h"
   #include "SpoolmanManager.h"
+  #include "WebServerManager.h"
   #include "ConfigurationManager.h"
   #include "HomeAssistantManager.h"
   #include "LEDManager.h"
@@ -1474,6 +1475,13 @@ bool ApplicationManager::sendAssignSpool(const char* toolNumber) {
     if (g_httpMutex && xSemaphoreTake(g_httpMutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
         Serial.println("ApplicationManager: Could not acquire HTTP mutex for ASSIGN_SPOOL");
         if (display_) display_->showText("Assign failed", "HTTP busy");
+        return false;
+    }
+    if (WebServerManager::getInstance().otaExclusive()) {
+        // OTA may have started while this call waited on the mutex.
+        if (g_httpMutex) xSemaphoreGive(g_httpMutex);
+        Serial.println("ApplicationManager: ASSIGN_SPOOL deferred — firmware update in progress");
+        if (display_) display_->showText("Assign failed", "Updating firmware");
         return false;
     }
 

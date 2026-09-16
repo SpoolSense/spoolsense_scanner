@@ -287,6 +287,11 @@ float PrusaLinkStrategy::fetchDeferredFilament(int expectedJobId) {
             if (xSemaphoreTake(httpMutex_, pdMS_TO_TICKS(10000)) != pdTRUE) {
                 continue;
             }
+            if (WebServerManager::getInstance().otaExclusive()) {
+                // OTA started during the unlocked backoff or the mutex wait.
+                xSemaphoreGive(httpMutex_);
+                break;
+            }
         }
 
         char url[URL_BUF];

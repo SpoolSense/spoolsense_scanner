@@ -8,6 +8,8 @@
 #include <freertos/semphr.h>
 #include <string>
 
+struct AppMessage;
+
 struct SpoolmanSyncRequest {
     char spool_id[17];           // NFC tag UID hex string
     uint8_t material_type;       // OPT_MATERIAL_TYPE_PLA, etc.
@@ -165,6 +167,7 @@ private:
     void storeCachedSpoolmanId(const char* spoolId, int32_t spoolmanId);
     bool isSyncCacheHit(const char* spoolId, int32_t spoolmanId, int32_t filamentId, float remainingWeight);
     void storeSyncState(const char* spoolId, int32_t spoolmanId, int32_t filamentId, float remainingWeight);
+    void processSyncRequest(const SpoolmanSyncRequest& req, AppMessage& msg);
 
     QueueHandle_t syncQueue = nullptr;
     SemaphoreHandle_t httpMutex_ = nullptr;
