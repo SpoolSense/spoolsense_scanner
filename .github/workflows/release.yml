@@ -79,6 +79,14 @@ jobs:
           cp .pio/build/esp32c5/bootloader.bin release/bootloader_esp32c5.bin
           cp .pio/build/esp32c5/partitions.bin release/partitions_esp32c5.bin
 
+      - name: Build + stage Seeed XIAO ESP32-C6
+        run: |
+          pio run -e seeed_xiao_esp32c6
+          python scripts/check_flash_budget.py seeed_xiao_esp32c6
+          cp .pio/build/seeed_xiao_esp32c6/firmware.bin   release/spoolsense_scanner_seeed_xiao_esp32c6.bin
+          cp .pio/build/seeed_xiao_esp32c6/bootloader.bin release/bootloader_seeed_xiao_esp32c6.bin
+          cp .pio/build/seeed_xiao_esp32c6/partitions.bin release/partitions_seeed_xiao_esp32c6.bin
+
       - name: Prepare release artifacts
         run: |
           # All firmware/bootloader/partition .bins were staged as each env
@@ -118,18 +126,21 @@ jobs:
             release/spoolsense_scanner_esp32c3.bin
             release/spoolsense_scanner_esp32c6.bin
             release/spoolsense_scanner_esp32c5.bin
+            release/spoolsense_scanner_seeed_xiao_esp32c6.bin
             release/bootloader_esp32dev.bin
             release/bootloader_esp32s3zero.bin
             release/bootloader_esp32s3devkitc.bin
             release/bootloader_esp32c3.bin
             release/bootloader_esp32c6.bin
             release/bootloader_esp32c5.bin
+            release/bootloader_seeed_xiao_esp32c6.bin
             release/partitions_esp32dev.bin
             release/partitions_esp32s3zero.bin
             release/partitions_esp32s3devkitc.bin
             release/partitions_esp32c3.bin
             release/partitions_esp32c6.bin
             release/partitions_esp32c5.bin
+            release/partitions_seeed_xiao_esp32c6.bin
             release/*.sha256
             release/partitions.csv
 

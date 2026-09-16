@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [esp32dev, esp32s3zero, esp32c3, esp32s3devkitc, esp32c6, esp32c5]
+        env: [esp32dev, esp32s3zero, esp32c3, esp32s3devkitc, esp32c6, esp32c5, seeed_xiao_esp32c6]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
