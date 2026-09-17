@@ -2034,9 +2034,33 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     PATCH_NUM("target_volumetric_speed",  target_volumetric_speed,  OT3D_F_TARGET_VOLUMETRIC_SPEED,  0, 255)
     PATCH_NUM("min_nozzle_diameter",      min_nozzle_diameter,      OT3D_F_MIN_NOZZLE_DIAMETER,      0, 255)
 
+    // Barcode has three shapes: a digit string (validated, then parsed), a
+    // bare JSON number (what scripts and Home Assistant send), or absent
+    // (leaves the field untouched — unlike the old zeroed struct, a patch
+    // does not write 0 just because the key was missing).
     if (doc["barcode"].is<const char*>()) {
-        patch.values.barcode = strtoull(doc["barcode"].as<const char*>(), nullptr, 10);
+        const char* bcStr = doc["barcode"].as<const char*>();
+        // Whole string must be digits — strtoull alone accepts leading
+        // whitespace and signs, and "-5" wraps in unsigned arithmetic.
+        for (const char* p = bcStr; *p; ++p) {
+            if (*p < '0' || *p > '9') {
+                sendError(400, "Barcode must be digits only");
+                return;
+            }
+        }
+        patch.values.barcode = strtoull(bcStr, nullptr, 10);
         ot3d_mask_set(&patch.mask, OT3D_F_BARCODE);
+    } else if (doc["barcode"].is<long long>()) {
+        patch.values.barcode = (uint64_t)doc["barcode"].as<long long>();
+        ot3d_mask_set(&patch.mask, OT3D_F_BARCODE);
+    } else if (!doc["barcode"].isNull()) {
+        sendError(400, "barcode must be a string or number");
+        return;
+    }
+    if (ot3d_mask_get(patch.mask, OT3D_F_BARCODE) &&
+        patch.values.barcode > 99999999999999ULL) {  // GTIN caps at 14 digits (also under the 6-byte field max)
+        sendError(400, "Barcode exceeds the 14-digit GTIN range");
+        return;
     }
 
 #undef PATCH_STR

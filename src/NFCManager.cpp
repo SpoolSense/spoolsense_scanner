@@ -2099,8 +2099,17 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) return false;
 
-    if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
+    if (!rawWritePending_) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
+        return false;
+    }
+    // Anything other than a bare opentag3d_t is a shape this function does not
+    // understand yet (e.g. the ot3d_patch_t envelope, which is larger) —
+    // refuse the write instead of reinterpreting foreign bytes as tag fields.
+    if (rawWriteBufferSize_ != sizeof(opentag3d_t)) {
+        Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u (expected %u) - refusing write\n",
+                      (unsigned)rawWriteBufferSize_, (unsigned)sizeof(opentag3d_t));
+        rawWritePending_ = false;
         return false;
     }
 
