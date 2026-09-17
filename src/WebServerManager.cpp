@@ -1430,6 +1430,9 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
         JsonArray a = obj.createNestedArray(key);
         for (int c = 0; c < 4; c++) a.add(ot3d.color_rgba[i][c]);
     }
+    // Raw encoded value (mm x 0.1), NOT converted with opentag3d_transmission_mm()
+    // on purpose: the writer form, its POST field, and the struct member all use
+    // this same raw encoding, so a read-then-write round-trips unchanged.
     if (ot3d.transmission_distance > 0) obj["transmission_distance"] = ot3d.transmission_distance;
 
     obj["target_weight_g"] = ot3d.target_weight_g;
