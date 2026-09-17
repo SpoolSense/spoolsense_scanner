@@ -37,3 +37,6 @@ lancedb/
 # Generated gzipped web assets (built by scripts/gen_gzip_assets.py)
 src/gen/
 docs/spool.png
+
+# Local working notes — never publish
+docs/issue-316-assessment.md
