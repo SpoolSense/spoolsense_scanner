@@ -77,65 +77,60 @@ static void build_rich_baseline(opentag3d_t *t) {
     t->min_nozzle_diameter = 46;
 }
 
-/* Test that all uint8_t baseline values are distinct. */
-static void test_baseline_uniqueness(void) {
-    opentag3d_t base;
-    build_rich_baseline(&base);
-
-    uint8_t values[64];
-    int count = 0;
-
-    values[count++] = base.color_rgba[0][0];
-    values[count++] = base.color_rgba[0][1];
-    values[count++] = base.color_rgba[0][2];
-    values[count++] = base.color_rgba[0][3];
-    values[count++] = base.color_rgba[1][0];
-    values[count++] = base.color_rgba[1][1];
-    values[count++] = base.color_rgba[1][2];
-    values[count++] = base.color_rgba[1][3];
-    values[count++] = base.color_rgba[2][0];
-    values[count++] = base.color_rgba[2][1];
-    values[count++] = base.color_rgba[2][2];
-    values[count++] = base.color_rgba[2][3];
-    values[count++] = base.color_rgba[3][0];
-    values[count++] = base.color_rgba[3][1];
-    values[count++] = base.color_rgba[3][2];
-    values[count++] = base.color_rgba[3][3];
-    values[count++] = base.print_temp_encoded;
-    values[count++] = base.bed_temp_encoded;
-    values[count++] = base.manufacture_month;
-    values[count++] = base.manufacture_day;
-    values[count++] = base.manufacture_hour;
-    values[count++] = base.manufacture_minute;
-    values[count++] = base.manufacture_second;
-    values[count++] = base.spool_core_diameter_mm;
-    values[count++] = base.mfi_temp_encoded;
-    values[count++] = base.mfi_load;
-    values[count++] = base.mfi_value;
-    values[count++] = base.measured_tolerance_um;
-    values[count++] = base.max_dry_temp_encoded;
-    values[count++] = base.dry_time_hours;
-    values[count++] = base.min_print_temp_encoded;
-    values[count++] = base.max_print_temp_encoded;
-    values[count++] = base.min_bed_temp_encoded;
-    values[count++] = base.max_bed_temp_encoded;
-    values[count++] = base.min_volumetric_speed;
-    values[count++] = base.max_volumetric_speed;
-    values[count++] = base.target_volumetric_speed;
-    values[count++] = base.chamber_temp_encoded;
-    values[count++] = base.min_nozzle_diameter;
-
-    for (int i = 0; i < count; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (values[i] == values[j]) {
-                printf("  FAIL  Z: baseline collision at indices %d and %d (both %d)\n", i, j, values[i]);
-                failures++;
-                return;
-            }
-        }
-    }
-    printf("  PASS  Z: all %d uint8_t baseline values are distinct\n", count);
-}
+/* Field table: all 44 patchable fields with offset, size, and test value.
+ * Also used for baseline uniqueness checking. */
+static const struct {
+    ot3d_field_t id;
+    size_t offset;
+    size_t size;
+    uint8_t patch_value;
+} field_specs[] = {
+    { OT3D_F_BASE_MATERIAL, offsetof(opentag3d_t, base_material), sizeof(((opentag3d_t*)0)->base_material), 42 },
+    { OT3D_F_MATERIAL_MODIFIERS, offsetof(opentag3d_t, material_modifiers), sizeof(((opentag3d_t*)0)->material_modifiers), 43 },
+    { OT3D_F_MANUFACTURER, offsetof(opentag3d_t, manufacturer), sizeof(((opentag3d_t*)0)->manufacturer), 44 },
+    { OT3D_F_COLOR_NAME, offsetof(opentag3d_t, color_name), sizeof(((opentag3d_t*)0)->color_name), 45 },
+    { OT3D_F_COLOR0_RGB, offsetof(opentag3d_t, color_rgba[0][0]), 3, 100 },
+    { OT3D_F_COLOR0_ALPHA, offsetof(opentag3d_t, color_rgba[0][3]), 1, 101 },
+    { OT3D_F_COLOR1, offsetof(opentag3d_t, color_rgba[1][0]), 4, 102 },
+    { OT3D_F_COLOR2, offsetof(opentag3d_t, color_rgba[2][0]), 4, 103 },
+    { OT3D_F_COLOR3, offsetof(opentag3d_t, color_rgba[3][0]), 4, 104 },
+    { OT3D_F_DIAMETER_UM, offsetof(opentag3d_t, diameter_um), sizeof(((opentag3d_t*)0)->diameter_um), 46 },
+    { OT3D_F_TARGET_WEIGHT_G, offsetof(opentag3d_t, target_weight_g), sizeof(((opentag3d_t*)0)->target_weight_g), 47 },
+    { OT3D_F_PRINT_TEMP, offsetof(opentag3d_t, print_temp_encoded), 1, 105 },
+    { OT3D_F_BED_TEMP, offsetof(opentag3d_t, bed_temp_encoded), 1, 106 },
+    { OT3D_F_DENSITY, offsetof(opentag3d_t, density_ugcm3), sizeof(((opentag3d_t*)0)->density_ugcm3), 48 },
+    { OT3D_F_TRANSMISSION_DISTANCE, offsetof(opentag3d_t, transmission_distance), sizeof(((opentag3d_t*)0)->transmission_distance), 49 },
+    { OT3D_F_ONLINE_URL, offsetof(opentag3d_t, online_url), sizeof(((opentag3d_t*)0)->online_url), 50 },
+    { OT3D_F_SERIAL_NUMBER, offsetof(opentag3d_t, serial_number), sizeof(((opentag3d_t*)0)->serial_number), 51 },
+    { OT3D_F_MANUFACTURE_YEAR, offsetof(opentag3d_t, manufacture_year), sizeof(((opentag3d_t*)0)->manufacture_year), 52 },
+    { OT3D_F_MANUFACTURE_MONTH, offsetof(opentag3d_t, manufacture_month), 1, 107 },
+    { OT3D_F_MANUFACTURE_DAY, offsetof(opentag3d_t, manufacture_day), 1, 108 },
+    { OT3D_F_MANUFACTURE_HOUR, offsetof(opentag3d_t, manufacture_hour), 1, 109 },
+    { OT3D_F_MANUFACTURE_MINUTE, offsetof(opentag3d_t, manufacture_minute), 1, 110 },
+    { OT3D_F_MANUFACTURE_SECOND, offsetof(opentag3d_t, manufacture_second), 1, 111 },
+    { OT3D_F_SPOOL_CORE_DIAMETER, offsetof(opentag3d_t, spool_core_diameter_mm), 1, 112 },
+    { OT3D_F_MFI_TEMP, offsetof(opentag3d_t, mfi_temp_encoded), 1, 113 },
+    { OT3D_F_MFI_LOAD, offsetof(opentag3d_t, mfi_load), 1, 114 },
+    { OT3D_F_MFI_VALUE, offsetof(opentag3d_t, mfi_value), 1, 115 },
+    { OT3D_F_MEASURED_TOLERANCE, offsetof(opentag3d_t, measured_tolerance_um), 1, 116 },
+    { OT3D_F_EMPTY_SPOOL_WEIGHT_G, offsetof(opentag3d_t, empty_spool_weight_g), sizeof(((opentag3d_t*)0)->empty_spool_weight_g), 53 },
+    { OT3D_F_MEASURED_WEIGHT_G, offsetof(opentag3d_t, measured_filament_weight_g), sizeof(((opentag3d_t*)0)->measured_filament_weight_g), 54 },
+    { OT3D_F_MEASURED_LENGTH_M, offsetof(opentag3d_t, measured_filament_length_m), sizeof(((opentag3d_t*)0)->measured_filament_length_m), 55 },
+    { OT3D_F_MAX_DRY_TEMP, offsetof(opentag3d_t, max_dry_temp_encoded), 1, 117 },
+    { OT3D_F_DRY_TIME_HOURS, offsetof(opentag3d_t, dry_time_hours), 1, 118 },
+    { OT3D_F_MIN_PRINT_TEMP, offsetof(opentag3d_t, min_print_temp_encoded), 1, 119 },
+    { OT3D_F_MAX_PRINT_TEMP, offsetof(opentag3d_t, max_print_temp_encoded), 1, 120 },
+    { OT3D_F_MIN_BED_TEMP, offsetof(opentag3d_t, min_bed_temp_encoded), 1, 121 },
+    { OT3D_F_MAX_BED_TEMP, offsetof(opentag3d_t, max_bed_temp_encoded), 1, 122 },
+    { OT3D_F_MIN_VOLUMETRIC_SPEED, offsetof(opentag3d_t, min_volumetric_speed), 1, 123 },
+    { OT3D_F_MAX_VOLUMETRIC_SPEED, offsetof(opentag3d_t, max_volumetric_speed), 1, 124 },
+    { OT3D_F_TARGET_VOLUMETRIC_SPEED, offsetof(opentag3d_t, target_volumetric_speed), 1, 125 },
+    { OT3D_F_BARCODE, offsetof(opentag3d_t, barcode), sizeof(((opentag3d_t*)0)->barcode), 56 },
+    { OT3D_F_SKU, offsetof(opentag3d_t, sku), sizeof(((opentag3d_t*)0)->sku), 57 },
+    { OT3D_F_CHAMBER_TEMP, offsetof(opentag3d_t, chamber_temp_encoded), 1, 126 },
+    { OT3D_F_MIN_NOZZLE_DIAMETER, offsetof(opentag3d_t, min_nozzle_diameter), 1, 127 },
+};
+static const int num_field_specs = sizeof(field_specs) / sizeof(field_specs[0]);
 
 int main(void) {
     printf("OpenTag3D patch tests\n");
@@ -248,82 +243,58 @@ int main(void) {
               "H: envelope is distinguishable from a bare struct by size");
     }
 
-    /* Z: baseline uniqueness — all uint8_t values distinct. */
-    test_baseline_uniqueness();
+    /* Z: baseline uniqueness — all single-byte patchable fields have distinct values.
+     * Derived from the field_specs table to guarantee no field is omitted. */
+    {
+        uint8_t values[64];
+        int count = 0;
+
+        opentag3d_t base;
+        build_rich_baseline(&base);
+
+        for (int i = 0; i < num_field_specs; i++) {
+            if (field_specs[i].size == 1) {
+                values[count++] = *((uint8_t*)(&base) + field_specs[i].offset);
+            }
+        }
+
+        for (int i = 0; i < count; i++) {
+            for (int j = i + 1; j < count; j++) {
+                if (values[i] == values[j]) {
+                    printf("  FAIL  Z: baseline collision at indices %d and %d (both %d)\n", i, j, values[i]);
+                    failures++;
+                    goto z_done;
+                }
+            }
+        }
+        printf("  PASS  Z: all %d single-byte baseline values are distinct\n", count);
+        z_done:;
+    }
 
     /* I: table-driven comprehensive field coverage — all 44 ids.
-     * Each field tested in two directions: APPLIED and SURVIVED. */
+     * Each field tested in two directions: APPLIED and SURVIVED.
+     * Multi-byte fields tested with all bytes filled explicitly. */
     {
-        struct {
-            ot3d_field_t id;
-            size_t offset;
-            size_t size;
-            uint8_t patch_value;
-        } fields[] = {
-            { OT3D_F_BASE_MATERIAL, offsetof(opentag3d_t, base_material), sizeof(((opentag3d_t*)0)->base_material), 42 },
-            { OT3D_F_MATERIAL_MODIFIERS, offsetof(opentag3d_t, material_modifiers), sizeof(((opentag3d_t*)0)->material_modifiers), 43 },
-            { OT3D_F_MANUFACTURER, offsetof(opentag3d_t, manufacturer), sizeof(((opentag3d_t*)0)->manufacturer), 44 },
-            { OT3D_F_COLOR_NAME, offsetof(opentag3d_t, color_name), sizeof(((opentag3d_t*)0)->color_name), 45 },
-            { OT3D_F_COLOR0_RGB, offsetof(opentag3d_t, color_rgba[0][0]), 3, 100 },
-            { OT3D_F_COLOR0_ALPHA, offsetof(opentag3d_t, color_rgba[0][3]), 1, 101 },
-            { OT3D_F_COLOR1, offsetof(opentag3d_t, color_rgba[1][0]), 4, 102 },
-            { OT3D_F_COLOR2, offsetof(opentag3d_t, color_rgba[2][0]), 4, 103 },
-            { OT3D_F_COLOR3, offsetof(opentag3d_t, color_rgba[3][0]), 4, 104 },
-            { OT3D_F_DIAMETER_UM, offsetof(opentag3d_t, diameter_um), sizeof(((opentag3d_t*)0)->diameter_um), 46 },
-            { OT3D_F_TARGET_WEIGHT_G, offsetof(opentag3d_t, target_weight_g), sizeof(((opentag3d_t*)0)->target_weight_g), 47 },
-            { OT3D_F_PRINT_TEMP, offsetof(opentag3d_t, print_temp_encoded), 1, 105 },
-            { OT3D_F_BED_TEMP, offsetof(opentag3d_t, bed_temp_encoded), 1, 106 },
-            { OT3D_F_DENSITY, offsetof(opentag3d_t, density_ugcm3), sizeof(((opentag3d_t*)0)->density_ugcm3), 48 },
-            { OT3D_F_TRANSMISSION_DISTANCE, offsetof(opentag3d_t, transmission_distance), sizeof(((opentag3d_t*)0)->transmission_distance), 49 },
-            { OT3D_F_ONLINE_URL, offsetof(opentag3d_t, online_url), sizeof(((opentag3d_t*)0)->online_url), 50 },
-            { OT3D_F_SERIAL_NUMBER, offsetof(opentag3d_t, serial_number), sizeof(((opentag3d_t*)0)->serial_number), 51 },
-            { OT3D_F_MANUFACTURE_YEAR, offsetof(opentag3d_t, manufacture_year), sizeof(((opentag3d_t*)0)->manufacture_year), 52 },
-            { OT3D_F_MANUFACTURE_MONTH, offsetof(opentag3d_t, manufacture_month), 1, 107 },
-            { OT3D_F_MANUFACTURE_DAY, offsetof(opentag3d_t, manufacture_day), 1, 108 },
-            { OT3D_F_MANUFACTURE_HOUR, offsetof(opentag3d_t, manufacture_hour), 1, 109 },
-            { OT3D_F_MANUFACTURE_MINUTE, offsetof(opentag3d_t, manufacture_minute), 1, 110 },
-            { OT3D_F_MANUFACTURE_SECOND, offsetof(opentag3d_t, manufacture_second), 1, 111 },
-            { OT3D_F_SPOOL_CORE_DIAMETER, offsetof(opentag3d_t, spool_core_diameter_mm), 1, 112 },
-            { OT3D_F_MFI_TEMP, offsetof(opentag3d_t, mfi_temp_encoded), 1, 113 },
-            { OT3D_F_MFI_LOAD, offsetof(opentag3d_t, mfi_load), 1, 114 },
-            { OT3D_F_MFI_VALUE, offsetof(opentag3d_t, mfi_value), 1, 115 },
-            { OT3D_F_MEASURED_TOLERANCE, offsetof(opentag3d_t, measured_tolerance_um), 1, 116 },
-            { OT3D_F_EMPTY_SPOOL_WEIGHT_G, offsetof(opentag3d_t, empty_spool_weight_g), sizeof(((opentag3d_t*)0)->empty_spool_weight_g), 53 },
-            { OT3D_F_MEASURED_WEIGHT_G, offsetof(opentag3d_t, measured_filament_weight_g), sizeof(((opentag3d_t*)0)->measured_filament_weight_g), 54 },
-            { OT3D_F_MEASURED_LENGTH_M, offsetof(opentag3d_t, measured_filament_length_m), sizeof(((opentag3d_t*)0)->measured_filament_length_m), 55 },
-            { OT3D_F_MAX_DRY_TEMP, offsetof(opentag3d_t, max_dry_temp_encoded), 1, 117 },
-            { OT3D_F_DRY_TIME_HOURS, offsetof(opentag3d_t, dry_time_hours), 1, 118 },
-            { OT3D_F_MIN_PRINT_TEMP, offsetof(opentag3d_t, min_print_temp_encoded), 1, 119 },
-            { OT3D_F_MAX_PRINT_TEMP, offsetof(opentag3d_t, max_print_temp_encoded), 1, 120 },
-            { OT3D_F_MIN_BED_TEMP, offsetof(opentag3d_t, min_bed_temp_encoded), 1, 121 },
-            { OT3D_F_MAX_BED_TEMP, offsetof(opentag3d_t, max_bed_temp_encoded), 1, 122 },
-            { OT3D_F_MIN_VOLUMETRIC_SPEED, offsetof(opentag3d_t, min_volumetric_speed), 1, 123 },
-            { OT3D_F_MAX_VOLUMETRIC_SPEED, offsetof(opentag3d_t, max_volumetric_speed), 1, 124 },
-            { OT3D_F_TARGET_VOLUMETRIC_SPEED, offsetof(opentag3d_t, target_volumetric_speed), 1, 125 },
-            { OT3D_F_BARCODE, offsetof(opentag3d_t, barcode), sizeof(((opentag3d_t*)0)->barcode), 56 },
-            { OT3D_F_SKU, offsetof(opentag3d_t, sku), sizeof(((opentag3d_t*)0)->sku), 57 },
-            { OT3D_F_CHAMBER_TEMP, offsetof(opentag3d_t, chamber_temp_encoded), 1, 126 },
-            { OT3D_F_MIN_NOZZLE_DIAMETER, offsetof(opentag3d_t, min_nozzle_diameter), 1, 127 },
-        };
+        CHECK(num_field_specs == OT3D_F_COUNT, "I: field table has exactly OT3D_F_COUNT entries");
 
-        int num_fields = sizeof(fields) / sizeof(fields[0]);
-        CHECK(num_fields == OT3D_F_COUNT, "I: field table has exactly OT3D_F_COUNT entries");
-
-        for (int f = 0; f < num_fields; f++) {
+        for (int f = 0; f < num_field_specs; f++) {
             opentag3d_t base, patch, before;
             uint64_t mask = 0;
+            uint8_t expected[64];
 
             build_rich_baseline(&base);
             before = base;
             memset(&patch, 0, sizeof(patch));
 
-            ot3d_mask_set(&mask, fields[f].id);
+            ot3d_mask_set(&mask, field_specs[f].id);
 
-            memcpy((uint8_t*)&patch + fields[f].offset, (uint8_t*)&fields[f].patch_value, fields[f].size);
+            CHECK(field_specs[f].size <= sizeof(expected), "I: field size fits the expected buffer");
+            memset(expected, field_specs[f].patch_value, field_specs[f].size);
+            memcpy((uint8_t*)&patch + field_specs[f].offset, expected, field_specs[f].size);
 
             opentag3d_apply_patch(&base, &patch, mask);
 
-            int applied_ok = memcmp((uint8_t*)&base + fields[f].offset, &fields[f].patch_value, fields[f].size) == 0;
+            int applied_ok = memcmp((uint8_t*)&base + field_specs[f].offset, expected, field_specs[f].size) == 0;
             char buf[128];
             snprintf(buf, sizeof(buf), "I: field %d applied", f);
             CHECK(applied_ok, buf);
@@ -331,7 +302,7 @@ int main(void) {
             for (int i = 0; i < (int)sizeof(opentag3d_t); i++) {
                 uint8_t before_byte = ((uint8_t*)&before)[i];
                 uint8_t base_byte = ((uint8_t*)&base)[i];
-                int in_modified = (i >= (int)fields[f].offset && i < (int)(fields[f].offset + fields[f].size));
+                int in_modified = (i >= (int)field_specs[f].offset && i < (int)(field_specs[f].offset + field_specs[f].size));
                 if (!in_modified && before_byte != base_byte) {
                     snprintf(buf, sizeof(buf), "I: field %d survived (byte %d changed)", f, i);
                     CHECK(0, buf);
