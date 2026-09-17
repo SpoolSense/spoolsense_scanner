@@ -2,7 +2,7 @@
 
 // TagStateJson — shared MQTT tag/state JSON builder using ArduinoJson.
 // Consolidates 6 duplicate publish paths into one struct + two builders.
-// Stack-allocated StaticJsonDocument<512> — no heap, ~6% of task stack.
+// ArduinoJson 7 JsonDocument uses elastic heap storage; builders are short-lived.
 
 #include <ArduinoJson.h>
 #include <cstdint>
@@ -37,7 +37,7 @@ struct TagStateFields {
 
 // Build full tag state JSON. Optional temp/density/diameter fields included only when non-zero.
 inline size_t buildTagStateJson(char* out, size_t outSize, const TagStateFields& f) {
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
 
     doc["uid"] = f.uid;
     doc["present"] = f.present;
@@ -66,7 +66,7 @@ inline size_t buildTagStateJson(char* out, size_t outSize, const TagStateFields&
 
 // Empty/removed tag state — present=false, all fields zeroed
 inline size_t buildEmptyTagStateJson(char* out, size_t outSize) {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
 
     doc["uid"] = "";
     doc["present"] = false;
