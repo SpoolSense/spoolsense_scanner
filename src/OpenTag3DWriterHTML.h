@@ -695,7 +695,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
           // write from an unrelated preserve-mode edit that never touched
           // these fields, so it would report success on a pending/failed write.
           var w = status.write_result;
-          if (!w || w.request_id !== requestId) return false;   // not our result yet
+          if (!w || w.request_id !== requestId || w.uid !== payload.uid) return false;   // not our result yet
           if (!w.ok) throw new Error(w.error || 'Write failed');
           return true;
         },

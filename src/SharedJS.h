@@ -673,7 +673,6 @@ async function sharedWriteFlow(config) {
       body: JSON.stringify(payload)
     });
     var requestId = writeResp && writeResp.request_id;
-    setStepState('step-write', 'done');
 
     setStepState('step-verify', 'active');
     setBanner('statusBanner', 'Verifying write\u2026');
@@ -682,8 +681,10 @@ async function sharedWriteFlow(config) {
     var verifyDeadline = Date.now() + 15000;
     while (Date.now() < verifyDeadline) {
       await sleep(500);
-      var status = await api('/api/status');
-      if (status.present && config.verify(status, payload, requestId)) {
+      var status = await api('/api/status' + (requestId ? ('?request_id=' + requestId) : ''));
+      var mine = status.write_result && status.write_result.request_id === requestId;
+      if ((status.present || mine) && config.verify(status, payload, requestId)) {
+        setStepState('step-write', 'done');
         setBanner('statusBanner', 'Tag verified \u2014 hold for a moment\u2026');
         await sleep(2000);
         setStepState('step-verify', 'done');

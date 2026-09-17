@@ -85,7 +85,12 @@ public:
         bool     ok = false;
         char     error[48] = {0};
     };
-    bool getLastWriteOutcome(WriteOutcome& out);
+    // request_id == 0 returns the most recently completed write, whatever it
+    // is; otherwise looks that specific request up in the ring. A second
+    // write (rescan-triggered Spoolman write-back, another tab, a deduction)
+    // can complete before the browser polls again, so "most recent" alone
+    // would clobber the outcome a caller is still waiting on (#316 review).
+    bool getLastWriteOutcome(uint32_t request_id, WriteOutcome& out);
 
     bool getCurrentSpoolState(CurrentSpoolState& out);
     bool getLastTigerTagData(TigerTagData& out);
@@ -172,7 +177,10 @@ private:
     void sendTagRemovedMessage();
     void processWriteQueue();
     bool executeWrite(const NFCWriteRequest& request);
-    bool validateWriteUid(const char* expectedUid, const char* writeType);
+    // outTimedOut, when given, distinguishes a tagMutex acquisition timeout
+    // from a genuine UID mismatch — callers that report a short error string
+    // to the user need to tell "tag removed" from "reader busy" (#316 review).
+    bool validateWriteUid(const char* expectedUid, const char* writeType, bool* outTimedOut = nullptr);
     bool checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType);
     bool executeTigerTagWrite(const NFCWriteRequest& request);
     bool verifyISO14443Readback(uint8_t startPage, uint8_t pageCount, const uint8_t* expected);
@@ -255,11 +263,16 @@ private:
     SemaphoreHandle_t completedMutex = nullptr;
     static uint32_t s_write_request_id_counter;
 
-    // Result of the most recently finished write request (tagMutex-guarded)
-    WriteOutcome lastWriteOutcome_;
+    // Ring of recent write outcomes (tagMutex-guarded), not just the latest —
+    // a completed write can be followed by an unrelated one (rescan-triggered
+    // Spoolman write-back, another tab/DeductionManager) before the browser's
+    // next poll, which would clobber a single slot the browser still needs.
+    static constexpr size_t WRITE_OUTCOME_RING_SIZE = 4;
+    WriteOutcome writeOutcomeRing_[WRITE_OUTCOME_RING_SIZE];
+    size_t writeOutcomeRingNext_ = 0;
     // Scan-task scratch: failure reason set by executeOpenTag3DWrite before
-    // each `return false`, consumed into lastWriteOutcome_ once the write
-    // queue consumer has the executor's result. Cleared before each request.
+    // each `return false`, consumed into the ring once the write queue
+    // consumer has the executor's result. Cleared before each request.
     char lastWriteErrorReason_[48] = {0};
 
     // Task handle

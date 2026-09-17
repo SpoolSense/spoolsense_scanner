@@ -1665,9 +1665,16 @@ void WebServerManager::handleApiStatus() {
 
     // Published whenever a result is available, independent of tag presence —
     // a successful OpenTag3D write forces a rescan that briefly reports
-    // present=false, and the browser must still see the outcome (#316).
+    // present=false, and the browser must still see the outcome (#316). A
+    // poller that knows which request it's waiting on passes request_id so
+    // it gets THAT outcome, not whatever completed most recently — an
+    // unrelated write can finish first and would otherwise hide it.
+    uint32_t wantedRequestId = 0;
+    if (_server.hasArg("request_id")) {
+        wantedRequestId = (uint32_t)_server.arg("request_id").toInt();
+    }
     NFCManager::WriteOutcome wr;
-    if (NFCManager::getInstance().getLastWriteOutcome(wr) && wr.done) {
+    if (NFCManager::getInstance().getLastWriteOutcome(wantedRequestId, wr) && wr.done) {
         JsonObject w = doc.createNestedObject("write_result");
         w["request_id"] = wr.request_id;
         w["uid"] = wr.uid;

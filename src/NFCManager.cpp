@@ -104,12 +104,27 @@ bool NFCManager::getCurrentSpoolState(CurrentSpoolState& out) {
     return true;
 }
 
-bool NFCManager::getLastWriteOutcome(WriteOutcome& out) {
+bool NFCManager::getLastWriteOutcome(uint32_t request_id, WriteOutcome& out) {
     if (tagMutex == nullptr) return false;
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
-    out = lastWriteOutcome_;
+    bool found = false;
+    if (request_id == 0) {
+        size_t mostRecent = (writeOutcomeRingNext_ + WRITE_OUTCOME_RING_SIZE - 1) % WRITE_OUTCOME_RING_SIZE;
+        if (writeOutcomeRing_[mostRecent].done) {
+            out = writeOutcomeRing_[mostRecent];
+            found = true;
+        }
+    } else {
+        for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+            if (writeOutcomeRing_[i].done && writeOutcomeRing_[i].request_id == request_id) {
+                out = writeOutcomeRing_[i];
+                found = true;
+                break;
+            }
+        }
+    }
     xSemaphoreGive(tagMutex);
-    return true;
+    return found;
 }
 
 bool NFCManager::getLastTigerTagData(TigerTagData& out) {
@@ -1712,14 +1727,16 @@ void NFCManager::processWriteQueue() {
                 snapshotValid = true;
             }
 
-            lastWriteOutcome_.request_id = request.request_id;
-            strncpy(lastWriteOutcome_.uid, request.expected_spool_id, sizeof(lastWriteOutcome_.uid) - 1);
-            lastWriteOutcome_.uid[sizeof(lastWriteOutcome_.uid) - 1] = '\0';
-            lastWriteOutcome_.done = true;
-            lastWriteOutcome_.ok = success;
+            WriteOutcome& slot = writeOutcomeRing_[writeOutcomeRingNext_];
+            slot.request_id = request.request_id;
+            strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
+            slot.uid[sizeof(slot.uid) - 1] = '\0';
+            slot.done = true;
+            slot.ok = success;
             const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
-            strncpy(lastWriteOutcome_.error, reason, sizeof(lastWriteOutcome_.error) - 1);
-            lastWriteOutcome_.error[sizeof(lastWriteOutcome_.error) - 1] = '\0';
+            strncpy(slot.error, reason, sizeof(slot.error) - 1);
+            slot.error[sizeof(slot.error) - 1] = '\0';
+            writeOutcomeRingNext_ = (writeOutcomeRingNext_ + 1) % WRITE_OUTCOME_RING_SIZE;
 
             xSemaphoreGive(tagMutex);
         }
@@ -1936,9 +1953,11 @@ static uint16_t buildNdefTlv(const char* mimeType, const uint8_t* payload, uint1
     return paddedSize;
 }
 
-bool NFCManager::validateWriteUid(const char* expectedUid, const char* writeType) {
+bool NFCManager::validateWriteUid(const char* expectedUid, const char* writeType, bool* outTimedOut) {
+    if (outTimedOut) *outTimedOut = false;
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.printf("NFCManager: %s - could not acquire tagMutex\n", writeType);
+        if (outTimedOut) *outTimedOut = true;
         return false;
     }
     // Compare against the tag selected on the reader this scan cycle, not
@@ -2169,16 +2188,19 @@ bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
-    // Records the short reason processWriteQueue copies into lastWriteOutcome_
+    // Records the short reason processWriteQueue copies into the outcome ring
     // on failure. Every `return false` below sets one first.
 #define OT3D_SET_ERR(msg) do { \
         strncpy(lastWriteErrorReason_, (msg), sizeof(lastWriteErrorReason_) - 1); \
         lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0'; \
     } while (0)
 
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
+    bool uidTimedOut = false;
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D", &uidTimedOut)) {
         rawWritePending_ = false;
-        OT3D_SET_ERR("UID mismatch");
+        // Tag-removed-or-swapped is the common case; a lock timeout is rare
+        // and means something else — don't tell the user the wrong one.
+        OT3D_SET_ERR(uidTimedOut ? "reader busy" : "tag removed");
         return false;
     }
 
