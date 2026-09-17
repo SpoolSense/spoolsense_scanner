@@ -167,6 +167,11 @@ private:
     bool tigertagVerifyAndFinish(const NFCWriteRequest& request, const char* how);
     bool ndefVerifyAndFinish(const char* what, uint8_t pagesNeeded, const uint8_t* ndefBuf, uint16_t ndefLen);
     bool executeOpenTag3DWrite(const NFCWriteRequest& request);
+    // Fresh, complete re-read of the tag in session — the merge baseline for
+    // preserve-mode writes. Fails closed (returns false) on any read, NDEF,
+    // MIME, length or decode problem; callers must never fall back to zeroed
+    // fields on failure.
+    bool readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut);
     bool executeOpenSpoolWrite(const NFCWriteRequest& request);
     bool executeAtomicWrite(const NFCWriteRequest& request);
     bool readBambuTag(const uint8_t* uid, uint8_t uidLength, BambuTagData& out);

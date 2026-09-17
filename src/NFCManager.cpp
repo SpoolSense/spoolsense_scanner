@@ -1548,8 +1548,13 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
     }
     memcpy(rawWriteBuffer_, data, dataSize);
     rawWriteBufferSize_ = dataSize;
+    if (!enqueueWrite(req)) {
+        rawWriteBufferSize_ = 0;
+        Serial.println("NFCManager: enqueueRawWrite - queue full");
+        return false;
+    }
     rawWritePending_ = true;
-    return enqueueWrite(req);
+    return true;
 }
 
 uint32_t NFCManager::generateRequestId() {
@@ -2096,26 +2101,100 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
     return tigertagVerifyAndFinish(request, "partial write");
 }
 
-bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) return false;
-
-    if (!rawWritePending_) {
-        Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
+// Fresh pre-read of the tag in session, used as the merge baseline for
+// preserve-mode writes. Mirrors the TigerTag pre-read in executeTigerTagWrite.
+bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut) {
+    uint8_t pageData[256];
+    uint16_t bytesRead = connection_->readISO14443Pages(4, 10, pageData, sizeof(pageData), true);
+    if (bytesRead < 4) {
+        Serial.println("NFCManager: OT3D baseline - page read failed");
         return false;
     }
-    // Anything other than a bare opentag3d_t is a shape this function does not
-    // understand yet (e.g. the ot3d_patch_t envelope, which is larger) —
-    // refuse the write instead of reinterpreting foreign bytes as tag fields.
-    if (rawWriteBufferSize_ != sizeof(opentag3d_t)) {
-        Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u (expected %u) - refusing write\n",
-                      (unsigned)rawWriteBufferSize_, (unsigned)sizeof(opentag3d_t));
+
+    NdefRecord rec = findNdefMediaRecord(pageData, bytesRead);
+    if (!rec.found || rec.mimeLen != strlen(OT3D_MIME_TYPE) ||
+        memcmp(rec.mimeType, OT3D_MIME_TYPE, rec.mimeLen) != 0) {
+        Serial.println("NFCManager: OT3D baseline - not an OpenTag3D record");
+        return false;
+    }
+
+    CurrentSpoolState cur;
+    getCurrentSpoolState(cur);
+    uint8_t payload[OT3D_V2_MAP_SIZE];
+    uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
+                                            effectiveUserMemoryEnd(cur.variant, cur.cc_user_end));
+
+    // readNdefPayload can return a truncated prefix. A short read of an
+    // extended tag decodes as a valid core-only tag and would silently
+    // discard the extension — demand the exact declared length.
+    if (payloadBytes == 0 || (uint32_t)payloadBytes != rec.payloadLen) {
+        Serial.printf("NFCManager: OT3D baseline - incomplete read (%u of %lu)\n",
+                      payloadBytes, (unsigned long)rec.payloadLen);
+        return false;
+    }
+
+    opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &out);
+    if (res != OT3D_OK && res != OT3D_VERSION_WARNING) {
+        Serial.println("NFCManager: OT3D baseline - decode failed");
+        return false;
+    }
+    payloadLenOut = payloadBytes;
+    return true;
+}
+
+bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
         rawWritePending_ = false;
         return false;
     }
 
-    opentag3d_t ot3d;
-    memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
+    if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
+        Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
+        rawWritePending_ = false;
+        return false;
+    }
+
+    ot3d_patch_t patch;
+    bool isPatch = (rawWriteBufferSize_ == sizeof(ot3d_patch_t));
+    if (isPatch) {
+        memcpy(&patch, rawWriteBuffer_, sizeof(patch));
+        isPatch = (patch.magic == OT3D_PATCH_MAGIC);
+    }
     rawWritePending_ = false;
+
+    opentag3d_t ot3d;
+    if (!isPatch) {
+        // DeductionManager still queues a bare, complete struct with its own
+        // version. Leave that path exactly as it was.
+        memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
+    } else if (patch.mode == OT3D_MODE_REPLACE) {
+        ot3d = patch.values;
+    } else {
+        uint16_t baseLen = 0;
+        if (!readOpenTag3DBaseline(ot3d, baseLen)) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D - preserve aborted, no clean baseline");
+            LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (baseline read failed)\n");
+            return false;
+        }
+        if (!opentag3d_can_encode(ot3d.tag_version)) {
+            Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
+            return false;
+        }
+        if (opentag3d_major(ot3d.tag_version) < 2 && opentag3d_patch_touches_v2_only(patch.mask)) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D - v2-only field edit on a v1 tag");
+            return false;
+        }
+
+        uint16_t baselineVersion = ot3d.tag_version;
+        uint8_t  baselineExtended = ot3d.has_extended;
+        opentag3d_apply_patch(&ot3d, &patch.values, patch.mask);
+
+        // Version changes are an explicit conversion, never a side effect.
+        ot3d.tag_version = patch.values.tag_version ? patch.values.tag_version : baselineVersion;
+        // An extended v1 tag stays extended even when the edit is core-only,
+        // and a core-only v1 grows only if an extended field was actually set.
+        ot3d.has_extended = baselineExtended || opentag3d_patch_touches_extended(patch.mask);
+    }
 
     size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
                     : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
