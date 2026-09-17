@@ -34,6 +34,7 @@
 #include "BambuTagParser.h"
 #include "HomeAssistantManager.h"
 #include "SpoolmanManager.h"
+#include "SpoolCacheJson.h"
 #include "DisplayI.h"
 
 // Shared HTTP mutex — serializes all outbound HTTP requests across tasks
@@ -454,6 +455,9 @@ void WebServerManager::handleApiRegisterUid() {
     }
 
     // --- Success ---
+#ifndef BOARD_NO_SPOOL_CACHE
+    SpoolmanManager::getInstance().requestSpoolCacheRefresh();
+#endif
     StaticJsonDocument<256> result;
     result["success"] = true;
     result["spool_id"] = spoolId;
@@ -480,6 +484,39 @@ void WebServerManager::handleApiSpoolmanSpools() {
         sendError(500, "Spoolman URL not configured");
         return;
     }
+
+#ifndef BOARD_NO_SPOOL_CACHE
+    auto& sm = SpoolmanManager::getInstance();
+    bool refresh = _server.hasArg("refresh");
+    if (refresh) sm.requestSpoolCacheRefresh();
+    if (!refresh && sm.spoolCacheLockRead(pdMS_TO_TICKS(100))) {
+        size_t count = 0;
+        const CachedSpool* recs = sm.spoolCacheRecords(count);
+        _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+        _server.send(200, "application/json", "");
+        _server.sendContent("[", 1);
+        // Pointer+length sendContent avoids a String temp per record; the
+        // separating comma rides in the same buffer to halve the chunk count.
+        char rec[513];
+        rec[0] = ',';
+        size_t emitted = 0;
+        for (size_t i = 0; i < count; i++) {
+            size_t len = spoolCacheEmitJson(recs[i], rec + 1, sizeof(rec) - 1);
+            if (len == 0) continue;
+            if (emitted++ > 0) {
+                _server.sendContent(rec, len + 1);
+            } else {
+                _server.sendContent(rec + 1, len);
+            }
+        }
+        _server.sendContent("]", 1);
+        _server.sendContent("", 0);  // zero-length chunk ends chunked mode
+        sm.spoolCacheUnlockRead();
+        return;
+    }
+    // Cold, stale-locked, or ?refresh=1 → warm the cache for the next open
+    sm.requestSpoolCacheRefresh();
+#endif  // BOARD_NO_SPOOL_CACHE
 
     if (xSemaphoreTake(g_httpMutex, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
         sendError(503, "Busy — try again");
@@ -2582,6 +2619,10 @@ void WebServerManager::handleApiSpoolmanSaveEnrichment() {
     } else {
         spoolId = enrichCreateSpool(client, http, baseUrl, filamentId, remainingG, quotedUid, tagFormat);
     }
+
+#ifndef BOARD_NO_SPOOL_CACHE
+    if (spoolId > 0) SpoolmanManager::getInstance().requestSpoolCacheRefresh();
+#endif
 
     StaticJsonDocument<128> result;
     result["success"] = spoolId > 0;
