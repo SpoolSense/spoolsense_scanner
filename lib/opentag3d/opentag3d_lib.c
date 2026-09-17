@@ -47,11 +47,15 @@ typedef struct {
     uint8_t  dst_size;    /* OT3D_V1_FT_STR only */
 } ot3d_v1_fdesc_t;
 
-/* Core fields first, extended fields after — OT3D_V1_NUM_CORE_FIELDS draws
- * the line so a short (core-only) buffer can be decoded/encoded by running
- * just the first slice of this same table. tag_version itself is handled
- * outside the loop: it is read before the v1/v2 branch even happens. */
-static const ot3d_v1_fdesc_t OT3D_V1_FIELDS[] = {
+/* Core fields and extended fields are two separate tables, not one table
+ * sliced by a hand-counted index: OT3D_V1_NUM_CORE_FIELDS is derived from
+ * OT3D_V1_CORE_FIELDS's own size, so inserting, removing, or reordering a
+ * field can never desync a count from the table it counts. A field that
+ * belongs in one table but was written into the other is still possible,
+ * but that mistake is visible in the diff (which array gained an entry) —
+ * not a silent one-line index change. tag_version itself is handled outside
+ * both tables: it is read before the v1/v2 branch even happens. */
+static const ot3d_v1_fdesc_t OT3D_V1_CORE_FIELDS[] = {
     { OT3D_V1_OFF_MATERIAL, OT3D_V1_LEN_MATERIAL, OT3D_V1_FT_STR,
       offsetof(opentag3d_t, base_material), sizeof(((opentag3d_t *)0)->base_material) },
     { OT3D_V1_OFF_MATERIAL_MOD, OT3D_V1_LEN_MATERIAL_MOD, OT3D_V1_FT_STR,
@@ -70,7 +74,20 @@ static const ot3d_v1_fdesc_t OT3D_V1_FIELDS[] = {
     { OT3D_V1_OFF_BED_TEMP, OT3D_V1_LEN_BED_TEMP, OT3D_V1_FT_U8, offsetof(opentag3d_t, bed_temp_encoded), 0 },
     { OT3D_V1_OFF_DENSITY, OT3D_V1_LEN_DENSITY, OT3D_V1_FT_U16, offsetof(opentag3d_t, density_ugcm3), 0 },
     { OT3D_V1_OFF_TD, OT3D_V1_LEN_TD, OT3D_V1_FT_U16, offsetof(opentag3d_t, transmission_distance), 0 },
+};
+#define OT3D_V1_NUM_CORE_FIELDS (sizeof(OT3D_V1_CORE_FIELDS) / sizeof(OT3D_V1_CORE_FIELDS[0]))
 
+/* Compile-time guard: OT3D_V1_CORE_FIELDS must still end exactly where
+ * OT3D_V1_CORE_SIZE says the core map ends. This is a pure macro comparison
+ * (no reading of table contents, which is not a portable constant
+ * expression), so it only pins the header's own TD constants -- it cannot
+ * see whether a field is in the wrong table. That risk is instead closed by
+ * construction: a core-only buffer only ever runs OT3D_V1_CORE_FIELDS, whose
+ * length is derived by sizeof, never hand-counted. */
+_Static_assert(OT3D_V1_OFF_TD + OT3D_V1_LEN_TD == OT3D_V1_CORE_SIZE,
+    "v1 core map no longer ends with TD at OT3D_V1_CORE_SIZE");
+
+static const ot3d_v1_fdesc_t OT3D_V1_EXTENDED_FIELDS[] = {
     { OT3D_V1_OFF_DATA_URL, OT3D_V1_LEN_DATA_URL, OT3D_V1_FT_STR,
       offsetof(opentag3d_t, online_url), sizeof(((opentag3d_t *)0)->online_url) },
     { OT3D_V1_OFF_SERIAL, OT3D_V1_LEN_SERIAL, OT3D_V1_FT_STR,
@@ -103,14 +120,14 @@ static const ot3d_v1_fdesc_t OT3D_V1_FIELDS[] = {
     { OT3D_V1_OFF_MAX_VSO, OT3D_V1_LEN_MAX_VSO, OT3D_V1_FT_U8, offsetof(opentag3d_t, max_volumetric_speed), 0 },
     { OT3D_V1_OFF_TARGET_VSO, OT3D_V1_LEN_TARGET_VSO, OT3D_V1_FT_U8, offsetof(opentag3d_t, target_volumetric_speed), 0 },
 };
-#define OT3D_V1_NUM_CORE_FIELDS 14
-#define OT3D_V1_NUM_ALL_FIELDS  (sizeof(OT3D_V1_FIELDS) / sizeof(OT3D_V1_FIELDS[0]))
+#define OT3D_V1_NUM_EXT_FIELDS (sizeof(OT3D_V1_EXTENDED_FIELDS) / sizeof(OT3D_V1_EXTENDED_FIELDS[0]))
 
-/* Decode `count` fields from OT3D_V1_FIELDS (OT3D_V1_NUM_CORE_FIELDS for a
- * core-only buffer, OT3D_V1_NUM_ALL_FIELDS once extended data is present). */
-static void opentag3d_decode_v1_fields(const uint8_t *payload, opentag3d_t *out, size_t count) {
+/* Decode `count` fields of `fields` (OT3D_V1_CORE_FIELDS or
+ * OT3D_V1_EXTENDED_FIELDS) from `payload` into `out`. */
+static void opentag3d_decode_v1_field_list(const uint8_t *payload, opentag3d_t *out,
+                                            const ot3d_v1_fdesc_t *fields, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        const ot3d_v1_fdesc_t *f = &OT3D_V1_FIELDS[i];
+        const ot3d_v1_fdesc_t *f = &fields[i];
         uint8_t *dst = (uint8_t *)out + f->struct_off;
         switch (f->type) {
         case OT3D_V1_FT_U8:
@@ -220,11 +237,10 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
     if (len < OT3D_CORE_SIZE) return OT3D_PARSE_ERROR;
 
     /* Core fields, then extended fields if we have enough data */
+    opentag3d_decode_v1_field_list(payload, out, OT3D_V1_CORE_FIELDS, OT3D_V1_NUM_CORE_FIELDS);
     if (len >= OT3D_EXTENDED_MIN) {
         out->has_extended = 1;
-        opentag3d_decode_v1_fields(payload, out, OT3D_V1_NUM_ALL_FIELDS);
-    } else {
-        opentag3d_decode_v1_fields(payload, out, OT3D_V1_NUM_CORE_FIELDS);
+        opentag3d_decode_v1_field_list(payload, out, OT3D_V1_EXTENDED_FIELDS, OT3D_V1_NUM_EXT_FIELDS);
     }
 
     return version_result;
@@ -251,11 +267,12 @@ static void write_u48(uint8_t *p, uint64_t val) {
     for (int i = 5; i >= 0; i--) { p[i] = (uint8_t)(val & 0xFF); val >>= 8; }
 }
 
-/* Encode `count` fields from OT3D_V1_FIELDS — the same table and slicing
- * opentag3d_decode_v1_fields uses, run in the opposite direction. */
-static void opentag3d_encode_v1_fields(const opentag3d_t *tag, uint8_t *buf, size_t count) {
+/* Encode `count` fields of `fields` — the same tables and helper
+ * opentag3d_decode_v1_field_list uses, run in the opposite direction. */
+static void opentag3d_encode_v1_field_list(const opentag3d_t *tag, uint8_t *buf,
+                                            const ot3d_v1_fdesc_t *fields, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        const ot3d_v1_fdesc_t *f = &OT3D_V1_FIELDS[i];
+        const ot3d_v1_fdesc_t *f = &fields[i];
         const uint8_t *src = (const uint8_t *)tag + f->struct_off;
         switch (f->type) {
         case OT3D_V1_FT_U8:
@@ -344,13 +361,11 @@ static int opentag3d_encode_v1(const opentag3d_t *tag, uint8_t *buf, size_t bufl
     /* Version */
     write_u16(buf + OT3D_V1_OFF_TAG_VERSION, tag->tag_version);
 
-    int written;
+    opentag3d_encode_v1_field_list(tag, buf, OT3D_V1_CORE_FIELDS, OT3D_V1_NUM_CORE_FIELDS);
+    int written = OT3D_CORE_SIZE;
     if (buflen >= OT3D_EXTENDED_MIN) {
-        opentag3d_encode_v1_fields(tag, buf, OT3D_V1_NUM_ALL_FIELDS);
+        opentag3d_encode_v1_field_list(tag, buf, OT3D_V1_EXTENDED_FIELDS, OT3D_V1_NUM_EXT_FIELDS);
         written = OT3D_EXTENDED_MIN;
-    } else {
-        opentag3d_encode_v1_fields(tag, buf, OT3D_V1_NUM_CORE_FIELDS);
-        written = OT3D_CORE_SIZE;
     }
 
     return written;

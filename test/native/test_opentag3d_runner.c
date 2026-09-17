@@ -95,7 +95,12 @@ static void build_v1_nominal(uint8_t *buf, uint16_t version) {
     put_str(buf + 0x07, "CF", 5);
     put_str(buf + 0x1B, "3D", 16);
     put_str(buf + 0x2B, "Orange", 32);
+    /* 4 colors, each a distinct byte pattern -- a struct_off swap between
+     * any two colors must land the wrong pattern in the wrong slot. */
     memcpy(buf + 0x4B, (uint8_t[]){255, 166, 77, 255}, 4);
+    memcpy(buf + 0x4F, (uint8_t[]){1, 2, 3, 4}, 4);
+    memcpy(buf + 0x53, (uint8_t[]){5, 6, 7, 8}, 4);
+    memcpy(buf + 0x57, (uint8_t[]){9, 10, 11, 12}, 4);
     put_u16(buf + 0x5C, 1750);          /* diameter */
     put_u16(buf + 0x5E, 1000);          /* target weight */
     buf[0x60] = 42;                      /* print temp */
@@ -106,15 +111,18 @@ static void build_v1_nominal(uint8_t *buf, uint16_t version) {
     put_str(buf + 0x90, "SN-V1", 16);
     put_u16(buf + 0xA0, 2024);
     buf[0xA2] = 1; buf[0xA3] = 23;
-    buf[0xA4] = 10; buf[0xA5] = 30; buf[0xA6] = 45;
+    /* Every byte field from here down is a distinct value -- a struct_off
+     * swap between any two same-size fields must land the wrong number in
+     * the wrong place instead of accidentally matching. */
+    buf[0xA4] = 11; buf[0xA5] = 30; buf[0xA6] = 46;
     buf[0xA7] = 100;                     /* spool core diameter */
     buf[0xA8] = 210; buf[0xA9] = 216; buf[0xAA] = 63;  /* mfi */
-    buf[0xAB] = 10;                      /* tolerance */
+    buf[0xAB] = 13;                      /* tolerance */
     put_u16(buf + 0xAC, 105);            /* empty spool weight */
     put_u16(buf + 0xAE, 1002);           /* measured filament weight */
     put_u16(buf + 0xB0, 336);            /* measured filament length */
-    buf[0xB2] = 10; buf[0xB3] = 8;       /* max dry temp, dry time */
-    buf[0xB4] = 38; buf[0xB5] = 45; buf[0xB6] = 8; buf[0xB7] = 12;
+    buf[0xB2] = 14; buf[0xB3] = 9;       /* max dry temp, dry time */
+    buf[0xB4] = 38; buf[0xB5] = 47; buf[0xB6] = 17; buf[0xB7] = 19;
     buf[0xB8] = 20; buf[0xB9] = 120; buf[0xBA] = 80;   /* vso min/max/target */
 }
 
@@ -207,6 +215,23 @@ int main(void) {
     CHECK(out.manufacture_year == 2024 && out.manufacture_month == 1 && out.manufacture_day == 23, "E: date");
     CHECK(strcmp(out.serial_number, "SN-V1") == 0, "E: serial (16B field)");
     CHECK(strcmp(out.online_url, "pfil.us?i=8078-RQSR") == 0, "E: online_url");
+    /* Decode assertions for every v1 field not already covered above --
+     * each has a distinct value in build_v1_nominal, so a table entry with
+     * a swapped or mistyped struct_off lands the wrong number here. */
+    CHECK(out.color_rgba[0][0] == 255 && out.color_rgba[0][3] == 255, "E: color_rgba[0]");
+    CHECK(out.color_rgba[1][0] == 1 && out.color_rgba[1][3] == 4, "E: color_rgba[1]");
+    CHECK(out.color_rgba[2][0] == 5 && out.color_rgba[2][3] == 8, "E: color_rgba[2]");
+    CHECK(out.color_rgba[3][0] == 9 && out.color_rgba[3][3] == 12, "E: color_rgba[3]");
+    CHECK(out.manufacture_hour == 11 && out.manufacture_minute == 30 && out.manufacture_second == 46, "E: mfg time");
+    CHECK(out.spool_core_diameter_mm == 100, "E: spool core diameter");
+    CHECK(out.mfi_temp_encoded == 210 && out.mfi_load == 216 && out.mfi_value == 63, "E: mfi triple");
+    CHECK(out.measured_tolerance_um == 13, "E: tolerance");
+    CHECK(out.empty_spool_weight_g == 105, "E: empty spool weight");
+    CHECK(out.max_dry_temp_encoded == 14 && out.dry_time_hours == 9, "E: dry temp/time");
+    CHECK(out.min_print_temp_encoded == 38 && out.max_print_temp_encoded == 47, "E: print temp range");
+    CHECK(out.min_bed_temp_encoded == 17 && out.max_bed_temp_encoded == 19, "E: bed temp range");
+    CHECK(out.min_volumetric_speed == 20 && out.max_volumetric_speed == 120 &&
+          out.target_volumetric_speed == 80, "E: vso triple");
     CHECK(out.sku[0] == '\0', "E: v2-only sku empty");
     CHECK(out.barcode == 0, "E: v2-only barcode zero");
     CHECK(out.chamber_temp_encoded == 0, "E: v2-only chamber zero");
@@ -435,6 +460,86 @@ int main(void) {
     CHECK(!opentag3d_can_encode(1004) && !opentag3d_can_encode(2004) &&
           !opentag3d_can_encode(3000), "Q: can_encode refuses minor-ahead and future majors");
     CHECK(opentag3d_can_encode(0), "Q: can_encode accepts legacy version 0 (v1 path)");
+
+    /* S: v1 full encode -- every v1-encodable field carries a distinct
+     * value, mirroring K's comprehensiveness but for the v1 codec's
+     * separate descriptor table. T below checks the raw output bytes:
+     * decode and encode share one table, so a round-trip through both
+     * cannot tell a swapped struct_off from a correct one (encode and
+     * decode would misplace the same two fields the same way and cancel
+     * out) -- only checking encode's raw bytes independently, or decoding
+     * a payload built without going through that table (E, above), can. */
+    printf("[S] v1 full encode\n");
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 1000;
+    strcpy(src.base_material, "PETG");
+    strcpy(src.manufacturer, "Bambu Lab");
+    memcpy(src.color_rgba[0], (uint8_t[]){20, 30, 40, 50}, 4);
+    memcpy(src.color_rgba[1], (uint8_t[]){60, 70, 80, 90}, 4);
+    memcpy(src.color_rgba[2], (uint8_t[]){100, 110, 120, 130}, 4);
+    memcpy(src.color_rgba[3], (uint8_t[]){140, 150, 160, 170}, 4);
+    src.diameter_um = 175;
+    src.target_weight_g = 750;
+    src.print_temp_encoded = 48;
+    src.bed_temp_encoded = 18;
+    src.density_ugcm3 = 1270;
+    src.transmission_distance = 95;
+    strcpy(src.online_url, "s.example/v1");
+    strcpy(src.serial_number, "SN-V1-S");
+    src.manufacture_year = 2026; src.manufacture_month = 3; src.manufacture_day = 9;
+    src.manufacture_hour = 5; src.manufacture_minute = 44; src.manufacture_second = 21;
+    src.spool_core_diameter_mm = 57;
+    src.mfi_temp_encoded = 190; src.mfi_load = 55; src.mfi_value = 33;
+    src.measured_tolerance_um = 6;
+    src.empty_spool_weight_g = 130;
+    src.measured_filament_weight_g = 690;
+    src.measured_filament_length_m = 300;
+    src.max_dry_temp_encoded = 12; src.dry_time_hours = 6;
+    src.min_print_temp_encoded = 44; src.max_print_temp_encoded = 52;
+    src.min_bed_temp_encoded = 15; src.max_bed_temp_encoded = 21;
+    src.min_volumetric_speed = 15; src.max_volumetric_speed = 90; src.target_volumetric_speed = 60;
+    n = opentag3d_encode(&src, buf, OT3D_EXTENDED_MIN);
+    CHECK(n == OT3D_EXTENDED_MIN, "S: v1 encode returns EXTENDED_MIN");
+
+    /* T: raw byte spot-checks on the S-encoded buffer -- the v1 counterpart
+     * of L, and the actual catch for Finding 2(b): a wrong offset shared by
+     * encode and decode. */
+    printf("[T] v1 raw byte spot-checks\n");
+    CHECK(buf[OT3D_V1_OFF_TAG_VERSION] == 0x03 && buf[OT3D_V1_OFF_TAG_VERSION + 1] == 0xE8,
+          "T: tag_version bytes {03 E8} (1000)");
+    CHECK(memcmp(buf + OT3D_V1_OFF_COLOR_1, (uint8_t[]){20, 30, 40, 50}, 4) == 0, "T: color_1 bytes");
+    CHECK(memcmp(buf + OT3D_V1_OFF_COLOR_2, (uint8_t[]){60, 70, 80, 90}, 4) == 0, "T: color_2 bytes");
+    CHECK(memcmp(buf + OT3D_V1_OFF_COLOR_3, (uint8_t[]){100, 110, 120, 130}, 4) == 0, "T: color_3 bytes");
+    CHECK(memcmp(buf + OT3D_V1_OFF_COLOR_4, (uint8_t[]){140, 150, 160, 170}, 4) == 0, "T: color_4 bytes");
+    CHECK(buf[OT3D_V1_OFF_PRINT_TEMP] == 48, "T: print_temp byte");
+    CHECK(buf[OT3D_V1_OFF_BED_TEMP] == 18, "T: bed_temp byte");
+    CHECK(buf[OT3D_V1_OFF_DIAMETER] == (uint8_t)(175 >> 8) && buf[OT3D_V1_OFF_DIAMETER + 1] == (uint8_t)(175 & 0xFF),
+          "T: diameter bytes == BE(175)");
+    CHECK(buf[OT3D_V1_OFF_WEIGHT] == (uint8_t)(750 >> 8) && buf[OT3D_V1_OFF_WEIGHT + 1] == (uint8_t)(750 & 0xFF),
+          "T: weight bytes == BE(750)");
+    CHECK(buf[OT3D_V1_OFF_DENSITY] == (uint8_t)(1270 >> 8) && buf[OT3D_V1_OFF_DENSITY + 1] == (uint8_t)(1270 & 0xFF),
+          "T: density bytes == BE(1270)");
+    CHECK(buf[OT3D_V1_OFF_TD] == (uint8_t)(95 >> 8) && buf[OT3D_V1_OFF_TD + 1] == (uint8_t)(95 & 0xFF),
+          "T: td bytes == BE(95) (u16 in v1)");
+    CHECK(buf[OT3D_V1_OFF_MFG_DATE] == (uint8_t)(2026 >> 8) && buf[OT3D_V1_OFF_MFG_DATE + 1] == (uint8_t)(2026 & 0xFF) &&
+          buf[OT3D_V1_OFF_MFG_DATE + 2] == 3 && buf[OT3D_V1_OFF_MFG_DATE + 3] == 9, "T: mfg_date bytes");
+    CHECK(buf[OT3D_V1_OFF_MFG_TIME] == 5 && buf[OT3D_V1_OFF_MFG_TIME + 1] == 44 && buf[OT3D_V1_OFF_MFG_TIME + 2] == 21,
+          "T: mfg_time bytes");
+    CHECK(buf[OT3D_V1_OFF_SPOOL_CORE_DIAMETER] == 57, "T: spool_core_diameter byte");
+    CHECK(buf[OT3D_V1_OFF_MFI_TEMP] == 190 && buf[OT3D_V1_OFF_MFI_LOAD] == 55 && buf[OT3D_V1_OFF_MFI_VALUE] == 33,
+          "T: mfi bytes");
+    CHECK(buf[OT3D_V1_OFF_TOLERANCE] == 6, "T: tolerance byte");
+    CHECK(buf[OT3D_V1_OFF_EMPTY_SPOOL_WEIGHT] == (uint8_t)(130 >> 8) &&
+          buf[OT3D_V1_OFF_EMPTY_SPOOL_WEIGHT + 1] == (uint8_t)(130 & 0xFF), "T: empty_spool_weight bytes");
+    CHECK(buf[OT3D_V1_OFF_MEASURED_WEIGHT] == (uint8_t)(690 >> 8) &&
+          buf[OT3D_V1_OFF_MEASURED_WEIGHT + 1] == (uint8_t)(690 & 0xFF), "T: measured_weight bytes");
+    CHECK(buf[OT3D_V1_OFF_MEASURED_LENGTH] == (uint8_t)(300 >> 8) &&
+          buf[OT3D_V1_OFF_MEASURED_LENGTH + 1] == (uint8_t)(300 & 0xFF), "T: measured_length bytes");
+    CHECK(buf[OT3D_V1_OFF_MAX_DRY_TEMP] == 12 && buf[OT3D_V1_OFF_DRY_TIME] == 6, "T: dry temp/time bytes");
+    CHECK(buf[OT3D_V1_OFF_MIN_PRINT_TEMP] == 44 && buf[OT3D_V1_OFF_MAX_PRINT_TEMP] == 52, "T: print temp range bytes");
+    CHECK(buf[OT3D_V1_OFF_MIN_BED_TEMP] == 15 && buf[OT3D_V1_OFF_MAX_BED_TEMP] == 21, "T: bed temp range bytes");
+    CHECK(buf[OT3D_V1_OFF_MIN_VSO] == 15 && buf[OT3D_V1_OFF_MAX_VSO] == 90 && buf[OT3D_V1_OFF_TARGET_VSO] == 60,
+          "T: vso bytes");
 
     /* R: header constants pinned to the SPEC'S literal addresses. Generated
      * directly from opentag3d-spec-v2.json, independently of the header —
