@@ -8,6 +8,8 @@
 #include <freertos/semphr.h>
 #include <string>
 
+#include "SpoolCacheJson.h"
+
 struct AppMessage;
 
 struct SpoolmanSyncRequest {
@@ -137,6 +139,13 @@ public:
     // 0 g deduction, which a bare 0.0f return cannot distinguish from failure.
     float deductFromSpoolman(const char* uid, float grams, bool* success = nullptr);
 
+    // RAM spool-picker cache (#248). Refresh runs only on the SpoolmanSync
+    // task; readers (web task) hold the cache mutex between lock/unlock.
+    bool spoolCacheLockRead(TickType_t timeout);
+    const CachedSpool* spoolCacheRecords(size_t& countOut);  // valid between LockRead/UnlockRead
+    void spoolCacheUnlockRead();
+    void requestSpoolCacheRefresh();  // safe from any task
+
 private:
     struct SpoolIdCacheEntry {
         char spool_id[17];
@@ -201,6 +210,20 @@ private:
     };
     LinkResult lastLinkResult_;
     void recordLinkResult(int32_t spoolId, bool ok, const char* uid);
+
+    bool spoolCacheEnsureAllocated();
+    bool parseSpoolCacheStream();  // caller holds httpMutex_ and cacheMutex_
+    void refreshSpoolCache();
+
+    static constexpr size_t SPOOL_CACHE_CAP = 150;
+    static constexpr uint32_t SPOOL_CACHE_TTL_MS = 60000;
+    SemaphoreHandle_t spoolCacheMutex_ = nullptr;  // never held with cacheMutex_
+    CachedSpool* spoolCache_ = nullptr;      // allocated once at first refresh
+    size_t spoolCacheCount_ = 0;
+    bool spoolCacheValid_ = false;
+    bool spoolCacheOverCap_ = false;         // >150 spools: fallback for this boot
+    uint32_t spoolCacheRefreshedAt_ = 0;
+    std::atomic<bool> spoolCacheRefreshRequested_{false};
 };
 
 #endif // SPOOLMAN_MANAGER_H
