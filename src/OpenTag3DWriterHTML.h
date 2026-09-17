@@ -350,6 +350,110 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
   <script>
     var writerForm = document.getElementById('writerForm');
 
+    // Tracks which tag (if any) the form currently mirrors, so a write can
+    // tell the firmware to preserve untouched fields instead of replacing
+    // the whole tag. Cleared whenever the form stops being a faithful copy
+    // of that tag (Clear, Spoolman import, Write Another / Back).
+    var ot3dSource = null;   // { uid: string, snapshot: {fieldId: string} }
+
+    var OT3D_EDITABLE_IDS = [
+      'base_material','material_modifiers','manufacturer','color_name','colorHex',
+      'diameter_um','target_weight_g','print_temp_c','bed_temp_c','density',
+      'serial_number','online_url','measured_filament_weight_g','empty_spool_weight_g',
+      'min_print_temp_c','max_print_temp_c','min_bed_temp_c','max_bed_temp_c',
+      'max_dry_temp_c','dry_time_hours','target_volumetric_speed','transmission_distance',
+      'sku','barcode','chamber_temp_c','min_nozzle_diameter_mm'
+    ];
+
+    function snapshotForm(ids) {
+      var s = {};
+      ids.forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) s[id] = el.value;
+      });
+      return s;
+    }
+
+    // Sets a select's value even when it's not one of the hardcoded options
+    // (e.g. a modifier or diameter the tag carries that isn't in this form's
+    // dropdown) by adding a temporary option instead of silently falling
+    // back to whatever was selected by default.
+    function putSelect(id, v) {
+      if (v === undefined || v === null) return;
+      var el = document.getElementById(id);
+      if (!el) return;
+      var found = Array.prototype.some.call(el.options, function (o) { return o.value == v; });
+      if (!found) {
+        var o = document.createElement('option');
+        o.value = v;
+        o.textContent = v + ' (on tag)';
+        el.appendChild(o);
+      }
+      el.value = v;
+    }
+
+    // Fills the form from a status response's opentag3d block. Every
+    // editable control is reset first so a second read (tag B) can never
+    // inherit a value left over from a prior tag (tag A). Presence checks
+    // (!== undefined/null) are used throughout instead of truthiness so a
+    // real zero or empty string read off the tag is applied, not skipped.
+    // Binds ot3dSource to this UID on success so a write back to the same
+    // tag can preserve fields this function left untouched.
+    function fillForm(status, uid) {
+      var ot = status.opentag3d;
+      if (!ot) return;
+
+      OT3D_EDITABLE_IDS.forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+
+      function put(id, v) {
+        if (v === undefined || v === null) return;
+        var el = document.getElementById(id);
+        if (el) el.value = v;
+      }
+
+      put('base_material', ot.base_material);
+      putSelect('material_modifiers', ot.modifiers);
+      put('manufacturer', ot.manufacturer);
+      put('color_name', ot.color_name);
+      put('colorHex', ot.color_hex);
+      var colorPickerEl = document.getElementById('colorPicker');
+      if (colorPickerEl && ot.color_hex !== undefined && ot.color_hex !== null) colorPickerEl.value = ot.color_hex;
+      putSelect('diameter_um', ot.diameter_mm !== undefined ? Math.round(ot.diameter_mm * 1000) : undefined);
+      put('target_weight_g', ot.target_weight_g);
+      put('print_temp_c', ot.print_temp);
+      put('bed_temp_c', ot.bed_temp);
+      // v2 always carries chamber_temp (even 0); v1 omits it entirely, so
+      // presence here correctly distinguishes "no chamber" from "unknown".
+      put('chamber_temp_c', ot.chamber_temp);
+      put('density', ot.density);
+      put('serial_number', ot.serial_number);
+      put('online_url', ot.online_url);
+      put('sku', ot.sku);
+      put('barcode', ot.barcode);
+      put('measured_filament_weight_g', ot.measured_weight_g);
+      put('empty_spool_weight_g', ot.empty_spool_g);
+      put('min_print_temp_c', ot.min_print_temp);
+      put('max_print_temp_c', ot.max_print_temp);
+      put('min_bed_temp_c', ot.min_bed_temp);
+      put('max_bed_temp_c', ot.max_bed_temp);
+      put('max_dry_temp_c', ot.dry_temp);
+      put('dry_time_hours', ot.dry_time_hours);
+      put('target_volumetric_speed', ot.target_volumetric_speed);
+      // Raw encoded value (mm x 0.1) — matches the form label, the POST
+      // field, and the struct member. Never converted in either direction.
+      put('transmission_distance', ot.transmission_distance);
+      put('min_nozzle_diameter_mm', ot.min_nozzle_mm);
+
+      ot3dSource = { uid: uid || '', snapshot: snapshotForm(OT3D_EDITABLE_IDS) };
+    }
+
+    writerForm.addEventListener('reset', function () {
+      ot3dSource = null;
+    });
+
     syncColorPicker('colorPicker', 'colorHex');
     setupAdvancedToggle('advancedToggle', 'advancedBox');
 
@@ -379,49 +483,63 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     }
     baseMaterialEl.addEventListener('input', ot3dAutoFill);
 
-    // Pre-fill from scanned tag if present
-    prefillFromTag({
-      material: 'base_material',
-      color: 'colorHex',
-      colorPicker: 'colorPicker',
-      manufacturer: 'manufacturer',
-      weight: 'target_weight_g',
-      density: 'density',
-      diameter: 'diameter_mm',
-      nozzle_min: 'min_print_temp_c',
-      nozzle_max: 'max_print_temp_c',
-      bed_min: 'min_bed_temp_c',
-      bed_max: 'max_bed_temp_c',
-      dry_temp: 'max_dry_temp_c',
-      dry_time: 'dry_time_hours'
-    }).then(function(d) {
-      if (!d) return;
-      // Sync modifiers dropdown if available
-      if (d.modifiers) {
-        var modEl = document.getElementById('material_modifiers');
-        if (modEl) modEl.value = d.modifiers;
+    // Pre-fill from a tag already on the scanner when the page loads. An
+    // OpenTag3D tag gets the same field-complete fillForm used by the Read
+    // button (and becomes eligible for a preserve-mode write back to that
+    // UID); any other tag kind falls back to the generic cross-format seed,
+    // which only has a handful of fields to offer and is seeding a brand
+    // new OpenTag3D tag rather than reading one back, so material auto-fill
+    // still runs there to fill in what that other tag can't provide.
+    api('/api/status').then(function(status) {
+      if (status && status.present && status.tag_kind === 'OpenTag3D' && status.opentag3d) {
+        fillForm(status, status.uid);
+        return;
       }
-      // Sync basic print/bed temp from nozzle_max/bed_max
-      var pt = document.getElementById('print_temp_c');
-      if (pt && d.nozzle_max && pt.dataset.autoFilled !== 'false') {
-        pt.value = d.nozzle_max; pt.dataset.autoFilled = 'true';
-      }
-      var bt = document.getElementById('bed_temp_c');
-      if (bt && d.bed_max && bt.dataset.autoFilled !== 'false') {
-        bt.value = d.bed_max; bt.dataset.autoFilled = 'true';
-      }
-      // Sync diameter dropdown (values in micrometers)
-      if (d.diameter) {
-        var dEl = document.getElementById('diameter_um');
-        if (dEl && dEl.dataset.autoFilled !== 'false') {
-          var um = Math.round(d.diameter * 1000);
-          dEl.value = um; dEl.dataset.autoFilled = 'true';
+      prefillFromTag({
+        material: 'base_material',
+        color: 'colorHex',
+        colorPicker: 'colorPicker',
+        manufacturer: 'manufacturer',
+        weight: 'target_weight_g',
+        density: 'density',
+        diameter: 'diameter_mm',
+        nozzle_min: 'min_print_temp_c',
+        nozzle_max: 'max_print_temp_c',
+        bed_min: 'min_bed_temp_c',
+        bed_max: 'max_bed_temp_c',
+        dry_temp: 'max_dry_temp_c',
+        dry_time: 'dry_time_hours'
+      }).then(function(d) {
+        if (!d) return;
+        // Sync modifiers dropdown if available
+        if (d.modifiers) {
+          var modEl = document.getElementById('material_modifiers');
+          if (modEl) modEl.value = d.modifiers;
         }
-      }
-      // Trigger material auto-fill for any missing fields
-      var matEl = document.getElementById('base_material');
-      if (matEl) matEl.dispatchEvent(new Event('input'));
-    });
+        // Sync basic print/bed temp from nozzle_max/bed_max
+        var pt = document.getElementById('print_temp_c');
+        if (pt && d.nozzle_max && pt.dataset.autoFilled !== 'false') {
+          pt.value = d.nozzle_max; pt.dataset.autoFilled = 'true';
+        }
+        var bt = document.getElementById('bed_temp_c');
+        if (bt && d.bed_max && bt.dataset.autoFilled !== 'false') {
+          bt.value = d.bed_max; bt.dataset.autoFilled = 'true';
+        }
+        // Sync diameter dropdown (values in micrometers)
+        if (d.diameter) {
+          var dEl = document.getElementById('diameter_um');
+          if (dEl && dEl.dataset.autoFilled !== 'false') {
+            var um = Math.round(d.diameter * 1000);
+            dEl.value = um; dEl.dataset.autoFilled = 'true';
+          }
+        }
+        // Trigger material auto-fill for any missing fields — safe here
+        // because this branch never carries real OpenTag3D field data to
+        // clobber; it's seeding a new tag, not preserving one just read.
+        var matEl = document.getElementById('base_material');
+        if (matEl) matEl.dispatchEvent(new Event('input'));
+      });
+    }).catch(function() {});
 
     if (modifiersEl) modifiersEl.addEventListener('change', ot3dAutoFill);
     loadMaterialDb().then(function(db) {
@@ -437,13 +555,6 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         }
       });
     });
-
-    var EXTENDED_IDS = [
-      'serial_number', 'online_url', 'measured_filament_weight_g',
-      'empty_spool_weight_g', 'min_print_temp_c', 'max_print_temp_c',
-      'min_bed_temp_c', 'max_bed_temp_c', 'max_dry_temp_c',
-      'dry_time_hours', 'target_volumetric_speed', 'transmission_distance'
-    ];
 
     function intVal(id, fallback) {
       var raw = document.getElementById(id).value.trim();
@@ -464,65 +575,71 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       return el ? el.value.trim() : '';
     }
 
-    function hasExtended() {
-      for (var i = 0; i < EXTENDED_IDS.length; i++) {
-        var el = document.getElementById(EXTENDED_IDS[i]);
-        if (el && el.value.trim() !== '') return true;
-      }
-      return false;
-    }
-
+    // Diffs the form against ot3dSource's snapshot so a write only carries
+    // the fields the user actually touched. Preserve mode only applies when
+    // writing back to the exact UID the form was filled from — otherwise
+    // (a fresh tag, or a different one swapped in) this falls back to
+    // replace, which is safe because there is nothing on this tag to lose.
     function buildPayload(uid) {
-      var color = normalizeHex(document.getElementById('colorHex').value);
-      if (!color) throw new Error('Color must be a valid 6-digit hex value');
+      var preserve = !!(ot3dSource && ot3dSource.uid && ot3dSource.uid === uid);
+      var body = { uid: uid || '', mode: preserve ? 'preserve' : 'replace' };
 
-      var r = parseInt(color.substr(1,2), 16);
-      var g = parseInt(color.substr(3,2), 16);
-      var b = parseInt(color.substr(5,2), 16);
-
-      var densityGcm3 = floatVal('density', 1.24);
-      var densityUgcm3 = Math.round(densityGcm3 * 1000);
-
-      var body = {
-        uid: uid || '',
-        base_material: strVal('base_material').toUpperCase(),
-        material_modifiers: strVal('material_modifiers'),
-        manufacturer: strVal('manufacturer'),
-        color_name: strVal('color_name'),
-        color_r: r,
-        color_g: g,
-        color_b: b,
-        color_a: 255,
-        diameter_um: intVal('diameter_um', 1750),
-        target_weight_g: intVal('target_weight_g', 1000),
-        print_temp_c: intVal('print_temp_c', 210),
-        bed_temp_c: intVal('bed_temp_c', 60),
-        density_ugcm3: densityUgcm3
-      };
-
-      if (hasExtended()) {
-        var sn = strVal('serial_number');
-        if (sn) body.serial_number = sn;
-        var url = strVal('online_url');
-        if (url) body.online_url = url;
-        if (strVal('measured_filament_weight_g')) body.measured_filament_weight_g = intVal('measured_filament_weight_g', 0);
-        if (strVal('empty_spool_weight_g')) body.empty_spool_weight_g = intVal('empty_spool_weight_g', 0);
-        if (strVal('min_print_temp_c')) body.min_print_temp_c = intVal('min_print_temp_c', 0);
-        if (strVal('max_print_temp_c')) body.max_print_temp_c = intVal('max_print_temp_c', 0);
-        if (strVal('min_bed_temp_c')) body.min_bed_temp_c = intVal('min_bed_temp_c', 0);
-        if (strVal('max_bed_temp_c')) body.max_bed_temp_c = intVal('max_bed_temp_c', 0);
-        if (strVal('max_dry_temp_c')) body.max_dry_temp_c = intVal('max_dry_temp_c', 0);
-        if (strVal('dry_time_hours')) body.dry_time_hours = intVal('dry_time_hours', 0);
-        if (strVal('target_volumetric_speed')) body.target_volumetric_speed = intVal('target_volumetric_speed', 0);
-        if (strVal('transmission_distance')) body.transmission_distance = intVal('transmission_distance', 0);
+      function changed(id) {
+        if (!preserve) return true;
+        return document.getElementById(id).value !== ot3dSource.snapshot[id];
       }
 
-      body.sku = strVal('sku');
-      var barcodeDigits = strVal('barcode');
-      if (barcodeDigits) body.barcode = barcodeDigits;
-      body.chamber_temp_c = intVal('chamber_temp_c', 0);
-      var minNozzleMm = floatVal('min_nozzle_diameter_mm', -1);
-      if (minNozzleMm >= 0) body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
+      if (changed('colorHex')) {
+        var color = normalizeHex(document.getElementById('colorHex').value);
+        if (!color) throw new Error('Color must be a valid 6-digit hex value');
+        body.color_r = parseInt(color.substr(1, 2), 16);
+        body.color_g = parseInt(color.substr(3, 2), 16);
+        body.color_b = parseInt(color.substr(5, 2), 16);
+      }
+      if (!preserve) body.color_a = 255;   // a brand-new tag is opaque
+
+      if (changed('base_material'))      body.base_material = strVal('base_material').toUpperCase();
+      if (changed('material_modifiers')) body.material_modifiers = strVal('material_modifiers');
+      if (changed('manufacturer'))       body.manufacturer = strVal('manufacturer');
+      if (changed('color_name'))         body.color_name = strVal('color_name');
+      if (changed('diameter_um'))        body.diameter_um = intVal('diameter_um', 1750);
+      if (changed('target_weight_g'))    body.target_weight_g = intVal('target_weight_g', 1000);
+      if (changed('print_temp_c'))       body.print_temp_c = intVal('print_temp_c', 210);
+      if (changed('bed_temp_c'))         body.bed_temp_c = intVal('bed_temp_c', 60);
+      if (changed('density'))            body.density_ugcm3 = Math.round(floatVal('density', 1.24) * 1000);
+      if (changed('chamber_temp_c'))     body.chamber_temp_c = intVal('chamber_temp_c', 0);
+      if (changed('sku'))                body.sku = strVal('sku');
+
+      // Raw pass-through fields: transmission_distance is mm x 0.1 on both
+      // the status read and this POST, matched to the struct member and the
+      // form label — never convert it here.
+      var numeric = [
+        ['serial_number', 'serial_number', 'str'],
+        ['online_url', 'online_url', 'str'],
+        ['measured_filament_weight_g', 'measured_filament_weight_g', 'int'],
+        ['empty_spool_weight_g', 'empty_spool_weight_g', 'int'],
+        ['min_print_temp_c', 'min_print_temp_c', 'int'],
+        ['max_print_temp_c', 'max_print_temp_c', 'int'],
+        ['min_bed_temp_c', 'min_bed_temp_c', 'int'],
+        ['max_bed_temp_c', 'max_bed_temp_c', 'int'],
+        ['max_dry_temp_c', 'max_dry_temp_c', 'int'],
+        ['dry_time_hours', 'dry_time_hours', 'int'],
+        ['target_volumetric_speed', 'target_volumetric_speed', 'int'],
+        ['transmission_distance', 'transmission_distance', 'int']
+      ];
+      numeric.forEach(function (f) {
+        if (!changed(f[0])) return;
+        body[f[1]] = f[2] === 'str' ? strVal(f[0]) : intVal(f[0], 0);
+      });
+
+      if (changed('barcode')) {
+        var d = strVal('barcode');
+        if (d) body.barcode = d;
+      }
+      if (changed('min_nozzle_diameter_mm')) {
+        var mm = floatVal('min_nozzle_diameter_mm', -1);
+        if (mm >= 0) body.min_nozzle_diameter = Math.round(mm * 10);
+      }
 
       return body;
     }
@@ -532,6 +649,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     function showCreateView() {
       document.getElementById('statusView').classList.add('hidden');
       document.getElementById('createView').classList.remove('hidden');
+      // The form on screen may still show the values from the tag just
+      // written, but it's no longer a guaranteed-faithful copy of any tag
+      // (the physical tag may be swapped before the next write), so a
+      // stale snapshot must not be allowed to claim preserve mode.
+      ot3dSource = null;
     }
 
     document.getElementById('backBtn').addEventListener('click', showCreateView);
@@ -544,12 +666,17 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         endpoint: '/api/write-opentag3d',
         formatName: 'OpenTag3D',
         buildPayload: buildPayload,
-        verify: function(status, payload) {
+        verify: function(status) {
+          // Compare against what the form currently shows, not the payload
+          // — a preserve-mode write can leave base_material/manufacturer/
+          // target_weight_g out of the payload entirely when unchanged, so
+          // checking payload fields directly would report a false failure
+          // on every preserve write that didn't touch those three fields.
           if (status.tag_kind !== 'OpenTag3D' || !status.opentag3d) return false;
           var ot = status.opentag3d;
-          return ot.base_material === payload.base_material &&
-                 ot.manufacturer === payload.manufacturer &&
-                 ot.target_weight_g === payload.target_weight_g;
+          return ot.base_material === strVal('base_material').toUpperCase() &&
+                 ot.manufacturer === strVal('manufacturer') &&
+                 ot.target_weight_g === intVal('target_weight_g', 1000);
         },
         afterSuccess: function(uid) {
           return saveEnrichmentToSpoolman(uid, {
@@ -594,6 +721,20 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       bed_max: 'max_bed_temp_c'
     });
 
+    // renderSpoolmanPicker's apply handler (selectSpoolmanSpool, in
+    // shared.js) overwrites form fields from a picked spool — once that
+    // happens the form is no longer a faithful copy of ot3dSource's tag.
+    // Its result rows are rendered into #spoolmanPickerResults with an
+    // inline onclick, so a capturing listener on the container (which
+    // fires before that inline handler) catches every pick, including
+    // rows added after this listener was attached.
+    var spoolmanPickerEl = document.getElementById('spoolmanPicker');
+    if (spoolmanPickerEl) {
+      spoolmanPickerEl.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('#spoolmanPickerResults')) ot3dSource = null;
+      }, true);
+    }
+
     var _enrichCheck = setInterval(function() {
       if (document.querySelector('#spoolmanPickerSearch')) {
         document.getElementById('spoolmanEnrichment').classList.remove('hidden');
@@ -612,42 +753,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       expectedKind: 'OpenTag3D',
       wrongKindMsg: 'wrong format \u2014 expected OpenTag3D',
       showMatchBadge: showMatchBadge,
+      // setupReadButton (shared.js) always calls this with just the status
+      // object, so the UID it should bind for preserve mode comes off
+      // status.uid rather than a second argument.
       fillForm: function(status) {
-        var ot = status.opentag3d || {};
-        setVal('base_material', ot.base_material || '');
-        setVal('manufacturer', ot.manufacturer || '');
-        if (ot.color_hex) {
-          var c = ot.color_hex.startsWith('#') ? ot.color_hex : '#' + ot.color_hex;
-          setVal('colorHex', c);
-          setVal('colorPicker', c);
-        }
-        if (ot.target_weight_g) setVal('target_weight_g', ot.target_weight_g);
-        if (ot.density) setVal('density', ot.density);
-        if (ot.print_temp) setVal('print_temp_c', ot.print_temp);
-        if (ot.bed_temp) setVal('bed_temp_c', ot.bed_temp);
-        if (ot.min_print_temp) setVal('min_print_temp_c', ot.min_print_temp);
-        if (ot.max_print_temp) setVal('max_print_temp_c', ot.max_print_temp);
-        if (ot.min_bed_temp) setVal('min_bed_temp_c', ot.min_bed_temp);
-        if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
-        if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
-        if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        // Present-key guard: a v2 read carries chamber_temp even at 0 (so 0 is
-        // applied), while a v1 read omits it and leaves a typed value alone.
-        if (ot.chamber_temp !== undefined) setVal('chamber_temp_c', ot.chamber_temp);
-        if (ot.diameter_mm) {
-          var dEl = document.getElementById('diameter_um');
-          if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);
-        }
-        if (ot.color_name) setVal('color_name', ot.color_name);
-        setVal('material_modifiers', ot.modifiers || '');
-        setVal('serial_number', ot.serial_number || '');
-        setVal('measured_filament_weight_g', ot.measured_weight_g || '');
-        setVal('empty_spool_weight_g', ot.empty_spool_g || '');
-        setVal('sku', ot.sku || '');
-        setVal('barcode', ot.barcode ? String(ot.barcode) : '');
-        setVal('min_nozzle_diameter_mm', ot.min_nozzle_mm || '');
-        var matEl = document.getElementById('base_material');
-        if (matEl) matEl.dispatchEvent(new Event('input'));
+        fillForm(status, status.uid);
       },
       fillEnrichment: function(status) {
         var sp = status.spoolman || {};
