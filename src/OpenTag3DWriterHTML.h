@@ -577,11 +577,21 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     // Diffs the form against ot3dSource's snapshot so a write only carries
     // the fields the user actually touched. Preserve mode only applies when
-    // writing back to the exact UID the form was filled from — otherwise
-    // (a fresh tag, or a different one swapped in) this falls back to
-    // replace, which is safe because there is nothing on this tag to lose.
+    // writing back to the exact UID the form was filled from. No source at
+    // all means the form was never filled from a tag, so this is a brand
+    // new write and replace is correct. A source bound to a DIFFERENT UID
+    // than what's on the reader now is refused outright — the form is not a
+    // faithful copy of whatever tag that is, and a replace-mode write would
+    // silently zero it out.
     function buildPayload(uid) {
-      var preserve = !!(ot3dSource && ot3dSource.uid && ot3dSource.uid === uid);
+      var preserve;
+      if (!ot3dSource || !ot3dSource.uid) {
+        preserve = false;
+      } else if (ot3dSource.uid === uid) {
+        preserve = true;
+      } else {
+        throw new Error('This form was read from a different tag (' + ot3dSource.uid + '). Press Clear to write this tag from scratch, or re-read it first.');
+      }
       var body = { uid: uid || '', mode: preserve ? 'preserve' : 'replace' };
 
       function changed(id) {
@@ -606,7 +616,18 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       if (changed('target_weight_g'))    body.target_weight_g = intVal('target_weight_g', 1000);
       if (changed('print_temp_c'))       body.print_temp_c = intVal('print_temp_c', 210);
       if (changed('bed_temp_c'))         body.bed_temp_c = intVal('bed_temp_c', 60);
-      if (changed('density'))            body.density_ugcm3 = Math.round(floatVal('density', 1.24) * 1000);
+      if (changed('density')) {
+        // density is the one non-required, non-select numeric field a user
+        // can blank. floatVal's fallback (1.24) exists for its other
+        // callers and is a fabricated real-looking number here — sending
+        // it would silently overwrite a tag's genuine density (e.g. a real
+        // 1.27 PETG) with a made-up 1.24. Only send when the user actually
+        // typed a number; a blank box means "leave it alone," and omitting
+        // the key is exactly how preserve mode expresses that.
+        var densityRaw = strVal('density');
+        var densityNum = parseFloat(densityRaw);
+        if (densityRaw !== '' && !isNaN(densityNum)) body.density_ugcm3 = Math.round(densityNum * 1000);
+      }
       if (changed('chamber_temp_c'))     body.chamber_temp_c = intVal('chamber_temp_c', 0);
       if (changed('sku'))                body.sku = strVal('sku');
 
@@ -632,13 +653,16 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         body[f[1]] = f[2] === 'str' ? strVal(f[0]) : intVal(f[0], 0);
       });
 
+      // Unlike density, the firmware treats a blank barcode/nozzle-diameter
+      // as a meaningful, honoured clear (empty digit string / 0 respectively
+      // — see WebServerManager.cpp's barcode and min_nozzle_diameter patch
+      // handling), so a deliberate blank must be sent, not dropped.
       if (changed('barcode')) {
-        var d = strVal('barcode');
-        if (d) body.barcode = d;
+        body.barcode = strVal('barcode');
       }
       if (changed('min_nozzle_diameter_mm')) {
         var mm = floatVal('min_nozzle_diameter_mm', -1);
-        if (mm >= 0) body.min_nozzle_diameter = Math.round(mm * 10);
+        body.min_nozzle_diameter = mm >= 0 ? Math.round(mm * 10) : 0;
       }
 
       return body;
