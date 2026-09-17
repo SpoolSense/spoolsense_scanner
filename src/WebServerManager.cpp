@@ -1928,14 +1928,134 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         return;
     }
 
-    opentag3d_t ot3d;
-    memset(&ot3d, 0, sizeof(ot3d));
+    ot3d_patch_t patch;
+    memset(&patch, 0, sizeof(patch));
+    patch.magic = OT3D_PATCH_MAGIC;
 
-    ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
+    const char* modeStr = doc["mode"] | "replace";
+    patch.mode = (strcmp(modeStr, "preserve") == 0) ? OT3D_MODE_PRESERVE : OT3D_MODE_REPLACE;
 
-    if (!opentag3d_can_encode(ot3d.tag_version)) {
-        sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
-        return;
+    // A string key that is present but not a string, or a number key that is
+    // present but not a number, is a client bug — reject it rather than
+    // zeroing the field on the tag.
+#define PATCH_STR(key, member, field_id)                                          \
+    if (doc[key].is<const char*>()) {                                             \
+        strncpy(patch.values.member, doc[key].as<const char*>(),                  \
+                sizeof(patch.values.member) - 1);                                 \
+        ot3d_mask_set(&patch.mask, field_id);                                     \
+    } else if (!doc[key].isNull()) {                                              \
+        sendError(400, key " must be a string");                                  \
+        return;                                                                   \
+    }
+
+#define PATCH_NUM(key, member, field_id, lo, hi)                                  \
+    if (doc[key].is<long long>()) {                                               \
+        long long v = doc[key].as<long long>();                                   \
+        if (v < (lo) || v > (hi)) { sendError(400, key " out of range"); return; } \
+        patch.values.member = v;                                                  \
+        ot3d_mask_set(&patch.mask, field_id);                                     \
+    } else if (!doc[key].isNull()) {                                              \
+        sendError(400, key " must be a number");                                  \
+        return;                                                                   \
+    }
+
+    PATCH_STR("base_material",      base_material,      OT3D_F_BASE_MATERIAL)
+    PATCH_STR("material_modifiers", material_modifiers, OT3D_F_MATERIAL_MODIFIERS)
+    PATCH_STR("manufacturer",       manufacturer,       OT3D_F_MANUFACTURER)
+    PATCH_STR("color_name",         color_name,         OT3D_F_COLOR_NAME)
+    PATCH_NUM("diameter_um",        diameter_um,        OT3D_F_DIAMETER_UM,       0, 65535)
+    PATCH_NUM("target_weight_g",    target_weight_g,    OT3D_F_TARGET_WEIGHT_G,   0, 65535)
+    PATCH_NUM("density_ugcm3",      density_ugcm3,      OT3D_F_DENSITY,           0, 65535)
+    PATCH_NUM("transmission_distance", transmission_distance, OT3D_F_TRANSMISSION_DISTANCE, 0, 65535)
+
+#define PATCH_TEMP(key, member, field_id)                                         \
+    if (doc[key].is<long long>()) {                                               \
+        long long c = doc[key].as<long long>();                                   \
+        if (c < 0 || c > 1275) { sendError(400, key " out of range"); return; }    \
+        patch.values.member = (uint8_t)((c + 2) / 5);                             \
+        ot3d_mask_set(&patch.mask, field_id);                                     \
+    } else if (!doc[key].isNull()) {                                              \
+        sendError(400, key " must be a number");                                  \
+        return;                                                                   \
+    }
+
+    PATCH_TEMP("print_temp_c",     print_temp_encoded,     OT3D_F_PRINT_TEMP)
+    PATCH_TEMP("bed_temp_c",       bed_temp_encoded,       OT3D_F_BED_TEMP)
+    PATCH_TEMP("chamber_temp_c",   chamber_temp_encoded,   OT3D_F_CHAMBER_TEMP)
+    PATCH_TEMP("min_print_temp_c", min_print_temp_encoded, OT3D_F_MIN_PRINT_TEMP)
+    PATCH_TEMP("max_print_temp_c", max_print_temp_encoded, OT3D_F_MAX_PRINT_TEMP)
+    PATCH_TEMP("min_bed_temp_c",   min_bed_temp_encoded,   OT3D_F_MIN_BED_TEMP)
+    PATCH_TEMP("max_bed_temp_c",   max_bed_temp_encoded,   OT3D_F_MAX_BED_TEMP)
+    PATCH_TEMP("max_dry_temp_c",   max_dry_temp_encoded,   OT3D_F_MAX_DRY_TEMP)
+    PATCH_TEMP("mfi_temp_c",       mfi_temp_encoded,       OT3D_F_MFI_TEMP)
+
+    if (doc["color_r"].is<long long>() || doc["color_g"].is<long long>() || doc["color_b"].is<long long>()) {
+        if (!(doc["color_r"].is<long long>() && doc["color_g"].is<long long>() && doc["color_b"].is<long long>())) {
+            sendError(400, "color_r, color_g and color_b must be sent together");
+            return;
+        }
+        patch.values.color_rgba[0][0] = (uint8_t)doc["color_r"].as<long long>();
+        patch.values.color_rgba[0][1] = (uint8_t)doc["color_g"].as<long long>();
+        patch.values.color_rgba[0][2] = (uint8_t)doc["color_b"].as<long long>();
+        ot3d_mask_set(&patch.mask, OT3D_F_COLOR0_RGB);
+    }
+    PATCH_NUM("color_a", color_rgba[0][3], OT3D_F_COLOR0_ALPHA, 0, 255)
+
+    static const struct { const char* key; int idx; ot3d_field_t id; } kExtraColors[] = {
+        { "color2", 1, OT3D_F_COLOR1 }, { "color3", 2, OT3D_F_COLOR2 }, { "color4", 3, OT3D_F_COLOR3 },
+    };
+    for (auto& c : kExtraColors) {
+        JsonArrayConst arr = doc[c.key];
+        if (arr.isNull()) continue;
+        if (arr.size() != 4) { sendError(400, "extra colors need 4 RGBA values"); return; }
+        for (int i = 0; i < 4; i++) patch.values.color_rgba[c.idx][i] = (uint8_t)(arr[i].as<int>());
+        ot3d_mask_set(&patch.mask, c.id);
+    }
+
+    PATCH_STR("online_url",    online_url,    OT3D_F_ONLINE_URL)
+    PATCH_STR("serial_number", serial_number, OT3D_F_SERIAL_NUMBER)
+    PATCH_STR("sku",           sku,           OT3D_F_SKU)
+    PATCH_NUM("manufacture_year",   manufacture_year,   OT3D_F_MANUFACTURE_YEAR,   0, 65535)
+    PATCH_NUM("manufacture_month",  manufacture_month,  OT3D_F_MANUFACTURE_MONTH,  0, 12)
+    PATCH_NUM("manufacture_day",    manufacture_day,    OT3D_F_MANUFACTURE_DAY,    0, 31)
+    PATCH_NUM("manufacture_hour",   manufacture_hour,   OT3D_F_MANUFACTURE_HOUR,   0, 23)
+    PATCH_NUM("manufacture_minute", manufacture_minute, OT3D_F_MANUFACTURE_MINUTE, 0, 59)
+    PATCH_NUM("manufacture_second", manufacture_second, OT3D_F_MANUFACTURE_SECOND, 0, 59)
+    PATCH_NUM("spool_core_diameter_mm", spool_core_diameter_mm, OT3D_F_SPOOL_CORE_DIAMETER, 0, 255)
+    PATCH_NUM("mfi_load",  mfi_load,  OT3D_F_MFI_LOAD,  0, 255)
+    PATCH_NUM("mfi_value", mfi_value, OT3D_F_MFI_VALUE, 0, 255)
+    PATCH_NUM("measured_tolerance_um",       measured_tolerance_um,       OT3D_F_MEASURED_TOLERANCE,   0, 255)
+    PATCH_NUM("empty_spool_weight_g",        empty_spool_weight_g,        OT3D_F_EMPTY_SPOOL_WEIGHT_G, 0, 65535)
+    PATCH_NUM("measured_filament_weight_g",  measured_filament_weight_g,  OT3D_F_MEASURED_WEIGHT_G,    0, 65535)
+    PATCH_NUM("measured_filament_length_m",  measured_filament_length_m,  OT3D_F_MEASURED_LENGTH_M,    0, 65535)
+    PATCH_NUM("dry_time_hours",           dry_time_hours,           OT3D_F_DRY_TIME_HOURS,           0, 255)
+    PATCH_NUM("min_volumetric_speed",     min_volumetric_speed,     OT3D_F_MIN_VOLUMETRIC_SPEED,     0, 255)
+    PATCH_NUM("max_volumetric_speed",     max_volumetric_speed,     OT3D_F_MAX_VOLUMETRIC_SPEED,     0, 255)
+    PATCH_NUM("target_volumetric_speed",  target_volumetric_speed,  OT3D_F_TARGET_VOLUMETRIC_SPEED,  0, 255)
+    PATCH_NUM("min_nozzle_diameter",      min_nozzle_diameter,      OT3D_F_MIN_NOZZLE_DIAMETER,      0, 255)
+
+    if (doc["barcode"].is<const char*>()) {
+        patch.values.barcode = strtoull(doc["barcode"].as<const char*>(), nullptr, 10);
+        ot3d_mask_set(&patch.mask, OT3D_F_BARCODE);
+    }
+
+#undef PATCH_STR
+#undef PATCH_NUM
+#undef PATCH_TEMP
+
+    // Absent version means "keep whatever the tag has". Only replace mode may
+    // mint a version, and only when the caller asked for one.
+    bool versionRequested = doc["tag_version"].is<long long>();
+    if (versionRequested) {
+        patch.values.tag_version = (uint16_t)doc["tag_version"].as<long long>();
+        if (!opentag3d_can_encode(patch.values.tag_version)) {
+            sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
+            return;
+        }
+    } else if (patch.mode == OT3D_MODE_REPLACE) {
+        patch.values.tag_version = (uint16_t)OT3D_SUPPORTED_VERSION;
+    } else {
+        patch.values.tag_version = 0;   // NFC task fills from the fresh baseline
     }
 
     // Never re-mint a newer-minor tag: the queued struct carries OUR version
@@ -1952,8 +2072,9 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     // memory must reach page 67. Refuse up front when the tag on the reader is
     // known too small or cannot be identified — otherwise the queue accepts it,
     // the capacity check rejects it later on the NFC task, and the browser only
-    // sees a verify timeout.
-    if (opentag3d_major(ot3d.tag_version) >= 2) {
+    // sees a verify timeout. Preserve mode with no requested version defers to
+    // the NFC task's authoritative check against the freshly read baseline.
+    if (patch.mode == OT3D_MODE_REPLACE || opentag3d_major(patch.values.tag_version) >= 2) {
         CurrentSpoolState cur;
         if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
             uint16_t endPage = effectiveUserMemoryEnd(cur.variant, cur.cc_user_end);
@@ -1976,129 +2097,32 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         }
     }
 
-    const char* baseMat = doc["base_material"] | "PLA";
-    strncpy(ot3d.base_material, baseMat, sizeof(ot3d.base_material) - 1);
-
-    const char* modifiers = doc["material_modifiers"] | "";
-    strncpy(ot3d.material_modifiers, modifiers, sizeof(ot3d.material_modifiers) - 1);
-
-    const char* mfr = doc["manufacturer"] | "";
-    strncpy(ot3d.manufacturer, mfr, sizeof(ot3d.manufacturer) - 1);
-
-    const char* colorName = doc["color_name"] | "";
-    strncpy(ot3d.color_name, colorName, sizeof(ot3d.color_name) - 1);
-
-    ot3d.color_rgba[0][0] = doc["color_r"] | (uint8_t)0;
-    ot3d.color_rgba[0][1] = doc["color_g"] | (uint8_t)0;
-    ot3d.color_rgba[0][2] = doc["color_b"] | (uint8_t)0;
-    ot3d.color_rgba[0][3] = doc["color_a"] | (uint8_t)255;
-
-    ot3d.diameter_um = doc["diameter_um"] | (uint16_t)1750;
-    ot3d.target_weight_g = doc["target_weight_g"] | (uint16_t)1000;
-
-    // All °C fields share one strict parse: numbers 0..1275 only. ArduinoJson's
-    // `| 0` default silently turns wrong-typed JSON into 0, and the old
-    // (uint8_t)(x / 5) casts wrapped anything past 1275 into a bogus value.
-    bool tempRangeError = false;
-    auto readTempEncoded = [&](const char* key) -> uint8_t {
-        JsonVariantConst v = doc[key];
-        if (v.isNull()) return 0;
-        if (!v.is<float>()) { tempRangeError = true; return 0; }
-        float c = v.as<float>();
-        if (c < 0.0f || c > 1275.0f) { tempRangeError = true; return 0; }
-        return (uint8_t)(((uint16_t)(c + 0.5f)) / 5);
-    };
-    ot3d.print_temp_encoded = readTempEncoded("print_temp_c");
-    ot3d.bed_temp_encoded = readTempEncoded("bed_temp_c");
-
-    ot3d.density_ugcm3 = doc["density_ugcm3"] | (uint16_t)0;
-    ot3d.transmission_distance = doc["transmission_distance"] | (uint16_t)0;
-
-    const char* sku = doc["sku"] | "";
-    strncpy(ot3d.sku, sku, sizeof(ot3d.sku) - 1);
-
-    if (doc["barcode"].is<const char*>()) {
-        const char* bcStr = doc["barcode"] | "";
-        // Whole string must be digits — strtoull alone accepts leading
-        // whitespace and signs, and "-5" wraps in unsigned arithmetic.
-        for (const char* p = bcStr; *p; ++p) {
-            if (*p < '0' || *p > '9') {
-                sendError(400, "Barcode must be digits only");
-                return;
-            }
+    if (patch.mode == OT3D_MODE_PRESERVE && opentag3d_patch_touches_v2_only(patch.mask)) {
+        opentag3d_t onReaderV2;
+        if (NFCManager::getInstance().getLastOpenTag3DData(onReaderV2) &&
+            opentag3d_major(onReaderV2.tag_version) < 2) {
+            sendError(400, "SKU, barcode, chamber temperature and minimum nozzle are v2-only fields — this tag is v1");
+            return;
         }
-        ot3d.barcode = strtoull(bcStr, NULL, 10);
-    } else {
-        ot3d.barcode = doc["barcode"] | (uint64_t)0;  // numeric JSON from scripts/HA
     }
-    if (ot3d.barcode > 99999999999999ULL) {  // GTIN caps at 14 digits (also under the 6-byte field max)
-        sendError(400, "Barcode exceeds the 14-digit GTIN range");
-        return;
-    }
-
-    ot3d.chamber_temp_encoded = readTempEncoded("chamber_temp_c");
-
-    ot3d.min_nozzle_diameter = doc["min_nozzle_diameter"] | (uint8_t)0;
-
-    // Always parse these — the old two-key gate silently dropped any of them
-    // that arrived without serial_number/min_print_temp_c, and a v2 encode
-    // writes the full 224-byte map either way.
-    const char* serial = doc["serial_number"] | "";
-    strncpy(ot3d.serial_number, serial, sizeof(ot3d.serial_number) - 1);
-
-    const char* url = doc["online_url"] | "";
-    strncpy(ot3d.online_url, url, sizeof(ot3d.online_url) - 1);
-
-    ot3d.manufacture_year = doc["manufacture_year"] | (uint16_t)0;
-    ot3d.manufacture_month = doc["manufacture_month"] | (uint8_t)0;
-    ot3d.manufacture_day = doc["manufacture_day"] | (uint8_t)0;
-
-    ot3d.empty_spool_weight_g = doc["empty_spool_weight_g"] | (uint16_t)0;
-    ot3d.measured_filament_weight_g = doc["measured_filament_weight_g"] | (uint16_t)0;
-    ot3d.measured_filament_length_m = doc["measured_filament_length_m"] | (uint16_t)0;
-
-    ot3d.max_dry_temp_encoded = readTempEncoded("max_dry_temp_c");
-    ot3d.dry_time_hours = doc["dry_time_hours"] | (uint8_t)0;
-
-    ot3d.min_print_temp_encoded = readTempEncoded("min_print_temp_c");
-    ot3d.max_print_temp_encoded = readTempEncoded("max_print_temp_c");
-    ot3d.min_bed_temp_encoded = readTempEncoded("min_bed_temp_c");
-    ot3d.max_bed_temp_encoded = readTempEncoded("max_bed_temp_c");
-
-    if (tempRangeError) {
-        sendError(400, "Temperature fields must be numbers between 0 and 1275");
-        return;
-    }
-
-    ot3d.min_volumetric_speed = doc["min_volumetric_speed"] | (uint8_t)0;
-    ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
-    ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
-
-    // has_extended only sizes v1 encodes (v2 always writes the full map).
-    // Derive it from the parsed data, not key probes — an explicit v1 post
-    // carrying only a URL or dry profile must still get the extended layout.
-    ot3d.has_extended = (opentag3d_major(ot3d.tag_version) >= 2) ||
-                        ot3d.serial_number[0] || ot3d.online_url[0] ||
-                        ot3d.manufacture_year || ot3d.empty_spool_weight_g ||
-                        ot3d.measured_filament_weight_g || ot3d.measured_filament_length_m ||
-                        ot3d.max_dry_temp_encoded || ot3d.dry_time_hours ||
-                        ot3d.min_print_temp_encoded || ot3d.max_print_temp_encoded ||
-                        ot3d.min_bed_temp_encoded || ot3d.max_bed_temp_encoded ||
-                        ot3d.min_volumetric_speed || ot3d.max_volumetric_speed ||
-                        ot3d.target_volumetric_speed;
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_OPENTAG3D;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
 
-    if (!NFCManager::getInstance().enqueueRawWrite(req, (const uint8_t*)&ot3d, sizeof(ot3d))) {
+    if (!NFCManager::getInstance().enqueueRawWrite(req, (const uint8_t*)&patch, sizeof(patch))) {
         sendError(503, "Write queue full or busy");
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    JsonDocument resp;
+    resp["queued"] = true;
+    resp["request_id"] = req.request_id;
+    String out;
+    serializeJson(resp, out);
+    _server.send(200, "application/json", out);
 }
 
 // ---------------------------------------------------------------------------

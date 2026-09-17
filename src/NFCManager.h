@@ -14,6 +14,7 @@
 #include "TigerTagParser.h"
 #include "OpenSpoolParser.h"
 #include "opentag3d_lib.h"
+#include "opentag3d_patch.h"
 #include "BambuTagParser.h"
 
 // Sidecar for WRITE_ATOMIC: filled by HTTP handler, consumed by scan task.
@@ -217,6 +218,8 @@ private:
 
     // Raw tag write sidecar buffer (filled by HTTP context, consumed by scan task)
     static constexpr size_t RAW_WRITE_BUFFER_SIZE = 320;
+    static_assert(sizeof(ot3d_patch_t) <= RAW_WRITE_BUFFER_SIZE,
+                  "OpenTag3D patch envelope exceeds the raw write staging buffer");
     uint8_t rawWriteBuffer_[RAW_WRITE_BUFFER_SIZE];
     size_t rawWriteBufferSize_ = 0;
     bool rawWritePending_ = false;
