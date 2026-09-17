@@ -18,7 +18,7 @@ extern "C" {
 /* NDEF MIME type for detection */
 #define OT3D_MIME_TYPE "application/opentag3d"
 
-/* Minimum payload sizes */
+/* Canonical encoded payload sizes (decoding also accepts partial payloads). */
 #define OT3D_CORE_SIZE    0x66   /* 102 bytes — core fields through transmission distance */
 #define OT3D_EXTENDED_MIN 0xBB   /* 187 bytes — includes all extended fields */
 
@@ -93,8 +93,13 @@ typedef struct {
  * len: number of bytes available.
  * out: decoded data (zeroed first, then populated).
  *
+ * Fields available within len are decoded. A partially present string is
+ * copied and null-terminated; unavailable fields remain zero/empty. Numeric
+ * fields are decoded only when all of their bytes are present.
+ *
  * Returns OT3D_OK on success, OT3D_VERSION_WARNING if minor version is ahead,
- * OT3D_VERSION_ERROR if major version is ahead, OT3D_PARSE_ERROR if too short.
+ * OT3D_VERSION_ERROR if major version is ahead, or OT3D_PARSE_ERROR when the
+ * version field itself is incomplete or the arguments are invalid.
  */
 opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3d_t *out);
 

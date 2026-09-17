@@ -43,7 +43,7 @@ After connecting to WiFi, open **`http://spoolsense.local`** from any browser on
 ## Features
 
 * **Multi-format NFC Support:** Read and write OpenPrintTag (ISO15693), TigerTag (ISO14443A NTAG213/215), OpenTag3D (ISO14443A NTAG215/216), and OpenSpool (ISO14443A NTAG215/216) tags. Bambu Lab MIFARE Classic tags are read with full decryption (vendor, material, color, weight, temperatures, dry info). NFC+ (UID-only) tags are detected for Spoolman registration by UID.
-* **Dual NFC Reader Support:** PN5180 (ISO15693 + ISO14443A, all tag formats) and PN532 (ISO14443A only). Selected at runtime via NVS — both compiled into a single binary.
+* **Multiple NFC Reader Support:** PN5180 (ISO15693 + ISO14443A, all tag formats), PN532 (ISO14443A only), and RC522 (ISO14443A only). Selected at runtime via NVS — all three are compiled into a single binary.
 * **3x4 Matrix Keypad (optional):** Scan a spool, type a tool number, press # to assign via Moonraker's ASSIGN_SPOOL macro. For toolchanger and multi-tool setups.
 * **Built-in Tag Writer:** Write filament metadata directly from the web UI — material, manufacturer, weight, color, density, diameter, temperatures, and more. Separate writer pages for each tag format. Material and brand fields are type-to-search with auto-fill for temperatures and density. A Read button on each writer page loads an existing tag's data for re-writing.
 * **NFC+ Registration:** Register plain NFC tags (NTAG215, etc.) in Spoolman using the tag's UID as identifier. No data written to the tag — fill in filament details in the web UI and create the Spoolman entry directly.
@@ -125,6 +125,7 @@ Once the scanner is running, open **`http://spoolsense.local`** in your browser.
 *   NFC Reader (one of):
     - **PN5180** (recommended) — ISO15693 + ISO14443A, all tag formats — [AITRIP PN5180](https://www.amazon.com/dp/B0BXY1Y7PX) (tested)
     - **PN532** — ISO14443A only (no SLIX2/OpenPrintTag on ISO15693). Cheaper and smaller.
+    - **RC522/MFRC522** — ISO14443A only (no SLIX2/OpenPrintTag). Use 3.3V power and logic.
 *   ESP32 (one of):
     - **ESP32-WROOM** — [Freenove ESP32-WROOM](https://www.amazon.com/dp/B0C9THDPXP) (tested). Recommended if using LCD + keypad.
     - **ESP32-S3-Zero / S3-Zero-M** — Smaller form factor with onboard WS2812 RGB LED. M variant has pre-soldered pin headers.
@@ -138,6 +139,107 @@ Once the scanner is running, open **`http://spoolsense.local`** in your browser.
 *   LCD Screen: [16x2 I2C LCD](https://a.co/d/dryhwvd) (optional)
 *   Status LED: SK6812 RGBW (WROOM, optional external), onboard WS2812 RGB (S3-Zero/C5/C6 DevKitC), or onboard active-low user LED (XIAO ESP32-C6)
 *   3x4 Matrix Keypad: [membrane keypad](https://www.amazon.com/dp/B0DZ26VVR7) (optional, for toolchanger tool assignment)
+
+### RC522 wiring
+
+RC522 breakout boards commonly label their chip-select pin **SDA**, **SS**, or
+**SDA/SS**. It is SPI chip select on these modules, not an I2C data connection.
+Leave **IRQ** disconnected. Power the RC522 from **3.3V**, not 5V.
+
+#### ESP32-WROOM-32 (`esp32dev`)
+
+| RC522 pin | ESP32-WROOM-32 pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO14 (D14) |
+| SCK | GPIO25 (D25) |
+| MOSI | GPIO27 (D27) |
+| MISO | GPIO26 (D26) |
+| RST | GPIO13 (D13) |
+| IRQ | Not connected |
+
+#### ESP32-S3-Zero / S3-Zero-M (`esp32s3zero`)
+
+| RC522 pin | ESP32-S3-Zero pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO5 |
+| SCK | GPIO8 |
+| MOSI | GPIO6 |
+| MISO | GPIO7 |
+| RST | GPIO4 |
+| IRQ | Not connected |
+
+#### ESP32-S3-DevKitC-1-N16R8 (`esp32s3devkitc`)
+
+| RC522 pin | ESP32-S3-DevKitC pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO10 |
+| SCK | GPIO12 |
+| MOSI | GPIO11 |
+| MISO | GPIO9 |
+| RST | GPIO7 |
+| IRQ | Not connected |
+
+#### ESP32-C3 SuperMini (`esp32c3`)
+
+| RC522 pin | ESP32-C3 SuperMini pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO7 |
+| SCK | GPIO4 |
+| MOSI | GPIO6 |
+| MISO | GPIO5 |
+| RST | GPIO0 |
+| IRQ | Not connected |
+
+#### ESP32-C6-DevKitC-1 (`esp32c6`)
+
+| RC522 pin | ESP32-C6-DevKitC pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO10 |
+| SCK | GPIO6 |
+| MOSI | GPIO7 |
+| MISO | GPIO2 |
+| RST | GPIO0 |
+| IRQ | Not connected |
+
+#### Seeed Studio XIAO ESP32-C6 (`seeed_xiao_esp32c6`)
+
+| RC522 pin | XIAO pin | ESP32-C6 GPIO |
+|---|---|---|
+| 3.3V | 3V3 | — |
+| GND | GND | — |
+| SDA / SS | D3 | GPIO21 |
+| SCK | D8 | GPIO19 |
+| MOSI | D10 | GPIO18 |
+| MISO | D9 | GPIO20 |
+| RST | D6 | GPIO16 |
+| IRQ | Not connected | — |
+
+#### ESP32-C5-DevKitC-1 v1.2 (`esp32c5`)
+
+| RC522 pin | ESP32-C5-DevKitC pin |
+|---|---|
+| 3.3V | 3.3V |
+| GND | GND |
+| SDA / SS | GPIO10 |
+| SCK | GPIO6 |
+| MOSI | GPIO8 |
+| MISO | GPIO9 |
+| RST | GPIO0 |
+| IRQ | Not connected |
+
+These are the firmware defaults from `include/BoardPins.h`. If you override the
+NFC pins on the web configuration page, wire the RC522 to those values instead.
+Select **RC522**, save the configuration, and reboot before testing the reader.
 
 ## Enclosures
 
@@ -340,6 +442,7 @@ Many thanks to the original author and contributors for the work that made this 
 ### Libraries Used
 
 * **PN5180 Library** by Andreas Trappmann — ISO15693 and ISO14443A NFC driver for the PN5180 module: https://github.com/ATrappmann/PN5180-Library/
+* **RFID_MFRC522v2** by OSSLibraries — ISO14443A/MIFARE/NTAG driver for RC522 modules: https://github.com/OSSLibraries/Arduino_MFRC522v2/
 
 ## Specs Referenced
 *   OpenPrintTag: https://openprinttag.org/generator/

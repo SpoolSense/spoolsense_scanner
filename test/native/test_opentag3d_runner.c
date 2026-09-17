@@ -178,11 +178,27 @@ int main(void) {
     CHECK(r == OT3D_VERSION_WARNING, "B: result OT3D_VERSION_WARNING");
     CHECK(out.barcode == 12345543210ULL && out.has_extended == 1, "B: fields still parsed at 2050");
 
-    /* C: v2 truncated — 223 bytes */
-    printf("[C] v2 truncated (223B)\n");
+    /* C: v2 partial payload — parse only fields inside the declared length. */
+    printf("[C] v2 partial payload (100B)\n");
     build_v2_nominal(buf);
-    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE - 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "C: result OT3D_PARSE_ERROR");
+    r = opentag3d_decode(buf, 100, &out);
+    CHECK(r == OT3D_OK, "C: partial payload decodes successfully");
+    CHECK(strcmp(out.base_material, "PLA") == 0 &&
+          strcmp(out.manufacturer, "Example Brand") == 0,
+          "C: complete fields inside payload parsed");
+    CHECK(strncmp(out.serial_number, V2_SERIAL, 24) == 0 &&
+          strlen(out.serial_number) == 24,
+          "C: partially present string is bounded and null-terminated");
+    CHECK(out.sku[0] == '\0' && out.barcode == 0 && out.diameter_um == 0,
+          "C: fields outside payload remain empty/zero");
+
+    /* Manufacturer tags may stop at the final defined v2 field rather than
+     * padding the record to the canonical encoded map size. */
+    printf("[C2] v2 final-field length (216B)\n");
+    build_v2_nominal(buf);
+    r = opentag3d_decode(buf, OT3D_V2_OFF_DATA_URL + OT3D_V2_LEN_DATA_URL, &out);
+    CHECK(r == OT3D_OK, "C2: 216-byte manufacturer payload decodes");
+    if (r == OT3D_OK) check_v2_fields(&out);
 
     /* D: future major — 3000 rejected, version kept */
     printf("[D] future major (v3000)\n");
