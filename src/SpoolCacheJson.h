@@ -48,10 +48,11 @@ inline size_t spoolCacheEscape(const char* src, char* out, size_t outSize) {
 // Emits one record as a Spoolman-shaped JSON object. Returns bytes written,
 // or 0 on overflow (out[0] set to NUL).
 inline size_t spoolCacheEmitJson(const CachedSpool& s, char* out, size_t outSize) {
-    char vendor[2 * sizeof(s.vendor)];
-    char material[2 * sizeof(s.material)];
-    char name[2 * sizeof(s.name)];
-    char colorHex[2 * sizeof(s.color_hex)];
+    // 6x: a control character escapes to \uXXXX — six bytes per source byte
+    char vendor[6 * sizeof(s.vendor)];
+    char material[6 * sizeof(s.material)];
+    char name[6 * sizeof(s.name)];
+    char colorHex[6 * sizeof(s.color_hex)];
     if (spoolCacheEscape(s.vendor, vendor, sizeof(vendor)) == (size_t)-1) vendor[0] = '\0';
     if (spoolCacheEscape(s.material, material, sizeof(material)) == (size_t)-1) material[0] = '\0';
     if (spoolCacheEscape(s.name, name, sizeof(name)) == (size_t)-1) name[0] = '\0';

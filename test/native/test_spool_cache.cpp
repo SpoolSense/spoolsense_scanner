@@ -48,6 +48,19 @@ int main() {
     CHECK(n > 0 && strstr(out, "\"name\":\"A\\\"B\\\\C\\u000aD\"") != nullptr,
           "quote, backslash and newline escapes in name");
 
+    // 2b. Worst-case expansion: every name byte a control char (6x growth)
+    // must escape completely, not fall back to an empty field.
+    CachedSpool ctl = makeFull();
+    memset(ctl.name, '\n', sizeof(ctl.name) - 1);
+    ctl.name[sizeof(ctl.name) - 1] = '\0';
+    n = spoolCacheEmitJson(ctl, out, sizeof(out));
+    {
+        int reps = 0;
+        for (const char* p = out; (p = strstr(p, "\\u000a")) != nullptr; p += 6) reps++;
+        CHECK(n > 0 && reps == (int)(sizeof(ctl.name) - 1),
+              "all-control-char name escapes fully (6x expansion)");
+    }
+
     // 3. Zero/empty numeric fields emit 0 values.
     CachedSpool zero;
     memset(&zero, 0, sizeof(zero));
