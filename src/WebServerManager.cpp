@@ -1421,6 +1421,16 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     snprintf(colorHex, sizeof(colorHex), "#%02X%02X%02X",
              ot3d.color_rgba[0][0], ot3d.color_rgba[0][1], ot3d.color_rgba[0][2]);
     obj["color_hex"] = colorHex;
+    obj["color_a"] = ot3d.color_rgba[0][3];
+    for (int i = 1; i < 4; i++) {
+        if (!ot3d.color_rgba[i][0] && !ot3d.color_rgba[i][1] &&
+            !ot3d.color_rgba[i][2] && !ot3d.color_rgba[i][3]) continue;
+        char key[8];
+        snprintf(key, sizeof(key), "color%d", i + 1);
+        JsonArray a = obj.createNestedArray(key);
+        for (int c = 0; c < 4; c++) a.add(ot3d.color_rgba[i][c]);
+    }
+    if (ot3d.transmission_distance > 0) obj["transmission_distance"] = ot3d.transmission_distance;
 
     obj["target_weight_g"] = ot3d.target_weight_g;
     obj["diameter_mm"] = opentag3d_diameter_mm(&ot3d);
@@ -1457,6 +1467,27 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
         uint16_t dryTemp = (uint16_t)opentag3d_temp_c(ot3d.max_dry_temp_encoded);
         if (dryTemp > 0) obj["dry_temp"] = dryTemp;
         if (ot3d.dry_time_hours > 0) obj["dry_time_hours"] = ot3d.dry_time_hours;
+
+        if (ot3d.online_url[0]) obj["online_url"] = ot3d.online_url;
+        if (ot3d.target_volumetric_speed > 0) obj["target_volumetric_speed"] = ot3d.target_volumetric_speed;
+        if (ot3d.min_volumetric_speed > 0) obj["min_volumetric_speed"] = ot3d.min_volumetric_speed;
+        if (ot3d.max_volumetric_speed > 0) obj["max_volumetric_speed"] = ot3d.max_volumetric_speed;
+        if (ot3d.manufacture_year > 0) {
+            obj["manufacture_year"]   = ot3d.manufacture_year;
+            obj["manufacture_month"]  = ot3d.manufacture_month;
+            obj["manufacture_day"]    = ot3d.manufacture_day;
+            obj["manufacture_hour"]   = ot3d.manufacture_hour;
+            obj["manufacture_minute"] = ot3d.manufacture_minute;
+            obj["manufacture_second"] = ot3d.manufacture_second;
+        }
+        if (ot3d.mfi_temp_encoded > 0 || ot3d.mfi_load > 0 || ot3d.mfi_value > 0) {
+            obj["mfi_temp"]  = (uint16_t)opentag3d_temp_c(ot3d.mfi_temp_encoded);
+            obj["mfi_load"]  = ot3d.mfi_load;
+            obj["mfi_value"] = ot3d.mfi_value;
+        }
+        if (ot3d.measured_tolerance_um > 0) obj["measured_tolerance_um"] = ot3d.measured_tolerance_um;
+        if (ot3d.measured_filament_length_m > 0) obj["measured_filament_length_m"] = ot3d.measured_filament_length_m;
+        if (ot3d.spool_core_diameter_mm > 0) obj["spool_core_diameter_mm"] = ot3d.spool_core_diameter_mm;
     }
 }
 
