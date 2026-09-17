@@ -17,7 +17,7 @@ openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 cbor_native.o: ../../lib/openprinttag/cbor_native.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v2_map.h
+opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v1_map.h ../../lib/opentag3d/opentag3d_v2_map.h
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
 
 test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h ../../src/PrinterManager.cpp $(OPT_OBJS)

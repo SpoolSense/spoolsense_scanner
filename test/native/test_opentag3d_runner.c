@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "opentag3d_lib.h"
+#include "opentag3d_v1_map.h"
 #include "opentag3d_v2_map.h"
 
 static int failures = 0;
@@ -481,6 +482,48 @@ int main(void) {
     CHECK(OT3D_V2_OFF_MFI_VALUE == 0xAA && OT3D_V2_LEN_MFI_VALUE == 1, "R: mfi_value @0xAA/1");
     CHECK(OT3D_V2_OFF_DATA_URL == 0xB8 && OT3D_V2_LEN_DATA_URL == 32, "R: data_url @0xB8/32");
     CHECK(OT3D_V2_MAP_SIZE == 0xE0 && OT3D_V2_VERSION == 2000, "R: map size + version constants");
+
+    /* R: v1 map constants pinned to the values the hand-written v1
+     * decode/encode literals used before they were table-driven. No spec
+     * JSON exists for v1, so these literals are the regression net. */
+    printf("[R] v1 map literal pinning\n");
+    CHECK(OT3D_V1_OFF_TAG_VERSION == 0x00 && OT3D_V1_LEN_TAG_VERSION == 2, "R1: tag_version @0x00/2");
+    CHECK(OT3D_V1_OFF_MATERIAL == 0x02 && OT3D_V1_LEN_MATERIAL == 5, "R1: material @0x02/5");
+    CHECK(OT3D_V1_OFF_MATERIAL_MOD == 0x07 && OT3D_V1_LEN_MATERIAL_MOD == 5, "R1: material_mod @0x07/5");
+    CHECK(OT3D_V1_OFF_MANUFACTURER == 0x1B && OT3D_V1_LEN_MANUFACTURER == 16, "R1: manufacturer @0x1B/16");
+    CHECK(OT3D_V1_OFF_COLOR_NAME == 0x2B && OT3D_V1_LEN_COLOR_NAME == 32, "R1: color_name @0x2B/32");
+    CHECK(OT3D_V1_OFF_COLOR_1 == 0x4B && OT3D_V1_LEN_COLOR_1 == 4, "R1: color_1 @0x4B/4");
+    CHECK(OT3D_V1_OFF_COLOR_2 == 0x4F && OT3D_V1_LEN_COLOR_2 == 4, "R1: color_2 @0x4F/4");
+    CHECK(OT3D_V1_OFF_COLOR_3 == 0x53 && OT3D_V1_LEN_COLOR_3 == 4, "R1: color_3 @0x53/4");
+    CHECK(OT3D_V1_OFF_COLOR_4 == 0x57 && OT3D_V1_LEN_COLOR_4 == 4, "R1: color_4 @0x57/4");
+    CHECK(OT3D_V1_OFF_DIAMETER == 0x5C && OT3D_V1_LEN_DIAMETER == 2, "R1: diameter @0x5C/2");
+    CHECK(OT3D_V1_OFF_WEIGHT == 0x5E && OT3D_V1_LEN_WEIGHT == 2, "R1: weight @0x5E/2");
+    CHECK(OT3D_V1_OFF_PRINT_TEMP == 0x60 && OT3D_V1_LEN_PRINT_TEMP == 1, "R1: print_temp @0x60/1");
+    CHECK(OT3D_V1_OFF_BED_TEMP == 0x61 && OT3D_V1_LEN_BED_TEMP == 1, "R1: bed_temp @0x61/1");
+    CHECK(OT3D_V1_OFF_DENSITY == 0x62 && OT3D_V1_LEN_DENSITY == 2, "R1: density @0x62/2");
+    CHECK(OT3D_V1_OFF_TD == 0x64 && OT3D_V1_LEN_TD == 2, "R1: td @0x64/2 (u16 in v1)");
+    CHECK(OT3D_V1_OFF_DATA_URL == 0x70 && OT3D_V1_LEN_DATA_URL == 32, "R1: data_url @0x70/32");
+    CHECK(OT3D_V1_OFF_SERIAL == 0x90 && OT3D_V1_LEN_SERIAL == 16, "R1: serial @0x90/16");
+    CHECK(OT3D_V1_OFF_MFG_DATE == 0xA0 && OT3D_V1_LEN_MFG_DATE == 4, "R1: mfg_date @0xA0/4");
+    CHECK(OT3D_V1_OFF_MFG_TIME == 0xA4 && OT3D_V1_LEN_MFG_TIME == 3, "R1: mfg_time @0xA4/3");
+    CHECK(OT3D_V1_OFF_SPOOL_CORE_DIAMETER == 0xA7 && OT3D_V1_LEN_SPOOL_CORE_DIAMETER == 1, "R1: spool_core_diameter @0xA7/1");
+    CHECK(OT3D_V1_OFF_MFI_TEMP == 0xA8 && OT3D_V1_LEN_MFI_TEMP == 1, "R1: mfi_temp @0xA8/1");
+    CHECK(OT3D_V1_OFF_MFI_LOAD == 0xA9 && OT3D_V1_LEN_MFI_LOAD == 1, "R1: mfi_load @0xA9/1");
+    CHECK(OT3D_V1_OFF_MFI_VALUE == 0xAA && OT3D_V1_LEN_MFI_VALUE == 1, "R1: mfi_value @0xAA/1");
+    CHECK(OT3D_V1_OFF_TOLERANCE == 0xAB && OT3D_V1_LEN_TOLERANCE == 1, "R1: tolerance @0xAB/1");
+    CHECK(OT3D_V1_OFF_EMPTY_SPOOL_WEIGHT == 0xAC && OT3D_V1_LEN_EMPTY_SPOOL_WEIGHT == 2, "R1: empty_spool_weight @0xAC/2");
+    CHECK(OT3D_V1_OFF_MEASURED_WEIGHT == 0xAE && OT3D_V1_LEN_MEASURED_WEIGHT == 2, "R1: measured_weight @0xAE/2");
+    CHECK(OT3D_V1_OFF_MEASURED_LENGTH == 0xB0 && OT3D_V1_LEN_MEASURED_LENGTH == 2, "R1: measured_length @0xB0/2");
+    CHECK(OT3D_V1_OFF_MAX_DRY_TEMP == 0xB2 && OT3D_V1_LEN_MAX_DRY_TEMP == 1, "R1: max_dry_temp @0xB2/1");
+    CHECK(OT3D_V1_OFF_DRY_TIME == 0xB3 && OT3D_V1_LEN_DRY_TIME == 1, "R1: dry_time @0xB3/1");
+    CHECK(OT3D_V1_OFF_MIN_PRINT_TEMP == 0xB4 && OT3D_V1_LEN_MIN_PRINT_TEMP == 1, "R1: min_print_temp @0xB4/1");
+    CHECK(OT3D_V1_OFF_MAX_PRINT_TEMP == 0xB5 && OT3D_V1_LEN_MAX_PRINT_TEMP == 1, "R1: max_print_temp @0xB5/1");
+    CHECK(OT3D_V1_OFF_MIN_BED_TEMP == 0xB6 && OT3D_V1_LEN_MIN_BED_TEMP == 1, "R1: min_bed_temp @0xB6/1");
+    CHECK(OT3D_V1_OFF_MAX_BED_TEMP == 0xB7 && OT3D_V1_LEN_MAX_BED_TEMP == 1, "R1: max_bed_temp @0xB7/1");
+    CHECK(OT3D_V1_OFF_MIN_VSO == 0xB8 && OT3D_V1_LEN_MIN_VSO == 1, "R1: min_vso @0xB8/1");
+    CHECK(OT3D_V1_OFF_MAX_VSO == 0xB9 && OT3D_V1_LEN_MAX_VSO == 1, "R1: max_vso @0xB9/1");
+    CHECK(OT3D_V1_OFF_TARGET_VSO == 0xBA && OT3D_V1_LEN_TARGET_VSO == 1, "R1: target_vso @0xBA/1");
+    CHECK(OT3D_V1_CORE_SIZE == 0x66 && OT3D_V1_MAP_SIZE == 0xBB, "R1: core/map size constants");
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
