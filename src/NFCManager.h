@@ -75,6 +75,18 @@ public:
     uint32_t generateRequestId();                    // Monotonic request ID
     void requestCurrentSpool();                      // Clear dedup to resend current spool
     bool scanOnce();                                 // Single scan cycle (for testing)
+
+    // Per-request write result, keyed by request_id AND uid so the browser
+    // can confirm the outcome belongs to the tag it targeted (#316).
+    struct WriteOutcome {
+        uint32_t request_id = 0;
+        char     uid[24] = {0};
+        bool     done = false;
+        bool     ok = false;
+        char     error[48] = {0};
+    };
+    bool getLastWriteOutcome(WriteOutcome& out);
+
     bool getCurrentSpoolState(CurrentSpoolState& out);
     bool getLastTigerTagData(TigerTagData& out);
     bool getLastOpenTag3DData(opentag3d_t& out);
@@ -242,6 +254,13 @@ private:
     size_t completedRequestsIndex = 0;
     SemaphoreHandle_t completedMutex = nullptr;
     static uint32_t s_write_request_id_counter;
+
+    // Result of the most recently finished write request (tagMutex-guarded)
+    WriteOutcome lastWriteOutcome_;
+    // Scan-task scratch: failure reason set by executeOpenTag3DWrite before
+    // each `return false`, consumed into lastWriteOutcome_ once the write
+    // queue consumer has the executor's result. Cleared before each request.
+    char lastWriteErrorReason_[48] = {0};
 
     // Task handle
     TaskHandle_t scanTaskHandle = nullptr;

@@ -1663,6 +1663,18 @@ void WebServerManager::handleApiStatus() {
         doc["tag_data_valid"] = false;
     }
 
+    // Published whenever a result is available, independent of tag presence —
+    // a successful OpenTag3D write forces a rescan that briefly reports
+    // present=false, and the browser must still see the outcome (#316).
+    NFCManager::WriteOutcome wr;
+    if (NFCManager::getInstance().getLastWriteOutcome(wr) && wr.done) {
+        JsonObject w = doc.createNestedObject("write_result");
+        w["request_id"] = wr.request_id;
+        w["uid"] = wr.uid;
+        w["ok"] = wr.ok;
+        if (wr.error[0]) w["error"] = wr.error;
+    }
+
     serializeEnrichment(doc);
 
     String body;

@@ -104,6 +104,14 @@ bool NFCManager::getCurrentSpoolState(CurrentSpoolState& out) {
     return true;
 }
 
+bool NFCManager::getLastWriteOutcome(WriteOutcome& out) {
+    if (tagMutex == nullptr) return false;
+    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    out = lastWriteOutcome_;
+    xSemaphoreGive(tagMutex);
+    return true;
+}
+
 bool NFCManager::getLastTigerTagData(TigerTagData& out) {
     if (tagMutex == nullptr) return false;
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
@@ -1684,12 +1692,15 @@ void NFCManager::processWriteQueue() {
         // Dequeue the request
         xQueueReceive(writeQueue, &request, 0);
 
+        lastWriteErrorReason_[0] = '\0';
+
         // executeWrite() manages its own mutex internally
         bool success = executeWrite(request);
 
         markRequestCompleted(request.request_id);
 
-        // Snapshot spool info under mutex for the notification message
+        // Snapshot spool info under mutex for the notification message, and
+        // record this request's outcome for the browser's /api/status poll.
         char snapshotSpoolId[64];
         float snapshotRemainingGrams = 0;
         bool snapshotValid = false;
@@ -1700,6 +1711,16 @@ void NFCManager::processWriteQueue() {
                 opt_get_remaining_weight(&currentSpool.tag_data, &snapshotRemainingGrams);
                 snapshotValid = true;
             }
+
+            lastWriteOutcome_.request_id = request.request_id;
+            strncpy(lastWriteOutcome_.uid, request.expected_spool_id, sizeof(lastWriteOutcome_.uid) - 1);
+            lastWriteOutcome_.uid[sizeof(lastWriteOutcome_.uid) - 1] = '\0';
+            lastWriteOutcome_.done = true;
+            lastWriteOutcome_.ok = success;
+            const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
+            strncpy(lastWriteOutcome_.error, reason, sizeof(lastWriteOutcome_.error) - 1);
+            lastWriteOutcome_.error[sizeof(lastWriteOutcome_.error) - 1] = '\0';
+
             xSemaphoreGive(tagMutex);
         }
 
@@ -2148,14 +2169,23 @@ bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
+    // Records the short reason processWriteQueue copies into lastWriteOutcome_
+    // on failure. Every `return false` below sets one first.
+#define OT3D_SET_ERR(msg) do { \
+        strncpy(lastWriteErrorReason_, (msg), sizeof(lastWriteErrorReason_) - 1); \
+        lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0'; \
+    } while (0)
+
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
         rawWritePending_ = false;
+        OT3D_SET_ERR("UID mismatch");
         return false;
     }
 
     if (!rawWritePending_) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
         rawWritePending_ = false;
+        OT3D_SET_ERR("no data queued");
         return false;
     }
 
@@ -2174,6 +2204,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
             rawWritePending_ = false;
             rawWriteBufferSize_ = 0;
+            OT3D_SET_ERR("bad envelope");
             return false;
         }
         isPatch = true;
@@ -2186,6 +2217,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
                       (unsigned)rawWriteBufferSize_);
         rawWritePending_ = false;
         rawWriteBufferSize_ = 0;
+        OT3D_SET_ERR("bad payload size");
         return false;
     }
     rawWritePending_ = false;
@@ -2198,15 +2230,18 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             if (!readOpenTag3DBaseline(ot3d, baseLen)) {
                 Serial.println("NFCManager: WRITE_OPENTAG3D - preserve aborted, no clean baseline");
                 LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (baseline read failed)\n");
+                OT3D_SET_ERR("baseline read failed");
                 return false;
             }
             Serial.printf("NFCManager: WRITE_OPENTAG3D - baseline read %u bytes for merge\n", baseLen);
             if (!opentag3d_can_encode(ot3d.tag_version)) {
                 Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
+                OT3D_SET_ERR("unsupported version");
                 return false;
             }
             if (opentag3d_major(ot3d.tag_version) < 2 && opentag3d_patch_touches_v2_only(patch.mask)) {
                 Serial.println("NFCManager: WRITE_OPENTAG3D - v2-only field edit on a v1 tag");
+                OT3D_SET_ERR("v2 field on v1 tag");
                 return false;
             }
 
@@ -2228,6 +2263,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     int payloadLen = opentag3d_encode(&ot3d, payloadBuf, encodeSize);
     if (payloadLen <= 0) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - encode failed");
+        OT3D_SET_ERR("encode failed");
         return false;
     }
 
@@ -2235,18 +2271,27 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     uint16_t ndefLen = buildNdefTlv(OT3D_MIME_TYPE, payloadBuf, (uint16_t)payloadLen, ndefBuf, sizeof(ndefBuf));
     if (ndefLen == 0) {
         Serial.printf("NFCManager: WRITE_OPENTAG3D - NDEF too large\n");
+        OT3D_SET_ERR("data too large");
         return false;
     }
 
     uint8_t pagesNeeded = (uint8_t)(ndefLen / 4);
     Serial.printf("NFCManager: WRITE_OPENTAG3D - writing %u bytes (%u pages)\n", ndefLen, pagesNeeded);
-    if (!checkWriteCapacity(4, pagesNeeded, "WRITE_OPENTAG3D")) return false;
+    if (!checkWriteCapacity(4, pagesNeeded, "WRITE_OPENTAG3D")) {
+        OT3D_SET_ERR("tag too small");
+        return false;
+    }
     if (!connection_->writeISO14443Pages(4, pagesNeeded, ndefBuf, ndefLen)) {
         Serial.println("NFCManager: WRITE_OPENTAG3D failed");
         LogBuffer::getInstance().logPrintf("Write OpenTag3D: FAILED\n");
+        OT3D_SET_ERR("write failed");
         return false;
     }
-    return ndefVerifyAndFinish("OpenTag3D", pagesNeeded, ndefBuf, ndefLen);
+    bool verified = ndefVerifyAndFinish("OpenTag3D", pagesNeeded, ndefBuf, ndefLen);
+    if (!verified) OT3D_SET_ERR("verify failed");
+    return verified;
+
+#undef OT3D_SET_ERR
 }
 
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {

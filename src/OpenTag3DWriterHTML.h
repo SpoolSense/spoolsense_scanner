@@ -690,17 +690,14 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         endpoint: '/api/write-opentag3d',
         formatName: 'OpenTag3D',
         buildPayload: buildPayload,
-        verify: function(status) {
-          // Compare against what the form currently shows, not the payload
-          // — a preserve-mode write can leave base_material/manufacturer/
-          // target_weight_g out of the payload entirely when unchanged, so
-          // checking payload fields directly would report a false failure
-          // on every preserve write that didn't touch those three fields.
-          if (status.tag_kind !== 'OpenTag3D' || !status.opentag3d) return false;
-          var ot = status.opentag3d;
-          return ot.base_material === strVal('base_material').toUpperCase() &&
-                 ot.manufacturer === strVal('manufacturer') &&
-                 ot.target_weight_g === intVal('target_weight_g', 1000);
+        verify: function (status, payload, requestId) {
+          // Keyed by request_id — a form-value comparison can't tell a real
+          // write from an unrelated preserve-mode edit that never touched
+          // these fields, so it would report success on a pending/failed write.
+          var w = status.write_result;
+          if (!w || w.request_id !== requestId) return false;   // not our result yet
+          if (!w.ok) throw new Error(w.error || 'Write failed');
+          return true;
         },
         afterSuccess: function(uid) {
           return saveEnrichmentToSpoolman(uid, {

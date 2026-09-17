@@ -665,11 +665,14 @@ async function sharedWriteFlow(config) {
     setStepState('step-write', 'active');
     setBanner('statusBanner', 'Writing ' + config.formatName + ' data\u2026');
     setResult('resultBox', 'Keep the tag on the scanner \u2014 writing and verifying takes a few seconds.', '');
-    await api(config.endpoint, {
+    // Only a queue-acceptance ack \u2014 the actual outcome arrives later via
+    // status.write_result, keyed by this request_id.
+    var writeResp = await api(config.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    var requestId = writeResp && writeResp.request_id;
     setStepState('step-write', 'done');
 
     setStepState('step-verify', 'active');
@@ -680,7 +683,7 @@ async function sharedWriteFlow(config) {
     while (Date.now() < verifyDeadline) {
       await sleep(500);
       var status = await api('/api/status');
-      if (status.present && config.verify(status, payload)) {
+      if (status.present && config.verify(status, payload, requestId)) {
         setBanner('statusBanner', 'Tag verified \u2014 hold for a moment\u2026');
         await sleep(2000);
         setStepState('step-verify', 'done');
