@@ -56,7 +56,7 @@ opentag3d_patch.o: ../../lib/opentag3d/opentag3d_patch.c ../../lib/opentag3d/ope
 test_opentag3d_patch: test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_write_result_gate.js
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -90,6 +90,13 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo ""
 	@echo "=== Running OpenTag3D patch tests ==="
 	@./test_opentag3d_patch
+	@echo ""
+	@echo "=== Running write-result gate tests (Node) ==="
+	@if command -v node >/dev/null 2>&1; then \
+		node test_write_result_gate.js; \
+	else \
+		echo "SKIP: node not found, write-result gate test not run"; \
+	fi
 	@echo ""
 
 clean:
