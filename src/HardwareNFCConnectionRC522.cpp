@@ -169,6 +169,11 @@ void HardwareNFCConnectionRC522::reset() {
 bool HardwareNFCConnectionRC522::hardwareReset() {
     // Implements NFCConnectionI::hardwareReset(). Driving NRSTPD is specific
     // to the RC522 module; PCD_Init() then restores all reader registers.
+    // Clear the previous state before any operation that can fail. Recovery
+    // must not leave a stale active session or advertise a failed reader as
+    // ready to NFCManager.
+    ready_ = false;
+    tagSessionActive_ = false;
     if (!reader_) return false;
     SharedSPIBus::Guard spiGuard;
     if (!spiGuard) {
@@ -184,7 +189,6 @@ bool HardwareNFCConnectionRC522::hardwareReset() {
 
     versionReg_ = static_cast<uint8_t>(reader_->PCD_GetVersion());
     ready_ = versionReg_ != 0x00 && versionReg_ != 0xFF;
-    tagSessionActive_ = false;
     if (ready_) reader_->PCD_AntennaOn();
     return ready_;
 }
