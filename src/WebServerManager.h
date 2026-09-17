@@ -45,6 +45,40 @@ private:
     bool _initialized = false;
     bool _apMode = false;
 
+    // ESP32 heap is limited, and these HTTP endpoints accept client-controlled
+    // input. A client must therefore not be allowed to make the server reserve
+    // an arbitrarily large amount of RAM for one JSON request. Normal requests
+    // are much smaller than this; the limit is a safety boundary, not storage
+    // reserved permanently for every request.
+    static constexpr size_t MAX_JSON_BODY_BYTES = 4096;
+    enum class JsonBodyError : uint8_t { NONE, TOO_LARGE, OUT_OF_MEMORY };
+    char* _jsonBody = nullptr;
+    size_t _jsonBodyLength = 0;
+    size_t _jsonBodyExpectedLength = 0;
+    JsonBodyError _jsonBodyError = JsonBodyError::NONE;
+
+    // Register a JSON endpoint with WebServer's raw-body callback. The normal
+    // WebServer POST path trusts the client-supplied Content-Length, allocates
+    // space for that complete body, and only then calls our endpoint. A size
+    // check inside handleApiPostConfig(), for example, would happen after the
+    // risky allocation and could not protect the heap.
+    void registerJsonPost(const char* uri, WebServer::THandlerFunction handler);
+
+    // Build one permitted JSON body from the small chunks supplied by
+    // WebServer's raw callback:
+    //   RAW_START   - read Content-Length; mark bodies over 4096 bytes rejected
+    //                 without allocating a body buffer.
+    //   RAW_WRITE   - copy each chunk only when it fits in the bounded buffer.
+    //   RAW_ABORTED - free the buffer if the client disconnects early.
+    //   RAW_END     - WebServer has finished receiving the declared body.
+    // registerJsonPost() then returns HTTP 413 for a rejected body, or invokes
+    // the endpoint with the completed body. This function receives bytes only;
+    // the endpoint still performs the actual JSON parsing and validation.
+    // Firmware uploads use their own streaming callback and are not capped.
+    void handleJsonBodyChunk();
+    void releaseJsonBody();
+    const char* jsonBody() const { return _jsonBody ? _jsonBody : ""; }
+
     // Page handlers
     // Serve a pre-gzipped PROGMEM asset with Content-Encoding: gzip. Preserves
     // any headers (e.g. Cache-Control) already queued for this response.

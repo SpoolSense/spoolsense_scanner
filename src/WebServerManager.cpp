@@ -83,6 +83,93 @@ WebServerManager& WebServerManager::getInstance() {
     return instance;
 }
 
+void WebServerManager::releaseJsonBody() {
+    free(_jsonBody);
+    _jsonBody = nullptr;
+    _jsonBodyLength = 0;
+    _jsonBodyExpectedLength = 0;
+}
+
+void WebServerManager::handleJsonBodyChunk() {
+    // This function does not parse JSON. It safely assembles one request body
+    // without letting a client-selected Content-Length cause an unbounded heap
+    // allocation. Arduino-ESP32 calls it several times for the same request:
+    // RAW_START, one or more RAW_WRITE chunks, then RAW_END (or RAW_ABORTED).
+    HTTPRaw& raw = _server.raw();
+
+    if (raw.status == RAW_ABORTED) {
+        // The client disconnected before completing the declared body.
+        releaseJsonBody();
+        _jsonBodyError = JsonBodyError::NONE;
+        return;
+    }
+
+    if (raw.status == RAW_START) {
+        releaseJsonBody();
+        _jsonBodyError = JsonBodyError::NONE;
+
+        // This check runs before any body bytes are copied into application
+        // memory. Oversized requests are still drained by WebServer in small
+        // framework-owned chunks, but this class allocates no body buffer and
+        // copies none of their data. registerJsonPost() later returns HTTP 413.
+        const int contentLength = _server.clientContentLength();
+        if (contentLength < 0 || static_cast<size_t>(contentLength) > MAX_JSON_BODY_BYTES) {
+            _jsonBodyError = JsonBodyError::TOO_LARGE;
+            return;
+        }
+
+        _jsonBodyExpectedLength = static_cast<size_t>(contentLength);
+        _jsonBody = static_cast<char*>(malloc(_jsonBodyExpectedLength + 1));
+        if (!_jsonBody) {
+            _jsonBodyError = JsonBodyError::OUT_OF_MEMORY;
+            return;
+        }
+        _jsonBody[0] = '\0';
+        return;
+    }
+
+    if (raw.status == RAW_WRITE && _jsonBodyError == JsonBodyError::NONE) {
+        // For a permitted request, copy the current framework-sized chunk into
+        // the exact-size buffer allocated at RAW_START. totalSize includes the
+        // current chunk, so subtract currentSize to find its starting offset.
+        // The second bounds check protects against inconsistent framework or
+        // client lengths even after the initial Content-Length check.
+        const size_t offset = raw.totalSize - raw.currentSize;
+        if (offset > _jsonBodyExpectedLength ||
+            raw.currentSize > _jsonBodyExpectedLength - offset) {
+            _jsonBodyError = JsonBodyError::TOO_LARGE;
+            releaseJsonBody();
+            return;
+        }
+
+        memcpy(_jsonBody + offset, raw.buf, raw.currentSize);
+        _jsonBodyLength = offset + raw.currentSize;
+        _jsonBody[_jsonBodyLength] = '\0';
+    }
+}
+
+void WebServerManager::registerJsonPost(const char* uri, WebServer::THandlerFunction handler) {
+    _server.on(uri, HTTP_POST,
+        [this, handler]() {
+            // The raw callback records the result while the request arrives;
+            // this final callback sends the appropriate response or hands the
+            // completed, bounded body to the endpoint for JSON parsing.
+            if (_jsonBodyError == JsonBodyError::TOO_LARGE) {
+                _server.send(413, "application/json", "{\"error\":\"JSON body too large\"}");
+            } else if (_jsonBodyError == JsonBodyError::OUT_OF_MEMORY) {
+                _server.send(503, "application/json", "{\"error\":\"Insufficient memory\"}");
+            } else if (_jsonBodyLength != _jsonBodyExpectedLength) {
+                _server.send(400, "application/json", "{\"error\":\"Incomplete request body\"}");
+            } else {
+                handler();
+            }
+
+            releaseJsonBody();
+            _jsonBodyError = JsonBodyError::NONE;
+        },
+        [this]() { handleJsonBodyChunk(); });
+}
+
 bool WebServerManager::begin(bool apMode, uint16_t port) {
     _apMode = apMode;
 
@@ -124,31 +211,31 @@ bool WebServerManager::begin(bool apMode, uint16_t port) {
     _server.on("/api/upload-firmware",  HTTP_POST,
         [this]() { handleApiUploadFirmwareComplete(); },
         [this]() { handleApiUploadFirmwareChunk(); });
-    _server.on("/api/update-from-url", HTTP_POST, [this]() { handleApiUpdateFromUrl(); });
+    registerJsonPost("/api/update-from-url", [this]() { handleApiUpdateFromUrl(); });
     _server.on("/api/ota-status",      HTTP_GET,  [this]() { handleApiOtaStatus(); });
     _server.on("/api/config",          HTTP_GET,  [this]() { handleApiGetConfig(); });
-    _server.on("/api/config",          HTTP_POST, [this]() { handleApiPostConfig(); });
+    registerJsonPost("/api/config", [this]() { handleApiPostConfig(); });
     _server.on("/api/status",          HTTP_GET,  [this]() { handleApiStatus(); });
     _server.on("/api/diagnostics",     HTTP_GET,  [this]() { handleApiDiagnostics(); });
-    _server.on("/api/diagnostics/session",        HTTP_POST, [this]() { handleApiSelfTestStart(); });
+    registerJsonPost("/api/diagnostics/session", [this]() { handleApiSelfTestStart(); });
     _server.on("/api/diagnostics/session",        HTTP_GET,  [this]() { handleApiSelfTestStatus(); });
     _server.on("/api/diagnostics/session/input",  HTTP_POST, [this]() { handleApiSelfTestInput(); });
     _server.on("/api/diagnostics/session/cancel", HTTP_POST, [this]() { handleApiSelfTestCancel(); });
     _server.on("/api/diagnostics/report",         HTTP_GET,  [this]() { handleApiSelfTestReport(); });
-    _server.on("/api/write-tag",       HTTP_POST, [this]() { handleApiWriteTag(); });
-    _server.on("/api/format-tag",      HTTP_POST, [this]() { handleApiFormatTag(); });
-    _server.on("/api/write-tigertag",  HTTP_POST, [this]() { handleApiWriteTigerTag(); });
-    _server.on("/api/write-opentag3d", HTTP_POST, [this]() { handleApiWriteOpenTag3D(); });
-    _server.on("/api/write-openspool", HTTP_POST, [this]() { handleApiWriteOpenSpool(); });
-    _server.on("/api/register-uid",    HTTP_POST, [this]() { handleApiRegisterUid(); });
+    registerJsonPost("/api/write-tag", [this]() { handleApiWriteTag(); });
+    registerJsonPost("/api/format-tag", [this]() { handleApiFormatTag(); });
+    registerJsonPost("/api/write-tigertag", [this]() { handleApiWriteTigerTag(); });
+    registerJsonPost("/api/write-opentag3d", [this]() { handleApiWriteOpenTag3D(); });
+    registerJsonPost("/api/write-openspool", [this]() { handleApiWriteOpenSpool(); });
+    registerJsonPost("/api/register-uid", [this]() { handleApiRegisterUid(); });
     _server.on("/api/spoolman/spools", HTTP_GET,  [this]() { handleApiSpoolmanSpools(); });
-    _server.on("/api/spoolman/link",         HTTP_POST, [this]() { handleApiSpoolmanLink(); });
-    _server.on("/api/spoolman/pending-link", HTTP_POST, [this]() { handleApiSpoolmanPendingLink(); });
+    registerJsonPost("/api/spoolman/link", [this]() { handleApiSpoolmanLink(); });
+    registerJsonPost("/api/spoolman/pending-link", [this]() { handleApiSpoolmanPendingLink(); });
     _server.on("/api/spoolman/pending-link", HTTP_GET, [this]() { handleApiSpoolmanPendingLink(); });
-    _server.on("/api/u1/assign", HTTP_POST, [this]() { handleApiU1Assign(); });
+    registerJsonPost("/api/u1/assign", [this]() { handleApiU1Assign(); });
     _server.on("/api/spoolman/find-vendor",     HTTP_GET,  [this]() { handleApiSpoolmanFindVendor(); });
     _server.on("/api/spoolman/find-filament",   HTTP_GET,  [this]() { handleApiSpoolmanFindFilament(); });
-    _server.on("/api/spoolman/save-enrichment", HTTP_POST, [this]() { handleApiSpoolmanSaveEnrichment(); });
+    registerJsonPost("/api/spoolman/save-enrichment", [this]() { handleApiSpoolmanSaveEnrichment(); });
 
     // Log viewer
     _server.on("/logs",           HTTP_GET,  [this]() { handleLogViewer(); });
@@ -307,7 +394,7 @@ void WebServerManager::handleApiRegisterUid() {
     Serial.println("WebServerManager: POST /api/register-uid received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -571,7 +658,7 @@ void WebServerManager::handleApiSpoolmanLink() {
     if (otaStandDown503()) return;
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -657,7 +744,7 @@ void WebServerManager::handleApiU1Assign() {
     // Same task as the ApplicationManager dispatch loop (both run from loop()),
     // so calling the U1Manager directly is single-threaded by construction
     JsonDocument doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    if (deserializeJson(doc, jsonBody())) {
         sendError(400, "Invalid JSON");
         return;
     }
@@ -702,7 +789,7 @@ void WebServerManager::handleApiSpoolmanPendingLink() {
     }
 
     JsonDocument doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    if (deserializeJson(doc, jsonBody())) {
         sendError(400, "Invalid JSON");
         return;
     }
@@ -722,11 +809,11 @@ void WebServerManager::handleApiSpoolmanPendingLink() {
 
 void WebServerManager::handleApiSelfTestStart() {
     DiagnosticsManager::Options opts;  // defaults: network + stability on
-    if (_server.hasArg("plain") && _server.arg("plain").length() > 0) {
+    if (_jsonBodyLength > 0) {
         JsonDocument body;
         // A malformed body must not silently start a full session (network
         // checks + a scan pause window) — reject it instead.
-        if (deserializeJson(body, _server.arg("plain"))) {
+        if (deserializeJson(body, jsonBody())) {
             sendError(400, "Invalid JSON");
             return;
         }
@@ -986,7 +1073,7 @@ void WebServerManager::handleApiGetConfig() {
 void WebServerManager::handleApiPostConfig() {
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1190,7 +1277,7 @@ void WebServerManager::handleApiUpdateFromUrl() {
     }
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1648,7 +1735,7 @@ void WebServerManager::handleApiWriteTag() {
     Serial.println("WebServerManager: POST /api/write-tag received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1790,9 +1877,9 @@ void WebServerManager::handleApiFormatTag() {
     // Body: {"uid": "..."} — required, and the format is bound to that tag so
     // it cannot erase whichever tag happens to be on the scanner (#283).
     char uid[17] = {0};
-    if (_server.hasArg("plain") && _server.arg("plain").length() > 2) {
+    if (_jsonBodyLength > 2) {
         JsonDocument doc;
-        if (deserializeJson(doc, _server.arg("plain")) == DeserializationError::Ok) {
+        if (deserializeJson(doc, jsonBody()) == DeserializationError::Ok) {
             const char* u = doc["uid"] | "";
             strncpy(uid, u, sizeof(uid) - 1);
         }
@@ -1824,7 +1911,7 @@ void WebServerManager::handleApiWriteTigerTag() {
     Serial.println("WebServerManager: POST /api/write-tigertag received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1920,7 +2007,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     Serial.println("WebServerManager: POST /api/write-opentag3d received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -2113,7 +2200,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
     Serial.println("WebServerManager: POST /api/write-openspool received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -2517,7 +2604,7 @@ void WebServerManager::handleApiSpoolmanSaveEnrichment() {
     if (otaStandDown503()) return;
 
     JsonDocument doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    if (deserializeJson(doc, jsonBody())) {
         _server.send(400, "application/json", "{\"error\":\"bad JSON\"}");
         return;
     }
