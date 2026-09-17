@@ -2118,11 +2118,16 @@ bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut
         return false;
     }
 
-    CurrentSpoolState cur;
-    getCurrentSpoolState(cur);
+    // readOpenTag3DBaseline only ever runs on the NFC scan task itself (from
+    // executeOpenTag3DWrite via processWriteQueue), the same task that owns
+    // currentSpool — so a direct read is safe without the cross-task mutex,
+    // same precedent as checkWriteCapacity(). This also avoids copying the
+    // ~1KB CurrentSpoolState (dominated by its cached opt_tag_t) onto the
+    // stack just to read two scalars, and avoids getCurrentSpoolState()'s
+    // silent-garbage failure mode on a mutex timeout.
     uint8_t payload[OT3D_V2_MAP_SIZE];
     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                            effectiveUserMemoryEnd(cur.variant, cur.cc_user_end));
+                                            effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end));
 
     // readNdefPayload can return a truncated prefix. A short read of an
     // extended tag decodes as a valid core-only tag and would silently
@@ -2148,52 +2153,80 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
+    if (!rawWritePending_) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
         rawWritePending_ = false;
         return false;
     }
 
+    // Exactly two staged shapes exist: the ot3d_patch_t envelope (web UI) and
+    // the bare opentag3d_t (DeductionManager). A future struct change that
+    // made the two sizes collide would silently misroute one as the other.
+    static_assert(sizeof(ot3d_patch_t) != sizeof(opentag3d_t),
+                  "OpenTag3D patch envelope must not collide with the bare struct size");
+
     ot3d_patch_t patch;
-    bool isPatch = (rawWriteBufferSize_ == sizeof(ot3d_patch_t));
-    if (isPatch) {
+    opentag3d_t ot3d;
+    bool isPatch = false;
+    if (rawWriteBufferSize_ == sizeof(ot3d_patch_t)) {
         memcpy(&patch, rawWriteBuffer_, sizeof(patch));
-        isPatch = (patch.magic == OT3D_PATCH_MAGIC);
+        if (patch.magic != OT3D_PATCH_MAGIC) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
+            rawWritePending_ = false;
+            return false;
+        }
+        isPatch = true;
+    } else if (rawWriteBufferSize_ == sizeof(opentag3d_t)) {
+        // DeductionManager still queues a bare, complete struct with its own
+        // version. Leave that path exactly as it was.
+        memcpy(&ot3d, rawWriteBuffer_, sizeof(ot3d));
+    } else {
+        Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u - refusing write\n",
+                      (unsigned)rawWriteBufferSize_);
+        rawWritePending_ = false;
+        return false;
     }
     rawWritePending_ = false;
 
-    opentag3d_t ot3d;
-    if (!isPatch) {
-        // DeductionManager still queues a bare, complete struct with its own
-        // version. Leave that path exactly as it was.
-        memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
-    } else if (patch.mode == OT3D_MODE_REPLACE) {
-        ot3d = patch.values;
-    } else {
-        uint16_t baseLen = 0;
-        if (!readOpenTag3DBaseline(ot3d, baseLen)) {
-            Serial.println("NFCManager: WRITE_OPENTAG3D - preserve aborted, no clean baseline");
-            LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (baseline read failed)\n");
-            return false;
-        }
-        if (!opentag3d_can_encode(ot3d.tag_version)) {
-            Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
-            return false;
-        }
-        if (opentag3d_major(ot3d.tag_version) < 2 && opentag3d_patch_touches_v2_only(patch.mask)) {
-            Serial.println("NFCManager: WRITE_OPENTAG3D - v2-only field edit on a v1 tag");
-            return false;
-        }
+    if (isPatch) {
+        if (patch.mode == OT3D_MODE_REPLACE) {
+            ot3d = patch.values;
+        } else {
+            uint16_t baseLen = 0;
+            if (!readOpenTag3DBaseline(ot3d, baseLen)) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - preserve aborted, no clean baseline");
+                LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (baseline read failed)\n");
+                return false;
+            }
+            Serial.printf("NFCManager: WRITE_OPENTAG3D - baseline read %u bytes for merge\n", baseLen);
+            // The baseline read's extended read (any OpenTag3D payload exceeds
+            // the 40-byte first read) drops the RF session, and the write path
+            // blindly reactivates whatever tag is now in the field. Recheck
+            // identity before trusting this baseline for anything.
+            if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - tag changed during baseline read, aborting");
+                LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (tag changed during read)\n");
+                return false;
+            }
+            if (!opentag3d_can_encode(ot3d.tag_version)) {
+                Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
+                return false;
+            }
+            if (opentag3d_major(ot3d.tag_version) < 2 && opentag3d_patch_touches_v2_only(patch.mask)) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - v2-only field edit on a v1 tag");
+                return false;
+            }
 
-        uint16_t baselineVersion = ot3d.tag_version;
-        uint8_t  baselineExtended = ot3d.has_extended;
-        opentag3d_apply_patch(&ot3d, &patch.values, patch.mask);
+            uint16_t baselineVersion = ot3d.tag_version;
+            uint8_t  baselineExtended = ot3d.has_extended;
+            opentag3d_apply_patch(&ot3d, &patch.values, patch.mask);
 
-        // Version changes are an explicit conversion, never a side effect.
-        ot3d.tag_version = patch.values.tag_version ? patch.values.tag_version : baselineVersion;
-        // An extended v1 tag stays extended even when the edit is core-only,
-        // and a core-only v1 grows only if an extended field was actually set.
-        ot3d.has_extended = baselineExtended || opentag3d_patch_touches_extended(patch.mask);
+            // Version changes are an explicit conversion, never a side effect.
+            ot3d.tag_version = patch.values.tag_version ? patch.values.tag_version : baselineVersion;
+            // An extended v1 tag stays extended even when the edit is core-only,
+            // and a core-only v1 grows only if an extended field was actually set.
+            ot3d.has_extended = baselineExtended || opentag3d_patch_touches_extended(patch.mask);
+        }
     }
 
     size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
