@@ -2173,6 +2173,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         if (patch.magic != OT3D_PATCH_MAGIC) {
             Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
             rawWritePending_ = false;
+            rawWriteBufferSize_ = 0;
             return false;
         }
         isPatch = true;
@@ -2184,6 +2185,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u - refusing write\n",
                       (unsigned)rawWriteBufferSize_);
         rawWritePending_ = false;
+        rawWriteBufferSize_ = 0;
         return false;
     }
     rawWritePending_ = false;
@@ -2199,15 +2201,6 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
                 return false;
             }
             Serial.printf("NFCManager: WRITE_OPENTAG3D - baseline read %u bytes for merge\n", baseLen);
-            // The baseline read's extended read (any OpenTag3D payload exceeds
-            // the 40-byte first read) drops the RF session, and the write path
-            // blindly reactivates whatever tag is now in the field. Recheck
-            // identity before trusting this baseline for anything.
-            if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
-                Serial.println("NFCManager: WRITE_OPENTAG3D - tag changed during baseline read, aborting");
-                LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (tag changed during read)\n");
-                return false;
-            }
             if (!opentag3d_can_encode(ot3d.tag_version)) {
                 Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
                 return false;
