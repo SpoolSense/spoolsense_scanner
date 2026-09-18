@@ -141,6 +141,10 @@ private:
 
     // OTA download state
     static void otaDownloadTask(void* param);
+    // Does the whole download; returns true once the image is written and verified.
+    // Must RETURN rather than delete the task: vTaskDelete() never unwinds the
+    // stack, so the TLS client and HTTPClient would never be destroyed.
+    static bool runOtaDownload(WebServerManager* self);
     enum class OtaState : uint8_t { IDLE, DOWNLOADING, FLASHING, SUCCESS, FAILED };
     std::atomic<OtaState> _otaState{OtaState::IDLE};
     char _otaUrl[512] = {0};
