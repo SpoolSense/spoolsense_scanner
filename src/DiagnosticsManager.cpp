@@ -400,8 +400,10 @@ void DiagnosticsManager::checkSpoolman() {
     char version[24] = {0};
     if (code == 200) {
         String body = http.getString();
-        StaticJsonDocument<256> info;
-        if (!deserializeJson(info, body) && info.containsKey("version")) {
+        JsonDocument info;
+        // ArduinoJson 7's migration guide directly recommends is<JsonVariant>()
+        // when replacing containsKey() while preserving presence-only semantics.
+        if (!deserializeJson(info, body) && info["version"].is<JsonVariant>()) {
             snprintf(version, sizeof(version), "%s", info["version"].as<const char*>());
         }
     }

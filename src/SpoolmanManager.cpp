@@ -22,10 +22,6 @@
 #include "LogBuffer.h"
 #include "WebServerManager.h"
 
-static constexpr size_t JSON_SMALL_CAPACITY = 256;
-static constexpr size_t JSON_MEDIUM_CAPACITY = 768;
-static constexpr size_t JSON_LARGE_CAPACITY = 2048;
-
 using namespace io;
 using namespace json;
 
@@ -526,7 +522,7 @@ static bool ensureExtraFields() {
             // Field missing — create it via POST /api/v1/field/{entity}/{key}
             char createPath[64];
             snprintf(createPath, sizeof(createPath), "/api/v1/field/%s/%s", f.entity, f.key);
-            StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+            JsonDocument doc;
             doc["name"] = f.name;
             doc["field_type"] = "text";
             // nfc_id needs a default empty value for Spoolman queries
@@ -587,7 +583,7 @@ static int findOrCreateVendor(const char* name) {
 
     // Definitive miss — create new vendor
     int code;
-    StaticJsonDocument<JSON_SMALL_CAPACITY> createDoc;
+    JsonDocument createDoc;
     createDoc["name"] = name;
     String body;
     serializeJson(createDoc, body);
@@ -799,10 +795,10 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
                 String filResp;
                 int filCode = httpGet(filPath, filResp);
                 if (filCode == 200) {
-                    DynamicJsonDocument filDoc(2048);
+                    JsonDocument filDoc;
                     if (deserializeJson(filDoc, filResp) == DeserializationError::Ok) {
                         bool hasUpdate = false;
-                        StaticJsonDocument<JSON_SMALL_CAPACITY> patchDoc;
+                        JsonDocument patchDoc;
 
                         int existingExtruder = filDoc["settings_extruder_temp"] | 0;
                         int16_t extruderAvg = avgTemp(req.min_print_temp, req.max_print_temp);
@@ -829,7 +825,9 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
                         // Fill blank extra fields (aspect, dry temps)
                         JsonObject existingExtra = filDoc["extra"].as<JsonObject>();
                         bool extraChanged = false;
-                        JsonObject patchExtra = patchDoc.createNestedObject("extra");
+                        // ArduinoJson 7's migration guide directly recommends
+                        // member.to<JsonObject>() instead of createNestedObject().
+                        JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
 
                         // Preserve existing extras
                         if (!existingExtra.isNull()) {
@@ -880,7 +878,7 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
 
     // Create new filament
 
-    StaticJsonDocument<JSON_MEDIUM_CAPACITY> createDoc;
+    JsonDocument createDoc;
     // Name formula: "material aspect" (e.g. "PLA Silk") or just "PLA" when no aspect
     createDoc["name"] = filamentName;
     createDoc["vendor_id"] = vendorId;
@@ -897,7 +895,7 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
     if (bedAvg > 0) createDoc["settings_bed_temp"] = bedAvg;
 
     // Extra fields — Spoolman requires values as JSON-encoded strings ("\"value\"")
-    JsonObject filExtra = createDoc.createNestedObject("extra");
+    JsonObject filExtra = createDoc["extra"].to<JsonObject>();
     if (req.aspect[0] != '\0') {
         char buf[32]; snprintf(buf, sizeof(buf), "\"%s\"", req.aspect);
         filExtra["aspect"] = buf;
@@ -933,7 +931,7 @@ static int createSpool(int filamentId, const SpoolmanSyncRequest& req) {
     char colorHex[7];
     snprintf(colorHex, sizeof(colorHex), "%02X%02X%02X", req.color[0], req.color[1], req.color[2]);
 
-    StaticJsonDocument<JSON_MEDIUM_CAPACITY> doc;
+    JsonDocument doc;
     doc["filament_id"] = filamentId;
     // Spoolman 0.23.x rejects weight fields with value 0 — omit when not set
     if (req.remaining_weight_g > 0) doc["remaining_weight"] = req.remaining_weight_g;
@@ -943,7 +941,7 @@ static int createSpool(int filamentId, const SpoolmanSyncRequest& req) {
     // Spoolman expects extra field values to be valid JSON — wrap the string in quotes
     char nfcIdJson[34];
     snprintf(nfcIdJson, sizeof(nfcIdJson), "\"%s\"", req.spool_id);
-    JsonObject spoolExtra = doc.createNestedObject("extra");
+    JsonObject spoolExtra = doc["extra"].to<JsonObject>();
     spoolExtra["nfc_id"] = nfcIdJson;
     if (req.tag_format[0] != '\0') {
         char buf[32]; snprintf(buf, sizeof(buf), "\"%s\"", req.tag_format);
@@ -1020,8 +1018,8 @@ static void clearNfcIdFromOtherSpools(const char* uuid, int keepSpoolId) {
         const char* nfcId = spool["extra"]["nfc_id"] | "";
         if (strcasecmp(nfcId, uuid) != 0 && strcasecmp(nfcId, quotedUuid) != 0) continue;
 
-        StaticJsonDocument<768> patchDoc;
-        JsonObject patchExtra = patchDoc.createNestedObject("extra");
+        JsonDocument patchDoc;
+        JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
         for (JsonPair kv : spool["extra"].as<JsonObject>()) {
             patchExtra[kv.key()] = kv.value();
         }
@@ -1044,7 +1042,7 @@ static void clearNfcIdFromOtherSpools(const char* uuid, int keepSpoolId) {
 }
 
 static bool archiveSpool(int spoolId) {
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     doc["archived"] = true;
 
     String body;
@@ -1145,7 +1143,7 @@ static SpoolReconcileAction reconcileSpool(int existingSpoolId,
 }
 
 static bool updateSpool(int spoolId, int filamentId, float remainingWeight) {
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     // Only send remaining_weight when the tag actually has weight data.
     // Sending 0 would overwrite Spoolman's tracked weight for non-writable tags.
     if (remainingWeight > 0.0f) {
@@ -1946,7 +1944,7 @@ bool SpoolmanManager::fetchSpoolCore(int32_t spoolId, SpoolCore& out) {
     }
     if (code != 200) return false;
 
-    DynamicJsonDocument doc(3072);
+    JsonDocument doc;
     if (deserializeJson(doc, resp) != DeserializationError::Ok) return false;
 
     out.archived = doc["archived"] | false;
@@ -2081,7 +2079,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
         return 0.0f;
     }
 
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     if (deserializeJson(doc, response)) {
         xSemaphoreGive(httpMutex_);
         return 0.0f;
@@ -2110,7 +2108,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
     }
 
     // PATCH with new remaining weight
-    StaticJsonDocument<JSON_SMALL_CAPACITY> patchDoc;
+    JsonDocument patchDoc;
     patchDoc["remaining_weight"] = newRemaining;
     String body;
     serializeJson(patchDoc, body);
@@ -2170,13 +2168,12 @@ bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpo
 
             // Read-merge-write: PATCHing extra replaces the whole map, so carry the
             // spool's existing extras (tag_format, middleware fields) along with the
-            // new nfc_id and the durable user-link stamp. Heap docs deliberately —
-            // SpoolmanSync's measured stack floor is under 2KB.
-            // 4096: a failed parse here would skip the merge and the PATCH would
-            // wipe the spool's other extras — size generously (heap, transient)
-            DynamicJsonDocument spoolDoc(4096);
-            DynamicJsonDocument patchDoc(1024);
-            JsonObject patchExtra = patchDoc.createNestedObject("extra");
+            // new nfc_id and the durable user-link stamp. ArduinoJson 7 documents
+            // grow elastically on the heap, which protects SpoolmanSync's measured
+            // stack floor of under 2KB.
+            JsonDocument spoolDoc;
+            JsonDocument patchDoc;
+            JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
             {
                 String spoolResp;
                 if (httpGet(patchPath, spoolResp) == 200) {

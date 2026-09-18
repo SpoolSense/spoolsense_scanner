@@ -320,14 +320,23 @@ int main(void) {
      * understands. 103..186 decodes as core-only and would silently truncate
      * an extended tag on rewrite. */
     {
-        CHECK(opentag3d_is_canonical_len(OT3D_CORE_SIZE) == 1,    "J: 102 is canonical");
-        CHECK(opentag3d_is_canonical_len(OT3D_EXTENDED_MIN) == 1, "J: 187 is canonical");
-        CHECK(opentag3d_is_canonical_len(OT3D_V2_MAP_SIZE) == 1,  "J: 224 is canonical");
-        CHECK(opentag3d_is_canonical_len(150) == 0, "J: 150 is not canonical");
-        CHECK(opentag3d_is_canonical_len(186) == 0, "J: 186 is not canonical");
-        CHECK(opentag3d_is_canonical_len(103) == 0, "J: 103 is not canonical");
-        CHECK(opentag3d_is_canonical_len(0) == 0,   "J: 0 is not canonical");
-        CHECK(opentag3d_is_canonical_len(225) == 0, "J: 225 is not canonical");
+        CHECK(opentag3d_is_canonical_len(1000, OT3D_CORE_SIZE) == 1,    "J: v1 102 is canonical");
+        CHECK(opentag3d_is_canonical_len(1000, OT3D_EXTENDED_MIN) == 1, "J: v1 187 is canonical");
+        CHECK(opentag3d_is_canonical_len(0, OT3D_CORE_SIZE) == 1,       "J: legacy version 0 uses the v1 rule");
+        CHECK(opentag3d_is_canonical_len(1000, 150) == 0, "J: v1 150 is not canonical");
+        CHECK(opentag3d_is_canonical_len(1000, 186) == 0, "J: v1 186 is not canonical");
+        CHECK(opentag3d_is_canonical_len(1000, 103) == 0, "J: v1 103 is not canonical");
+        CHECK(opentag3d_is_canonical_len(1000, 0) == 0,   "J: v1 0 is not canonical");
+        CHECK(opentag3d_is_canonical_len(1000, OT3D_V2_MAP_SIZE) == 0,
+              "J: v1 at 224 is not canonical (it would be rewritten at 187)");
+        CHECK(opentag3d_is_canonical_len(2000, OT3D_V2_MAP_SIZE) == 1,  "J: v2 224 is canonical");
+        CHECK(opentag3d_is_canonical_len(2000, OT3D_V2_MIN_SIZE) == 1,
+              "J: v2 216 (manufacturer record) is canonical");
+        CHECK(opentag3d_is_canonical_len(2003, 220) == 1, "J: v2 220 is canonical (reserved tail)");
+        CHECK(opentag3d_is_canonical_len(2000, OT3D_V2_MIN_SIZE - 1) == 0, "J: v2 215 is not canonical");
+        CHECK(opentag3d_is_canonical_len(2000, 225) == 0, "J: v2 225 is not canonical");
+        CHECK(opentag3d_is_canonical_len(2000, OT3D_CORE_SIZE) == 0,
+              "J: v2 at 102 is not canonical");
     }
 
     /* K: a replace-mode patch that sets an extended field must produce an

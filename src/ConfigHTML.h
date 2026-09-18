@@ -267,7 +267,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                     <label style="font-size:0.85em">MOSI<input id="pin_nfc_mosi" type="number" min="0" max="48" style="width:100%"/></label>
                     <label style="font-size:0.85em">MISO<input id="pin_nfc_miso" type="number" min="0" max="48" style="width:100%"/></label>
                   </div>
-                  <div class="hint" style="margin-top:6px">BUSY applies to PN5180 only; PN532 uses RST/NSS + SPI pins.</div>
+                  <div class="hint" style="margin-top:6px">BUSY applies to PN5180 only; PN532 and RC522 use RST/NSS + SPI pins.</div>
                 </details>
               </div>
               <div class="toggle-row">
@@ -307,7 +307,8 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                 <span id="nfc_reader_label" class="toggle-label">NFC Reader</span>
                 <select id="nfc_reader" aria-labelledby="nfc_reader_label" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:0.95em">
                   <option value="pn5180">PN5180 (ISO15693 + ISO14443A)</option>
-                  <option value="pn532">PN532 (ISO14443A only)</option>
+                  <option value="pn532">PN532 (ISO14443A only - No OpenPrintTag)</option>
+                  <option value="rc522">RC522 (ISO14443A only - No OpenPrintTag)</option>
                 </select>
               </div>
             </div>

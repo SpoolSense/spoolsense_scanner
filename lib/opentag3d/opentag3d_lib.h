@@ -18,8 +18,9 @@ extern "C" {
 /* NDEF MIME type for detection */
 #define OT3D_MIME_TYPE "application/opentag3d"
 
-/* Minimum payload sizes */
+/* Minimum payload sizes (v2: OT3D_V2_MIN_SIZE in opentag3d_v2_map.h) */
 #define OT3D_CORE_SIZE    0x66   /* 102 bytes — core fields through transmission distance */
+#define OT3D_EXTENDED_START 0x70 /* 112 — first extended field; 0x66..0x6F is reserved */
 #define OT3D_EXTENDED_MIN 0xBB   /* 187 bytes — includes all extended fields */
 
 /* Result codes */
@@ -93,6 +94,12 @@ typedef struct {
  * len: number of bytes available.
  * out: decoded data (zeroed first, then populated).
  *
+ * A record must be complete to decode: v1 is either core-only (OT3D_CORE_SIZE
+ * up to OT3D_EXTENDED_START) or fully extended (OT3D_EXTENDED_MIN and up) — a
+ * length that cuts through the extended block is rejected. v2 needs OT3D_V2_MIN_SIZE —
+ * the end of its last defined field, so a 216-byte manufacturer record that
+ * omits the reserved tail decodes. Anything shorter is a truncated read.
+ *
  * Returns OT3D_OK on success, OT3D_VERSION_WARNING if minor version is ahead,
  * OT3D_VERSION_ERROR if major version is ahead, OT3D_PARSE_ERROR if too short.
  */
@@ -126,15 +133,19 @@ static inline int opentag3d_can_encode(uint16_t version) {
     return version <= OT3D_SUPPORTED_V1;
 }
 
-/* The only three payload sizes this firmware can round-trip without loss.
- * The decoder accepts any length >= 102, treating 103..186 as core-only — so
- * length alone does not prove a layout, and rewriting such a tag would drop
- * its extended half. Read paths that will later re-encode must use this.
- * 0xE0 is OT3D_V2_MAP_SIZE, defined in opentag3d_v2_map.h; using the literal
- * here keeps this header free of that dependency (pinned by a
- * _Static_assert in opentag3d_lib.c, which includes both headers). */
-static inline int opentag3d_is_canonical_len(size_t len) {
-    return len == OT3D_CORE_SIZE || len == OT3D_EXTENDED_MIN || len == 0xE0;
+/* The payload sizes this firmware can round-trip without loss, per layout.
+ * v1: exactly the core (102) or the full extended block (187) — anything in
+ * between cuts through the extended block. v2: from the end of the last
+ * defined field (216, where manufacturer tags stop) to the full map (224);
+ * the bytes between are reserved, so rewriting at 224 drops nothing defined.
+ * A record outside these sizes may still be readable, but must never be
+ * re-encoded: read paths that will later write must use this.
+ * 0xD8/0xE0 are OT3D_V2_MIN_SIZE/OT3D_V2_MAP_SIZE from opentag3d_v2_map.h;
+ * the literals keep this header free of that dependency (pinned by
+ * _Static_asserts in opentag3d_lib.c, which includes both headers). */
+static inline int opentag3d_is_canonical_len(uint16_t version, size_t len) {
+    if (version / 1000 >= 2) return len >= 0xD8 && len <= 0xE0;
+    return len == OT3D_CORE_SIZE || len == OT3D_EXTENDED_MIN;
 }
 
 /* Inline helpers for decoded temperature/dimension values */

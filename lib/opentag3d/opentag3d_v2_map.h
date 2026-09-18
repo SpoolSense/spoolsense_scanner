@@ -8,6 +8,9 @@
 
 #define OT3D_V2_VERSION  2000   /* v2.000, 3 implied decimals */
 #define OT3D_V2_MAP_SIZE 0xE0   /* 224 bytes */
+/* A v2 record is complete once it reaches the end of its last defined field.
+ * Manufacturer tags may stop there instead of padding to OT3D_V2_MAP_SIZE. */
+#define OT3D_V2_MIN_SIZE (OT3D_V2_OFF_DATA_URL + OT3D_V2_LEN_DATA_URL)   /* 216 bytes */
 
 #define OT3D_V2_OFF_TAG_VERSION         0x00  /* int, unit=version, scaling=0.001, required */
 #define OT3D_V2_LEN_TAG_VERSION         2

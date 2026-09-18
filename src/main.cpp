@@ -20,6 +20,7 @@
 #include "PrusaLinkStrategy.h"
 #include "InputManager.h"
 #include "HardwareNFCConnectionPN532.h"
+#include "HardwareNFCConnectionRC522.h"
 #include "BoardPins.h"
 #include <Wire.h>
 
@@ -349,11 +350,14 @@ void setup() {
     Serial.println("AP mode active - skipping Spoolman, HA, automation init");
   }
 
-  // NFC reader selection: PN532 (ISO14443A only) vs PN5180 (multi-format default)
+  // NFC reader selection: PN532/RC522 (ISO14443A only) vs PN5180 (multi-format default)
   const char* nfcReader = config.getNfcReader();
   if (strcmp(nfcReader, "pn532") == 0) {
     Serial.println("NFC reader: PN532 (ISO14443A only)");
     NFCManager::getInstance().setConnection(new HardwareNFCConnectionPN532());
+  } else if (strcmp(nfcReader, "rc522") == 0) {
+    Serial.println("NFC reader: RC522 (ISO14443A only, no OpenPrintTag)");
+    NFCManager::getInstance().setConnection(new HardwareNFCConnectionRC522());
   } else {
     Serial.printf("NFC reader: %s (default)\n", nfcReader);
   }

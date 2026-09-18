@@ -3,11 +3,13 @@
 #include "opentag3d_v2_map.h"
 #include <string.h>
 
-/* opentag3d_is_canonical_len() hardcodes 0xE0 instead of including this
- * header's OT3D_V2_MAP_SIZE — this pins the two together so the literal
- * cannot drift silently. */
+/* opentag3d_is_canonical_len() hardcodes 0xD8 and 0xE0 instead of including
+ * this header's v2 sizes — these pin them together so the literals cannot
+ * drift silently. */
 _Static_assert(OT3D_V2_MAP_SIZE == 0xE0,
                "opentag3d_is_canonical_len hardcodes 0xE0 for the v2 map size");
+_Static_assert(OT3D_V2_MIN_SIZE == 0xD8,
+               "opentag3d_is_canonical_len hardcodes 0xD8 for the v2 minimum size");
 
 /* Read big-endian uint16 from buffer */
 static uint16_t read_u16(const uint8_t *p) {
@@ -154,7 +156,8 @@ static void opentag3d_decode_v1_field_list(const uint8_t *payload, opentag3d_t *
 
 /* v2.000 field mapping — every struct member reads from its OT3D_V2_OFF_*
  * constant; opentag3d_encode_v2 mirrors this list exactly. Caller has already
- * verified len >= OT3D_V2_MAP_SIZE. */
+ * verified len >= OT3D_V2_MIN_SIZE: no defined field lives past that offset,
+ * so a 216-byte manufacturer record is never read beyond its end. */
 static void opentag3d_decode_v2_fields(const uint8_t *payload, opentag3d_t *out) {
     out->has_extended = 1;  /* v2 has no core/extended split */
 
@@ -230,7 +233,11 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
         if (out->tag_version > OT3D_SUPPORTED_V2) version_result = OT3D_VERSION_WARNING;
 
         /* v2 payloads are always the full 224-byte map */
-        if (len < OT3D_V2_MAP_SIZE) return OT3D_PARSE_ERROR;
+        /* A record ends with its last defined field; manufacturer tags stop
+         * there instead of padding to OT3D_V2_MAP_SIZE. Anything shorter is
+         * a truncated read: the struct is re-encoded to the full map on
+         * write-back, so a partial decode would zero the unread fields. */
+        if (len < OT3D_V2_MIN_SIZE) return OT3D_PARSE_ERROR;
 
         opentag3d_decode_v2_fields(payload, out);
         return version_result;
@@ -241,6 +248,9 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
 
     /* Need enough data for core fields */
     if (len < OT3D_CORE_SIZE) return OT3D_PARSE_ERROR;
+    /* A v1 record is core-only or fully extended. A length that cuts through
+     * the extended block would re-encode as core-only and drop those bytes. */
+    if (len > OT3D_EXTENDED_START && len < OT3D_EXTENDED_MIN) return OT3D_PARSE_ERROR;
 
     /* Core fields, then extended fields if we have enough data */
     opentag3d_decode_v1_field_list(payload, out, OT3D_V1_CORE_FIELDS, OT3D_V1_NUM_CORE_FIELDS);

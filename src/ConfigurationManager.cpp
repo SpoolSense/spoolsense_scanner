@@ -147,8 +147,8 @@ static uint8_t sanitizeLedPin(uint8_t pin) {
     }
 
     // NFC reader pins are always in use — driving NeoPixel on the SPI bus or a
-    // control line breaks scanning outright. PN532 aliases the PN5180 pins on
-    // every board, so this set covers both readers.
+    // control line breaks scanning outright. PN532 and RC522 alias the PN5180
+    // pins on every board, so this set covers all supported readers.
     static const int16_t nfcPins[] = {
         PIN_PN5180_NSS, PIN_PN5180_SCK, PIN_PN5180_MISO, PIN_PN5180_MOSI,
         PIN_PN5180_RST, PIN_PN5180_BUSY, PIN_PN5180_GPIO, PIN_PN5180_IRQ,

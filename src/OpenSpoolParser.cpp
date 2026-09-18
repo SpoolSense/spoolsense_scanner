@@ -9,7 +9,7 @@ bool parseOpenSpool(const uint8_t* json, size_t len, OpenSpoolData& out) {
 
     if (!json || len == 0) return false;
 
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json, len);
     if (err) return false;
 

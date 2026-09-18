@@ -862,7 +862,7 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
             publishCommandResponse(command, false, "missing_uid_in_topic");
             return;
         }
-        StaticJsonDocument<64> deductDoc;
+        JsonDocument deductDoc;
         if (deserializeJson(deductDoc, payload)) {
             publishCommandResponse(command, false, "invalid_json");
             return;
@@ -895,7 +895,7 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
     // tray_update: HA sends full AMS tray state for dashboard display
     if (strcmp(command, "tray_update") == 0) {
-        StaticJsonDocument<2048> trayDoc;
+        JsonDocument trayDoc;
         if (deserializeJson(trayDoc, payload)) {
             publishCommandResponse(command, false, "invalid_json");
             return;
@@ -947,7 +947,7 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
     // tray_assign: loading blueprint assigns a scanned UID to a specific AMS tray
     if (strcmp(command, "tray_assign") == 0) {
-        StaticJsonDocument<128> assignDoc;
+        JsonDocument assignDoc;
         if (deserializeJson(assignDoc, payload)) {
             publishCommandResponse(command, false, "invalid_json");
             return;
@@ -973,7 +973,7 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
     // deduct_tray: deduction blueprint sends tray_index + grams after print finishes
     if (strcmp(command, "deduct_tray") == 0) {
-        StaticJsonDocument<128> deductDoc;
+        JsonDocument deductDoc;
         if (deserializeJson(deductDoc, payload)) {
             publishCommandResponse(command, false, "invalid_json");
             return;

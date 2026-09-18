@@ -431,7 +431,14 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                 SCAN_PHASE(22);
                 uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
                                                         effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
-                if (payloadBytes >= OT3D_CORE_SIZE) {
+                // readNdefPayload returns what it actually got, which is short
+                // after a failed page read (PN5180 hands back partial reads) or
+                // a record declared past the end of the tag, and is capped at
+                // this buffer. Decode only a complete record that fits the
+                // map: anything else re-encodes with bytes missing.
+                const bool complete = rec.payloadLen <= sizeof(payload) &&
+                                      payloadBytes > 0 && payloadBytes == rec.payloadLen;
+                if (complete) {
                     opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
@@ -445,6 +452,9 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                         Serial.printf("NFCManager: OpenTag3D major version too new (%u) — cannot parse\n",
                                       ot3dData.tag_version);
                     }
+                } else {
+                    Serial.printf("NFCManager: OpenTag3D payload incomplete or oversized (%u of %u bytes) — not decoding\n",
+                                  payloadBytes, (unsigned)rec.payloadLen);
                 }
             }
 
@@ -2244,10 +2254,13 @@ bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRe
     // isn't enough: the decoder accepts any length >= 102 and only treats a
     // tag as extended at 187+, so a declared length of, say, 150 still
     // passes and would be classified core-only and rewritten at 102 bytes,
-    // dropping everything past the core fields. Refuse any length that
-    // isn't one of the three sizes this firmware can re-encode without loss.
-    if (payloadBytes == 0 || (uint32_t)payloadBytes != rec.payloadLen ||
-        !opentag3d_is_canonical_len(payloadBytes)) {
+    // dropping everything past the core fields. Refuse any length this
+    // firmware cannot re-encode without loss for the tag's own layout
+    // (v1: 102 or 187; v2: 216..224, where manufacturer tags stop at 216).
+    const uint16_t declaredVersion = (payloadBytes >= 2)
+        ? (uint16_t)((payload[0] << 8) | payload[1]) : 0;
+    if (payloadBytes < 2 || (uint32_t)payloadBytes != rec.payloadLen ||
+        !opentag3d_is_canonical_len(declaredVersion, payloadBytes)) {
         Serial.printf("NFCManager: OT3D baseline - unusable payload (%u of %lu)\n",
                       payloadBytes, (unsigned long)rec.payloadLen);
         return false;
@@ -2867,7 +2880,6 @@ bool NFCManager::isDuplicateSpool(const uint8_t* uid, uint8_t uid_length) {
     if (lastSeenUidLength > 0 && uid_length >= 3 && lastSeenUidLength >= 3 &&
         (millis() - lastSeenMs) < SCAN_COOLDOWN_MS &&
         memcmp(uid, lastSeenUid, 3) == 0) {
-        Serial.println("NFCManager: Suppressed re-read (cooldown, partial UID match)");
         return true;
     }
 
