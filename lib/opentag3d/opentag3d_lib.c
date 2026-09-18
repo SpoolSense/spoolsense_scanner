@@ -102,8 +102,9 @@ static void read_u48_field(const uint8_t *payload, size_t payload_len,
 }
 
 /* v2.000 field mapping — every struct member reads from its OT3D_V2_OFF_*
- * constant; opentag3d_encode_v2 mirrors this list exactly. Fields wholly or
- * partially outside payload_len remain zero/empty. */
+ * constant; opentag3d_encode_v2 mirrors this list exactly. The caller has
+ * verified payload_len >= OT3D_V2_MIN_SIZE; bytes past payload_len (the
+ * reserved tail of a 216-byte manufacturer record) are never read. */
 static void opentag3d_decode_v2_fields(const uint8_t *payload, size_t payload_len,
                                        opentag3d_t *out) {
     out->has_extended = 1;  /* v2 has no core/extended split */
@@ -182,6 +183,11 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
         /* ---- v2.000 path ---- */
         if (out->tag_version > OT3D_SUPPORTED_V2) version_result = OT3D_VERSION_WARNING;
 
+        /* A shorter payload is a truncated read, not a smaller record: every
+         * decoded struct can be re-encoded to the full map and written back,
+         * so a partial decode would zero the fields it did not see. */
+        if (len < OT3D_V2_MIN_SIZE) return OT3D_PARSE_ERROR;
+
         opentag3d_decode_v2_fields(payload, len, out);
         return version_result;
     }
@@ -189,7 +195,12 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
     /* ---- major <= 1: legacy v1.000 path (also handles version 0 tags) ---- */
     if (out->tag_version > OT3D_SUPPORTED_V1) version_result = OT3D_VERSION_WARNING;
 
-    /* Legacy fields are populated only when their bytes are present. */
+    /* Same rule as v2. A v1 record is core-only or fully extended; a length
+     * that cuts through the extended block would re-encode as core-only and
+     * drop the extended bytes that were on the tag. */
+    if (len < OT3D_CORE_SIZE) return OT3D_PARSE_ERROR;
+    if (len > OT3D_EXTENDED_START && len < OT3D_EXTENDED_MIN) return OT3D_PARSE_ERROR;
+
     read_str_field(payload, len, 0x02, 5, out->base_material, sizeof(out->base_material));
     read_str_field(payload, len, 0x07, 5, out->material_modifiers, sizeof(out->material_modifiers));
     /* 0x0C - 0x1A: reserved/padding in spec */
@@ -209,8 +220,9 @@ opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3
     read_u16_field(payload, len, 0x62, &out->density_ugcm3);
     read_u16_field(payload, len, 0x64, &out->transmission_distance);
 
-    /* v1 extended data begins at its URL field. */
-    out->has_extended = len > 0x70;
+    out->has_extended = len >= OT3D_EXTENDED_MIN;
+    if (!out->has_extended) return version_result;
+
     read_str_field(payload, len, 0x70, 32, out->online_url, sizeof(out->online_url));
     read_str_field(payload, len, 0x90, 16, out->serial_number, sizeof(out->serial_number));
 

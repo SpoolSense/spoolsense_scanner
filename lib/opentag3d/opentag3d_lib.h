@@ -18,8 +18,9 @@ extern "C" {
 /* NDEF MIME type for detection */
 #define OT3D_MIME_TYPE "application/opentag3d"
 
-/* Canonical encoded payload sizes (decoding also accepts partial payloads). */
+/* Minimum payload sizes (v2: OT3D_V2_MIN_SIZE in opentag3d_v2_map.h) */
 #define OT3D_CORE_SIZE    0x66   /* 102 bytes — core fields through transmission distance */
+#define OT3D_EXTENDED_START 0x70 /* 112 — first extended field; 0x66..0x6F is reserved */
 #define OT3D_EXTENDED_MIN 0xBB   /* 187 bytes — includes all extended fields */
 
 /* Result codes */
@@ -93,13 +94,14 @@ typedef struct {
  * len: number of bytes available.
  * out: decoded data (zeroed first, then populated).
  *
- * Fields available within len are decoded. A partially present string is
- * copied and null-terminated; unavailable fields remain zero/empty. Numeric
- * fields are decoded only when all of their bytes are present.
+ * A record must be complete to decode: v1 is either core-only (OT3D_CORE_SIZE
+ * up to OT3D_EXTENDED_START) or fully extended (OT3D_EXTENDED_MIN and up) — a
+ * length that cuts through the extended block is rejected. v2 needs OT3D_V2_MIN_SIZE —
+ * the end of its last defined field, so a 216-byte manufacturer record that
+ * omits the reserved tail decodes. Anything shorter is a truncated read.
  *
  * Returns OT3D_OK on success, OT3D_VERSION_WARNING if minor version is ahead,
- * OT3D_VERSION_ERROR if major version is ahead, or OT3D_PARSE_ERROR when the
- * version field itself is incomplete or the arguments are invalid.
+ * OT3D_VERSION_ERROR if major version is ahead, OT3D_PARSE_ERROR if too short.
  */
 opentag3d_result_t opentag3d_decode(const uint8_t *payload, size_t len, opentag3d_t *out);
 
