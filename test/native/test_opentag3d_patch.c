@@ -330,6 +330,21 @@ int main(void) {
         CHECK(opentag3d_is_canonical_len(225) == 0, "J: 225 is not canonical");
     }
 
+    /* K: a replace-mode patch that sets an extended field must produce an
+     * extended layout. Encoding it core-only silently drops every extended
+     * value the caller supplied. */
+    {
+        uint64_t mask = 0;
+        ot3d_mask_set(&mask, OT3D_F_MANUFACTURE_YEAR);
+        CHECK(opentag3d_patch_touches_extended(mask) == 1,
+              "K: manufacture_year is an extended field");
+
+        uint64_t coreOnly = 0;
+        ot3d_mask_set(&coreOnly, OT3D_F_TARGET_WEIGHT_G);
+        CHECK(opentag3d_patch_touches_extended(coreOnly) == 0,
+              "K: target_weight_g alone stays core-only");
+    }
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

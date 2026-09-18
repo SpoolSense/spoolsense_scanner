@@ -2253,6 +2253,11 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     if (isPatch) {
         if (patch.mode == OT3D_MODE_REPLACE) {
             ot3d = patch.values;
+            // The handler never sets has_extended — it is a layout decision,
+            // not a field. A v1 replace carrying any extended value must emit
+            // the 187-byte map, or every extended value the caller supplied is
+            // dropped and the readback verifies the loss.
+            ot3d.has_extended = opentag3d_patch_touches_extended(patch.mask) ? 1 : 0;
         } else {
             uint16_t baseLen = 0;
             if (!readOpenTag3DBaseline(ot3d, baseLen)) {
