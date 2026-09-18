@@ -1797,12 +1797,13 @@ void NFCManager::processWriteQueue() {
     }
 }
 
-bool NFCManager::writeRawTag() {
+bool NFCManager::writeRawTag(const NFCWriteRequest& request) {
     Serial.println("NFCManager: writeRawTag() called");
 
-    // Claim the staged bytes under the mutex, then release before any radio
-    // work — writeISO14443Pages/readISO14443Pages below take hundreds of ms
-    // and must not stall the HTTP task behind stagingMutex.
+    // The staging slot is claimed atomically here and released for the next
+    // producer immediately — before validateWriteUid or anything else that
+    // can fail. From this point on, every early return below is free: there
+    // is nothing left to roll back.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
     if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -1819,6 +1820,10 @@ bool NFCManager::writeRawTag() {
     rawWritePending_ = false;
     rawWriteBufferSize_ = 0;
     xSemaphoreGive(stagingMutex);
+
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
+        return false;
+    }
 
     // Copy raw data into a local opt_tag_t
     opt_tag_t localTag;
@@ -2235,22 +2240,10 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0'; \
     } while (0)
 
-    bool uidTimedOut = false;
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D", &uidTimedOut)) {
-        if (stagingMutex != nullptr && xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            rawWritePending_ = false;
-            rawWriteBufferSize_ = 0;
-            xSemaphoreGive(stagingMutex);
-        }
-        // Tag-removed-or-swapped is the common case; a lock timeout is rare
-        // and means something else — don't tell the user the wrong one.
-        OT3D_SET_ERR(uidTimedOut ? "reader busy" : "tag removed");
-        return false;
-    }
-
-    // Claim the staged bytes under the mutex, then release before any radio
-    // work — checkWriteCapacity/writeISO14443Pages below take hundreds of ms
-    // and must not stall the HTTP task behind stagingMutex.
+    // The staging slot is claimed atomically here and released for the next
+    // producer immediately — before validateWriteUid, the size check, or the
+    // magic check, any of which can fail. From this point on, every early
+    // return below is free: there is nothing left to roll back.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
     if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -2269,6 +2262,14 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     rawWritePending_ = false;
     rawWriteBufferSize_ = 0;
     xSemaphoreGive(stagingMutex);
+
+    bool uidTimedOut = false;
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D", &uidTimedOut)) {
+        // Tag-removed-or-swapped is the common case; a lock timeout is rare
+        // and means something else — don't tell the user the wrong one.
+        OT3D_SET_ERR(uidTimedOut ? "reader busy" : "tag removed");
+        return false;
+    }
 
     // Exactly two staged shapes exist: the ot3d_patch_t envelope (web UI) and
     // the bare opentag3d_t (DeductionManager). A future struct change that
@@ -2376,11 +2377,10 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 }
 
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
-
-    // Claim the staged bytes under the mutex, then release before any radio
-    // work — checkWriteCapacity/writeISO14443Pages below take hundreds of ms
-    // and must not stall the HTTP task behind stagingMutex.
+    // The staging slot is claimed atomically here and released for the next
+    // producer immediately — before validateWriteUid, which can fail. From
+    // this point on, every early return below is free: there is nothing
+    // left to roll back.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
     if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -2397,6 +2397,8 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
     rawWritePending_ = false;
     rawWriteBufferSize_ = 0;
     xSemaphoreGive(stagingMutex);
+
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
 
     uint16_t payloadLen = (uint16_t)localSize;
     uint8_t ndefBuf[256];
@@ -2552,21 +2554,9 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
     }
 
     if (request.type == NFCWriteType::WRITE_RAW_TAG) {
-        if (!rawWritePending_) {
-            Serial.println("NFCManager: WRITE_RAW_TAG - no raw data pending");
-            return false;
-        }
-        if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
-            // Tag changed underneath us — drop the stale staged payload under
-            // the same lock enqueueRawWrite/writeRawTag use for this slot.
-            if (stagingMutex != nullptr && xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                rawWritePending_ = false;
-                rawWriteBufferSize_ = 0;
-                xSemaphoreGive(stagingMutex);
-            }
-            return false;
-        }
-        return writeRawTag();
+        // writeRawTag() claims and validates the staged slot itself, atomically,
+        // at its entry — nothing to check or roll back here.
+        return writeRawTag(request);
     }
 
     if (request.type == NFCWriteType::WRITE_TIGERTAG)  return executeTigerTagWrite(request);

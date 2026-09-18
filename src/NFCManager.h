@@ -248,7 +248,7 @@ private:
     uint8_t rawWriteBuffer_[RAW_WRITE_BUFFER_SIZE];
     size_t rawWriteBufferSize_ = 0;
     bool rawWritePending_ = false;
-    bool writeRawTag();
+    bool writeRawTag(const NFCWriteRequest& request);
     opt_tag_t writeScratchTag_;   // Reused by scan task write path to avoid large stack frames
     AtomicWriteFields atomicWriteFields_;  // Sidecar for WRITE_ATOMIC (filled by HTTP, consumed by scan task)
 
