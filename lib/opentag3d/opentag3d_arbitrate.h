@@ -37,6 +37,16 @@ ot3d_write_decision_t ot3d_decide_write(ot3d_target_state_t target,
  * record the scanner cannot read is not the same thing as no record. */
 int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len);
 
+/* The version to encode with, once the decision is known. A version is minted
+ * only for a write that actually replaces the tag: the request's mode is a
+ * request, and the same request can be ruled a merge onto a tag that already
+ * carries a version, so a version stamped when the request was parsed would
+ * silently convert that tag. requested_version is non-zero only when the
+ * caller explicitly asked for one, which stays an explicit conversion. */
+uint16_t ot3d_resolve_write_version(ot3d_write_decision_t decision,
+                                    uint16_t requested_version,
+                                    uint16_t baseline_version);
+
 #ifdef __cplusplus
 }
 #endif

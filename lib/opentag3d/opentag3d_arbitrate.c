@@ -1,4 +1,5 @@
 #include "opentag3d_arbitrate.h"
+#include "opentag3d_lib.h"   /* OT3D_SUPPORTED_VERSION */
 
 ot3d_write_decision_t ot3d_decide_write(ot3d_target_state_t target,
                                         int replace_requested,
@@ -41,4 +42,12 @@ int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len) {
         if (data[i] != 0x00) return 0;
     }
     return 1;
+}
+
+uint16_t ot3d_resolve_write_version(ot3d_write_decision_t decision,
+                                    uint16_t requested_version,
+                                    uint16_t baseline_version) {
+    if (requested_version) return requested_version;
+    return (decision == OT3D_DECIDE_REPLACE) ? (uint16_t)OT3D_SUPPORTED_VERSION
+                                             : baseline_version;
 }

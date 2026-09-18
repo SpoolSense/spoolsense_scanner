@@ -358,11 +358,13 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     // of that tag (Clear, Spoolman import, Write Another / Back).
     var ot3dSource = null;   // { uid: string, snapshot: {fieldId: string} }
 
-    // Single-use token for the Replace action. The firmware merges onto any
-    // tag that already carries data unless this arrives with the request, so
-    // it is the only way to erase one — and it must never be left set for a
-    // later write.
-    var replaceConfirmed = false;
+    // Single-use, UID-bound token for the Replace action. The firmware merges
+    // onto any tag that already carries data unless this arrives with the
+    // request, so it is the only way to erase one. It holds the UID the user
+    // was shown and agreed to erase — a bare boolean would arm the erase for
+    // whatever tag happened to be on the reader when the write ran, which is
+    // not the tag they confirmed.
+    var replaceConfirmedUid = null;
 
     var OT3D_EDITABLE_IDS = [
       'base_material','material_modifiers','manufacturer','color_name','colorHex',
@@ -460,7 +462,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     writerForm.addEventListener('reset', function () {
       ot3dSource = null;
-      replaceConfirmed = false;
+      replaceConfirmedUid = null;
     });
 
     syncColorPicker('colorPicker', 'colorHex');
@@ -599,9 +601,18 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       // flow is async and calls this long after the handler has returned, so
       // the handler cannot clear it before it is read. Clearing it on entry
       // means one press authorises exactly one write, even if this function
-      // throws below.
-      var confirmed = replaceConfirmed;
-      replaceConfirmed = false;
+      // throws below. The token names the UID the user was shown; if the tag
+      // the flow actually found is a different one, the write is abandoned
+      // rather than quietly downgraded to a merge onto a stranger's tag.
+      var armedUid = replaceConfirmedUid;
+      replaceConfirmedUid = null;
+      var confirmed = false;
+      if (armedUid) {
+        if (armedUid !== uid) {
+          throw new Error('The tag on the reader is not the one you confirmed (' + armedUid + '). Nothing was written.');
+        }
+        confirmed = true;
+      }
 
       var preserve;
       if (!ot3dSource || !ot3dSource.uid) {
@@ -702,17 +713,33 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       // (the physical tag may be swapped before the next write), so a
       // stale snapshot must not be allowed to claim preserve mode.
       ot3dSource = null;
-      replaceConfirmed = false;
+      replaceConfirmedUid = null;
     }
 
     document.getElementById('backBtn').addEventListener('click', showCreateView);
     document.getElementById('anotherBtn').addEventListener('click', showCreateView);
 
-    document.getElementById('replaceBtn').addEventListener('click', function () {
-      if (!window.confirm('Replace everything on this tag?\n\nThe spool\'s serial, batch, manufacture date, measured weight and any other data already on it will be erased and cannot be recovered.')) return;
-      replaceConfirmed = true;
-      if (writerForm.requestSubmit) writerForm.requestSubmit();
-      else writerForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    document.getElementById('replaceBtn').addEventListener('click', async function () {
+      var btn = this;
+      var prompt = document.getElementById('readPrompt');
+      btn.disabled = true;
+      prompt.classList.remove('hidden');
+      try {
+        // Identify the tag BEFORE asking. A dialog answered over an empty
+        // reader arms an erase for whatever turns up next, which is how a
+        // factory spool presented by mistake gets wiped.
+        var st = await waitForTag(8000);
+        if (!st.uid) throw new Error('Tag detected but its ID could not be read. Reposition it on the scanner and try again.');
+        if (!window.confirm('Replace everything on tag ' + st.uid + '?\n\nIt currently reads as: ' + (st.tag_kind || 'unrecognised') + '.\n\nIts serial, batch, manufacture date, measured weight and every other field not in this form will be erased and cannot be recovered.')) return;
+        replaceConfirmedUid = st.uid;
+        if (writerForm.requestSubmit) writerForm.requestSubmit();
+        else writerForm.dispatchEvent(new Event('submit', { cancelable: true }));
+      } catch (err) {
+        window.alert(err && err.message ? err.message : 'Could not identify the tag on the reader.');
+      } finally {
+        btn.disabled = false;
+        prompt.classList.add('hidden');
+      }
     });
 
     writerForm.addEventListener('submit', function(e) {
@@ -756,7 +783,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         }
       // buildPayload consumes the token, but the flow can end before it ever
       // runs (no tag presented, unreadable UID) — clear it either way.
-      }).finally(function () { replaceConfirmed = false; });
+      }).finally(function () { replaceConfirmedUid = null; });
     });
 
     renderSpoolmanPicker('spoolmanPicker', {
@@ -788,7 +815,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       spoolmanPickerEl.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('#spoolmanPickerResults')) {
           ot3dSource = null;
-          replaceConfirmed = false;
+          replaceConfirmedUid = null;
         }
       }, true);
     }

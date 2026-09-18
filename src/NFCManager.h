@@ -121,7 +121,8 @@ public:
     // Dependency injection for testing
     void setConnection(NFCConnectionI* conn) { connection_ = conn; }
     void resetWriteState() {
-        rawWritePending_ = false;
+        rawWriteSlot_ = RawWriteSlot::Empty;
+        rawWriteBufferSize_ = 0;
         // Drain write queue
         if (writeQueue) {
             NFCWriteRequest dummy;
@@ -251,9 +252,27 @@ private:
     static constexpr size_t RAW_WRITE_BUFFER_SIZE = 320;
     static_assert(sizeof(ot3d_patch_t) <= RAW_WRITE_BUFFER_SIZE,
                   "OpenTag3D patch envelope exceeds the raw write staging buffer");
+    // The slot stays claimed until the write it feeds has finished, not just
+    // until its bytes have been copied out. A producer that staged against
+    // state an in-flight write is about to change would overwrite that write's
+    // result with values read before it ran, and the readback would verify the
+    // stale data as success — so producers are refused while InFlight.
+    enum class RawWriteSlot : uint8_t { Empty = 0, Staged, InFlight };
     uint8_t rawWriteBuffer_[RAW_WRITE_BUFFER_SIZE];
     size_t rawWriteBufferSize_ = 0;
-    bool rawWritePending_ = false;
+    RawWriteSlot rawWriteSlot_ = RawWriteSlot::Empty;
+    // Copies a staged payload out and marks the slot InFlight. failReason gets
+    // a short string for the outcome ring on failure.
+    bool claimStagedRawWrite(uint8_t* out, size_t outSize, size_t& outLen,
+                             const char* writeType, const char** failReason);
+    void releaseRawWriteSlot();
+    // Returns the slot to Empty however the write ends. Every consumer arms one
+    // immediately after a successful claim: the two slot-stranding bugs in this
+    // area both came from clears placed by hand on individual exit paths.
+    struct RawWriteSlotGuard {
+        NFCManager& mgr;
+        ~RawWriteSlotGuard() { mgr.releaseRawWriteSlot(); }
+    };
     bool writeRawTag(const NFCWriteRequest& request);
     opt_tag_t writeScratchTag_;   // Reused by scan task write path to avoid large stack frames
     AtomicWriteFields atomicWriteFields_;  // Sidecar for WRITE_ATOMIC (filled by HTTP, consumed by scan task)
@@ -261,7 +280,7 @@ private:
     // Write queue (FreeRTOS)
     QueueHandle_t writeQueue = nullptr;
     SemaphoreHandle_t tagMutex = nullptr;
-    SemaphoreHandle_t stagingMutex = nullptr;   // guards rawWriteBuffer_/Size_/Pending_
+    SemaphoreHandle_t stagingMutex = nullptr;   // guards rawWriteBuffer_/Size_/Slot_
 
     // Completed request tracking (circular buffer)
     static constexpr size_t COMPLETED_REQUESTS_SIZE = 32;

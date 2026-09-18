@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "opentag3d_arbitrate.h"
+#include "opentag3d_lib.h"
 
 static int failures = 0;
 
@@ -119,6 +120,27 @@ int main(void) {
               "E: window shorter than one page -> not blank");
         CHECK(ot3d_user_memory_is_blank(NULL, 40) == 0,
               "E: no buffer -> not blank");
+    }
+
+    /* F: the version to encode is resolved from the DECISION, never from the
+     * mode the request arrived with. Minting a version when the request was
+     * parsed converts a tag that the arbitration then rules a merge onto. */
+    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 1003) == 1003,
+          "F: merge with no requested version keeps the tag's v1 version");
+    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 2003) == 2003,
+          "F: merge with no requested version keeps the tag's v2 version");
+    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 2003, 1003) == 2003,
+          "F: an explicitly requested version is still an explicit conversion");
+    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 0, 0) == OT3D_SUPPORTED_VERSION,
+          "F: replace with no requested version mints the supported one");
+    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 1003, 0) == 1003,
+          "F: replace honours an explicitly requested version");
+    {
+        /* The reported defect end to end: mode=replace, no tag_version, a
+         * written v1 tag. Arbitration rules MERGE, so nothing may convert it. */
+        ot3d_write_decision_t d = ot3d_decide_write(OT3D_TARGET_WRITTEN, 1, 0);
+        CHECK(d == OT3D_DECIDE_MERGE && ot3d_resolve_write_version(d, 0, 1003) == 1003,
+              "F: a replace-mode request ruled MERGE must not convert a v1 tag");
     }
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);

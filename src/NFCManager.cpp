@@ -1577,12 +1577,17 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
     }
 
     bool ok = false;
-    if (rawWritePending_) {
-        Serial.println("NFCManager: Raw write already pending");
+    if (rawWriteSlot_ == RawWriteSlot::InFlight) {
+        // Refusing here is the point: a payload built now was built from state
+        // the running write is about to change, and writing it afterwards would
+        // undo that write and verify the stale bytes as a success.
+        Serial.println("NFCManager: enqueueRawWrite - refused, a write is in flight");
+    } else if (rawWriteSlot_ == RawWriteSlot::Staged) {
+        Serial.println("NFCManager: enqueueRawWrite - refused, a payload is already staged");
     } else {
         memcpy(rawWriteBuffer_, data, dataSize);
         rawWriteBufferSize_ = dataSize;
-        rawWritePending_ = true;
+        rawWriteSlot_ = RawWriteSlot::Staged;
         // Publish the queue entry last, and only while still holding the slot:
         // a consumer that dequeues before the flag is set finds no data, and a
         // second producer that slips in overwrites the bytes a queued request
@@ -1590,7 +1595,7 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
         if (enqueueWrite(req)) {
             ok = true;
         } else {
-            rawWritePending_ = false;
+            rawWriteSlot_ = RawWriteSlot::Empty;
             rawWriteBufferSize_ = 0;
             Serial.println("NFCManager: enqueueRawWrite - queue full");
         }
@@ -1797,29 +1802,58 @@ void NFCManager::processWriteQueue() {
     }
 }
 
+// Consumer side of the staging slot. The request is already off the write
+// queue by the time this runs, so a failure to enter this section loses the
+// request entirely — and a timeout would also leave the slot claimed, refusing
+// every later write until reboot. The section is a bounded memcpy of at most
+// RAW_WRITE_BUFFER_SIZE bytes with no radio, network or nested lock in it, and
+// the longest any producer holds the mutex is the queue send's 100 ms cap, so
+// waiting unbounded here is bounded in practice and cannot deadlock: the scan
+// task holds no other lock while it waits.
+bool NFCManager::claimStagedRawWrite(uint8_t* out, size_t outSize, size_t& outLen,
+                                     const char* writeType, const char** failReason) {
+    outLen = 0;
+    if (stagingMutex == nullptr) {
+        Serial.printf("NFCManager: %s - no staging mutex\n", writeType);
+        if (failReason) *failReason = "staging busy";
+        return false;
+    }
+    xSemaphoreTake(stagingMutex, portMAX_DELAY);
+    if (rawWriteSlot_ != RawWriteSlot::Staged || rawWriteBufferSize_ == 0 ||
+        rawWriteBufferSize_ > outSize) {
+        Serial.printf("NFCManager: %s - no staged payload (slot %u, %u bytes)\n",
+                      writeType, (unsigned)rawWriteSlot_, (unsigned)rawWriteBufferSize_);
+        xSemaphoreGive(stagingMutex);
+        if (failReason) *failReason = "no data queued";
+        return false;
+    }
+    outLen = rawWriteBufferSize_;
+    memcpy(out, rawWriteBuffer_, outLen);
+    rawWriteSlot_ = RawWriteSlot::InFlight;
+    xSemaphoreGive(stagingMutex);
+    return true;
+}
+
+void NFCManager::releaseRawWriteSlot() {
+    if (stagingMutex == nullptr) return;
+    xSemaphoreTake(stagingMutex, portMAX_DELAY);
+    rawWriteSlot_ = RawWriteSlot::Empty;
+    rawWriteBufferSize_ = 0;
+    xSemaphoreGive(stagingMutex);
+}
+
 bool NFCManager::writeRawTag(const NFCWriteRequest& request) {
     Serial.println("NFCManager: writeRawTag() called");
 
-    // The staging slot is claimed atomically here and released for the next
-    // producer immediately — before validateWriteUid or anything else that
-    // can fail. From this point on, every early return below is free: there
-    // is nothing left to roll back.
+    // The staged bytes are copied out here and the slot stays claimed until
+    // this function returns, so no producer can stage a payload built from
+    // state this write is about to change. The guard frees it on every exit.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
-    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Serial.println("NFCManager: writeRawTag - could not acquire stagingMutex");
+    if (!claimStagedRawWrite(localBuf, sizeof(localBuf), localSize, "writeRawTag", nullptr)) {
         return false;
     }
-    if (!rawWritePending_) {
-        xSemaphoreGive(stagingMutex);
-        Serial.println("NFCManager: writeRawTag - no raw data pending");
-        return false;
-    }
-    localSize = rawWriteBufferSize_;
-    memcpy(localBuf, rawWriteBuffer_, localSize);
-    rawWritePending_ = false;
-    rawWriteBufferSize_ = 0;
-    xSemaphoreGive(stagingMutex);
+    RawWriteSlotGuard slotGuard{*this};
 
     if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
         return false;
@@ -2276,28 +2310,18 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0'; \
     } while (0)
 
-    // The staging slot is claimed atomically here and released for the next
-    // producer immediately — before validateWriteUid, the size check, or the
-    // magic check, any of which can fail. From this point on, every early
-    // return below is free: there is nothing left to roll back.
+    // The staged bytes are copied out here and the slot stays claimed until
+    // this function returns, so no producer can stage a payload built from
+    // state this write is about to change. The guard frees it on every exit,
+    // including all the early returns below.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
-    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Serial.println("NFCManager: WRITE_OPENTAG3D - could not acquire stagingMutex");
-        OT3D_SET_ERR("staging busy");
+    const char* claimFail = "staging busy";
+    if (!claimStagedRawWrite(localBuf, sizeof(localBuf), localSize, "WRITE_OPENTAG3D", &claimFail)) {
+        OT3D_SET_ERR(claimFail);
         return false;
     }
-    if (!rawWritePending_) {
-        xSemaphoreGive(stagingMutex);
-        Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
-        OT3D_SET_ERR("no data queued");
-        return false;
-    }
-    localSize = rawWriteBufferSize_;
-    memcpy(localBuf, rawWriteBuffer_, localSize);
-    rawWritePending_ = false;
-    rawWriteBufferSize_ = 0;
-    xSemaphoreGive(stagingMutex);
+    RawWriteSlotGuard slotGuard{*this};
 
     bool uidTimedOut = false;
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D", &uidTimedOut)) {
@@ -2358,6 +2382,10 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 
         if (decision == OT3D_DECIDE_REPLACE) {
             ot3d = patch.values;
+            // The handler no longer mints a version, because the request it
+            // parsed can be ruled a merge here. Stamp the supported one only
+            // now, when this write really is creating the tag's content.
+            ot3d.tag_version = ot3d_resolve_write_version(decision, patch.values.tag_version, 0);
             // The handler never sets has_extended — it is a layout decision,
             // not a field. A v1 replace carrying any extended value must emit
             // the 187-byte map, or every extended value the caller supplied is
@@ -2381,7 +2409,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             opentag3d_apply_patch(&ot3d, &patch.values, patch.mask);
 
             // Version changes are an explicit conversion, never a side effect.
-            ot3d.tag_version = patch.values.tag_version ? patch.values.tag_version : baselineVersion;
+            ot3d.tag_version = ot3d_resolve_write_version(decision, patch.values.tag_version, baselineVersion);
             // An extended v1 tag stays extended even when the edit is core-only,
             // and a core-only v1 grows only if an extended field was actually set.
             ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_PRESERVE, patch.mask, baselineExtended);
@@ -2426,26 +2454,15 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 }
 
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
-    // The staging slot is claimed atomically here and released for the next
-    // producer immediately — before validateWriteUid, which can fail. From
-    // this point on, every early return below is free: there is nothing
-    // left to roll back.
+    // The staged bytes are copied out here and the slot stays claimed until
+    // this function returns, so no producer can stage a payload built from
+    // state this write is about to change. The guard frees it on every exit.
     uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
     size_t localSize = 0;
-    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
-        Serial.println("NFCManager: WRITE_OPENSPOOL - could not acquire stagingMutex");
+    if (!claimStagedRawWrite(localBuf, sizeof(localBuf), localSize, "WRITE_OPENSPOOL", nullptr)) {
         return false;
     }
-    if (!rawWritePending_ || rawWriteBufferSize_ == 0) {
-        xSemaphoreGive(stagingMutex);
-        Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data available");
-        return false;
-    }
-    localSize = rawWriteBufferSize_;
-    memcpy(localBuf, rawWriteBuffer_, localSize);
-    rawWritePending_ = false;
-    rawWriteBufferSize_ = 0;
-    xSemaphoreGive(stagingMutex);
+    RawWriteSlotGuard slotGuard{*this};
 
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
 

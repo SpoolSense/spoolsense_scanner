@@ -2129,19 +2129,22 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 #undef PATCH_NUM
 #undef PATCH_TEMP
 
-    // Absent version means "keep whatever the tag has". Only replace mode may
-    // mint a version, and only when the caller asked for one.
-    bool versionRequested = doc["tag_version"].is<long long>();
-    if (versionRequested) {
+    // Absent version means "keep whatever the tag has"; the NFC task mints one
+    // only for a write it has decided is a replacement.
+    if (doc["tag_version"].is<long long>()) {
         patch.values.tag_version = (uint16_t)doc["tag_version"].as<long long>();
         if (!opentag3d_can_encode(patch.values.tag_version)) {
             sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
             return;
         }
-    } else if (patch.mode == OT3D_MODE_REPLACE) {
-        patch.values.tag_version = (uint16_t)OT3D_SUPPORTED_VERSION;
     } else {
-        patch.values.tag_version = 0;   // NFC task fills from the fresh baseline
+        // Never mint one here. This request's mode is advisory — the NFC task
+        // can rule the very same request a merge onto a tag that already has a
+        // version, and a version stamped now would ride along and convert it
+        // (or fail capacity on a small tag) for a caller that never asked.
+        // The NFC task stamps the supported version only once it has decided
+        // to replace; a merge keeps whatever the tag already carries.
+        patch.values.tag_version = 0;
     }
 
     // Never re-mint a newer-minor tag: the queued struct carries OUR version
