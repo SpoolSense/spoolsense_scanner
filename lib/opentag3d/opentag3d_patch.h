@@ -80,7 +80,8 @@ typedef enum {
 typedef struct {
     uint32_t    magic;
     uint8_t     mode;
-    uint8_t     pad[3];
+    uint8_t     confirm_replace;   /* was pad[0] — replacing a written tag */
+    uint8_t     pad[2];
     uint64_t    mask;
     opentag3d_t values;
 } ot3d_patch_t;

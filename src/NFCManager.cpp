@@ -2180,15 +2180,11 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
     return tigertagVerifyAndFinish(request, "partial write");
 }
 
-// Fresh pre-read of the tag in session, used as the merge baseline for
-// preserve-mode writes. Mirrors the TigerTag pre-read in executeTigerTagWrite.
-bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut) {
-    uint8_t pageData[256];
-    uint16_t bytesRead = connection_->readISO14443Pages(4, 10, pageData, sizeof(pageData), true);
-    if (bytesRead < 4) {
-        Serial.println("NFCManager: OT3D baseline - page read failed");
-        return false;
-    }
+// Decodes the merge baseline for a preserve-mode write out of the page window
+// classifyOpenTag3DTarget already read from the tag in session.
+bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRead,
+                                       opentag3d_t& out, uint16_t& payloadLenOut) {
+    if (pageData == nullptr || bytesRead < 4) return false;
 
     NdefRecord rec = findNdefMediaRecord(pageData, bytesRead);
     if (!rec.found || rec.mimeLen != strlen(OT3D_MIME_TYPE) ||
@@ -2230,6 +2226,46 @@ bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut
     }
     payloadLenOut = payloadBytes;
     return true;
+}
+
+// Classifies the tag currently in session so ot3d_decide_write can rule on it.
+// On OT3D_TARGET_WRITTEN, `out` holds the decoded baseline and is safe to merge
+// onto; on every other result `out` is untouched and must not be used.
+//
+// The classification never depends on the baseline decode succeeding: blank,
+// foreign-format and unreadable are all established from this read alone, and
+// the baseline is only attempted once an OpenTag3D record has been positively
+// identified. A tag that carries an OpenTag3D record we cannot decode is
+// unreadable, not blank.
+ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
+    uint8_t pageData[40];
+    uint16_t bytesRead = connection_->readISO14443Pages(4, 10, pageData, sizeof(pageData), true);
+    if (bytesRead < 4) {
+        Serial.println("NFCManager: OT3D classify - page read failed");
+        return OT3D_TARGET_UNREADABLE;
+    }
+
+    NdefRecord rec = findNdefMediaRecord(pageData, bytesRead);
+    if (!rec.found) {
+        // No usable record found. That only means "new tag" when the memory is
+        // positively empty — a TLV the scanner could not parse is a damaged or
+        // half-written tag, and replacing it would destroy what is really
+        // there. Factory-fresh NTAG user memory reads as zeros, and an NDEF
+        // TLV declaring a zero-length message carries nothing; nothing else
+        // counts as blank.
+        if (ot3d_user_memory_is_blank(pageData, bytesRead)) return OT3D_TARGET_BLANK;
+        Serial.println("NFCManager: OT3D classify - data present but no readable record");
+        return OT3D_TARGET_UNREADABLE;
+    }
+    if (rec.mimeLen != strlen(OT3D_MIME_TYPE) ||
+        memcmp(rec.mimeType, OT3D_MIME_TYPE, rec.mimeLen) != 0) {
+        return OT3D_TARGET_OTHER_FORMAT;
+    }
+
+    uint16_t baseLen = 0;
+    if (!readOpenTag3DBaseline(pageData, bytesRead, out, baseLen)) return OT3D_TARGET_UNREADABLE;
+    Serial.printf("NFCManager: OT3D classify - written tag, %u byte baseline\n", baseLen);
+    return OT3D_TARGET_WRITTEN;
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
@@ -2300,7 +2336,27 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     }
 
     if (isPatch) {
-        if (patch.mode == OT3D_MODE_REPLACE) {
+        // The request's mode is advisory. The browser's idea of what is on the
+        // reader can be stale, absent, or from a different tag; the tag itself
+        // cannot be. So read the target and let it decide: a written tag is
+        // merged onto unless the caller explicitly confirmed a replacement,
+        // and anything we cannot read is refused rather than overwritten.
+        opentag3d_t baseline;
+        ot3d_target_state_t target = classifyOpenTag3DTarget(baseline);
+        ot3d_write_decision_t decision = ot3d_decide_write(
+            target,
+            patch.mode == OT3D_MODE_REPLACE,
+            patch.confirm_replace);
+
+        if (decision == OT3D_DECIDE_REFUSE) {
+            Serial.printf("NFCManager: WRITE_OPENTAG3D - refusing write, target state %d\n", (int)target);
+            LogBuffer::getInstance().logPrintf("Write OpenTag3D: REFUSED (target not writable)\n");
+            OT3D_SET_ERR(target == OT3D_TARGET_OTHER_FORMAT ? "not an OT3D tag"
+                                                            : "tag unreadable");
+            return false;
+        }
+
+        if (decision == OT3D_DECIDE_REPLACE) {
             ot3d = patch.values;
             // The handler never sets has_extended — it is a layout decision,
             // not a field. A v1 replace carrying any extended value must emit
@@ -2308,14 +2364,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             // dropped and the readback verifies the loss.
             ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_REPLACE, patch.mask, 0);
         } else {
-            uint16_t baseLen = 0;
-            if (!readOpenTag3DBaseline(ot3d, baseLen)) {
-                Serial.println("NFCManager: WRITE_OPENTAG3D - preserve aborted, no clean baseline");
-                LogBuffer::getInstance().logPrintf("Write OpenTag3D: ABORTED (baseline read failed)\n");
-                OT3D_SET_ERR("baseline read failed");
-                return false;
-            }
-            Serial.printf("NFCManager: WRITE_OPENTAG3D - baseline read %u bytes for merge\n", baseLen);
+            ot3d = baseline;
             if (!opentag3d_can_encode(ot3d.tag_version)) {
                 Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", ot3d.tag_version);
                 OT3D_SET_ERR("unsupported version");

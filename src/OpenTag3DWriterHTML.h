@@ -280,10 +280,12 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
             <button type="button" class="btn-secondary" id="readBtn">Read</button>
+            <button type="button" class="btn-ghost" id="replaceBtn">Replace tag contents</button>
             <button type="reset" class="btn-ghost">Clear</button>
           </div>
           <p class="card-subtitle" style="margin-top:4px;font-size:11px">
-            Use <strong>Read</strong> to load an existing tag before overwriting.
+            <strong>Write Tag</strong> updates the fields below and keeps everything else already on the tag.
+            <strong>Replace tag contents</strong> erases the rest &mdash; only for a tag you want blanked.
           </p>
         </form>
       </div>
@@ -355,6 +357,12 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     // the whole tag. Cleared whenever the form stops being a faithful copy
     // of that tag (Clear, Spoolman import, Write Another / Back).
     var ot3dSource = null;   // { uid: string, snapshot: {fieldId: string} }
+
+    // Single-use token for the Replace action. The firmware merges onto any
+    // tag that already carries data unless this arrives with the request, so
+    // it is the only way to erase one — and it must never be left set for a
+    // later write.
+    var replaceConfirmed = false;
 
     var OT3D_EDITABLE_IDS = [
       'base_material','material_modifiers','manufacturer','color_name','colorHex',
@@ -452,6 +460,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     writerForm.addEventListener('reset', function () {
       ot3dSource = null;
+      replaceConfirmed = false;
     });
 
     syncColorPicker('colorPicker', 'colorHex');
@@ -578,12 +587,22 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     // Diffs the form against ot3dSource's snapshot so a write only carries
     // the fields the user actually touched. Preserve mode only applies when
     // writing back to the exact UID the form was filled from. No source at
-    // all means the form was never filled from a tag, so this is a brand
-    // new write and replace is correct. A source bound to a DIFFERENT UID
-    // than what's on the reader now is refused outright — the form is not a
-    // faithful copy of whatever tag that is, and a replace-mode write would
-    // silently zero it out.
+    // all means the form was never filled from a tag, so every field is sent
+    // as if creating one — but the mode is only a request now: the firmware
+    // reads the tag and merges onto it anyway unless confirm_replace is set,
+    // which is what stops a fresh page from erasing a spool it never read.
+    // A source bound to a DIFFERENT UID than what's on the reader now is
+    // still refused outright — the form is not a faithful copy of whatever
+    // tag that is, so its values must not be pushed onto it.
     function buildPayload(uid) {
+      // Consume the replace token here, not in the submit handler: the write
+      // flow is async and calls this long after the handler has returned, so
+      // the handler cannot clear it before it is read. Clearing it on entry
+      // means one press authorises exactly one write, even if this function
+      // throws below.
+      var confirmed = replaceConfirmed;
+      replaceConfirmed = false;
+
       var preserve;
       if (!ot3dSource || !ot3dSource.uid) {
         preserve = false;
@@ -592,7 +611,12 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       } else {
         throw new Error('This form was read from a different tag (' + ot3dSource.uid + '). Press Clear to write this tag from scratch, or re-read it first.');
       }
+      // Replace means "write what is on screen and erase the rest", so the
+      // diff must stop omitting fields the user did not touch.
+      if (confirmed) preserve = false;
+
       var body = { uid: uid || '', mode: preserve ? 'preserve' : 'replace' };
+      if (confirmed) body.confirm_replace = true;
 
       function changed(id) {
         if (!preserve) return true;
@@ -678,10 +702,18 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       // (the physical tag may be swapped before the next write), so a
       // stale snapshot must not be allowed to claim preserve mode.
       ot3dSource = null;
+      replaceConfirmed = false;
     }
 
     document.getElementById('backBtn').addEventListener('click', showCreateView);
     document.getElementById('anotherBtn').addEventListener('click', showCreateView);
+
+    document.getElementById('replaceBtn').addEventListener('click', function () {
+      if (!window.confirm('Replace everything on this tag?\n\nThe spool\'s serial, batch, manufacture date, measured weight and any other data already on it will be erased and cannot be recovered.')) return;
+      replaceConfirmed = true;
+      if (writerForm.requestSubmit) writerForm.requestSubmit();
+      else writerForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    });
 
     writerForm.addEventListener('submit', function(e) {
       e.preventDefault();
@@ -722,7 +754,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
             }
           });
         }
-      });
+      // buildPayload consumes the token, but the flow can end before it ever
+      // runs (no tag presented, unreadable UID) — clear it either way.
+      }).finally(function () { replaceConfirmed = false; });
     });
 
     renderSpoolmanPicker('spoolmanPicker', {
@@ -752,7 +786,10 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     var spoolmanPickerEl = document.getElementById('spoolmanPicker');
     if (spoolmanPickerEl) {
       spoolmanPickerEl.addEventListener('click', function (e) {
-        if (e.target.closest && e.target.closest('#spoolmanPickerResults')) ot3dSource = null;
+        if (e.target.closest && e.target.closest('#spoolmanPickerResults')) {
+          ot3dSource = null;
+          replaceConfirmed = false;
+        }
       }, true);
     }
 

@@ -9,7 +9,7 @@ OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout
+all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -59,7 +59,13 @@ opentag3d_patch.o: ../../lib/opentag3d/opentag3d_patch.c ../../lib/opentag3d/ope
 test_opentag3d_patch: test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_result_gate.js
+opentag3d_arbitrate.o: ../../lib/opentag3d/opentag3d_arbitrate.c ../../lib/opentag3d/opentag3d_arbitrate.h
+	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
+
+test_write_arbitration: test_write_arbitration.c opentag3d_arbitrate.o
+	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_write_arbitration.c opentag3d_arbitrate.o
+
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration test_write_result_gate.js
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -97,6 +103,9 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo "=== Running OpenTag3D layout tests ==="
 	@./test_opentag3d_layout
 	@echo ""
+	@echo "=== Running OpenTag3D write arbitration tests ==="
+	@./test_write_arbitration
+	@echo ""
 	@echo "=== Running write-result gate tests (Node) ==="
 	@if command -v node >/dev/null 2>&1; then \
 		node test_write_result_gate.js; \
@@ -109,4 +118,4 @@ clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
 	      test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner \
-	      test_opentag3d_patch test_opentag3d_layout *.o
+	      test_opentag3d_patch test_opentag3d_layout test_write_arbitration *.o

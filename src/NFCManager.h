@@ -15,6 +15,7 @@
 #include "OpenSpoolParser.h"
 #include "opentag3d_lib.h"
 #include "opentag3d_patch.h"
+#include "opentag3d_arbitrate.h"
 #include "BambuTagParser.h"
 
 // Sidecar for WRITE_ATOMIC: filled by HTTP handler, consumed by scan task.
@@ -187,11 +188,16 @@ private:
     bool tigertagVerifyAndFinish(const NFCWriteRequest& request, const char* how);
     bool ndefVerifyAndFinish(const char* what, uint8_t pagesNeeded, const uint8_t* ndefBuf, uint16_t ndefLen);
     bool executeOpenTag3DWrite(const NFCWriteRequest& request);
-    // Fresh, complete re-read of the tag in session — the merge baseline for
-    // preserve-mode writes. Fails closed (returns false) on any read, NDEF,
-    // MIME, length or decode problem; callers must never fall back to zeroed
-    // fields on failure.
-    bool readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut);
+    // Decodes the merge baseline out of a page window already read from the
+    // tag in session. Fails closed (returns false) on any NDEF, MIME, length
+    // or decode problem; callers must never fall back to zeroed fields on
+    // failure. Takes the window rather than reading it so the classification
+    // above it and the baseline below it describe the same read of the tag.
+    bool readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRead,
+                               opentag3d_t& out, uint16_t& payloadLenOut);
+    // What is physically on the tag, which is what decides merge vs replace.
+    // Only OT3D_TARGET_WRITTEN fills `out`.
+    ot3d_target_state_t classifyOpenTag3DTarget(opentag3d_t& out);
     bool executeOpenSpoolWrite(const NFCWriteRequest& request);
     bool executeAtomicWrite(const NFCWriteRequest& request);
     bool readBambuTag(const uint8_t* uid, uint8_t uidLength, BambuTagData& out);

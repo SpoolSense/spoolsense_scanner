@@ -1988,6 +1988,15 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     const char* modeStr = doc["mode"] | "replace";
     patch.mode = (strcmp(modeStr, "preserve") == 0) ? OT3D_MODE_PRESERVE : OT3D_MODE_REPLACE;
 
+    // The mode is only a request. The NFC task classifies the tag it is about
+    // to write and merges onto anything already written there, because
+    // replacing a tag destroys metadata that exists nowhere else and a
+    // readback cannot detect the loss. Erasing one therefore takes a
+    // deliberate second signal rather than a mode string a stale page, a
+    // script or a second browser tab can send by accident.
+    patch.confirm_replace = doc["confirm_replace"].is<bool>() &&
+                            doc["confirm_replace"].as<bool>() ? 1 : 0;
+
     // A string key that is present but not a string, or a number key that is
     // present but not a number, is a client bug — reject it rather than
     // zeroing the field on the tag.
