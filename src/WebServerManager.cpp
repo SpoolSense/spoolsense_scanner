@@ -83,6 +83,46 @@ WebServerManager& WebServerManager::getInstance() {
     return instance;
 }
 
+namespace {
+
+// WebServer::on() uses its fourth argument for BOTH raw bodies and multipart
+// file uploads, but only the raw path creates the HTTPRaw that
+// WebServer::raw() dereferences. A multipart POST to a route registered that
+// way runs the body collector against a null HTTPRaw and reboots the scanner.
+// This handler takes raw bodies only: canUpload() stays false, so the
+// framework parses multipart requests itself and the collector never runs.
+class JsonPostHandler : public RequestHandler {
+public:
+    JsonPostHandler(const char* uri, WebServer::THandlerFunction onRequest,
+                    WebServer::THandlerFunction onBodyChunk)
+        : _uri(uri), _onRequest(onRequest), _onBodyChunk(onBodyChunk) {}
+
+    bool canHandle(HTTPMethod method, const String& uri) override {
+        return method == HTTP_POST && uri == _uri;
+    }
+    bool canHandle(WebServer&, HTTPMethod method, const String& uri) override {
+        return canHandle(method, uri);
+    }
+    bool canRaw(const String& uri) override { return uri == _uri; }
+    bool canRaw(WebServer&, const String& uri) override { return canRaw(uri); }
+
+    bool handle(WebServer&, HTTPMethod method, const String& uri) override {
+        if (!canHandle(method, uri)) return false;
+        _onRequest();
+        return true;
+    }
+    void raw(WebServer&, const String& uri, HTTPRaw&) override {
+        if (canRaw(uri)) _onBodyChunk();
+    }
+
+private:
+    String _uri;
+    WebServer::THandlerFunction _onRequest;
+    WebServer::THandlerFunction _onBodyChunk;
+};
+
+}  // namespace
+
 void WebServerManager::releaseJsonBody() {
     free(_jsonBody);
     _jsonBody = nullptr;
@@ -149,7 +189,7 @@ void WebServerManager::handleJsonBodyChunk() {
 }
 
 void WebServerManager::registerJsonPost(const char* uri, WebServer::THandlerFunction handler) {
-    _server.on(uri, HTTP_POST,
+    _server.addHandler(new JsonPostHandler(uri,
         [this, handler]() {
             // The raw callback records the result while the request arrives;
             // this final callback sends the appropriate response or hands the
@@ -167,7 +207,7 @@ void WebServerManager::registerJsonPost(const char* uri, WebServer::THandlerFunc
             releaseJsonBody();
             _jsonBodyError = JsonBodyError::NONE;
         },
-        [this]() { handleJsonBodyChunk(); });
+        [this]() { handleJsonBodyChunk(); }));
 }
 
 bool WebServerManager::begin(bool apMode, uint16_t port) {

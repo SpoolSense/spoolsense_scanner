@@ -57,7 +57,7 @@ private:
     size_t _jsonBodyExpectedLength = 0;
     JsonBodyError _jsonBodyError = JsonBodyError::NONE;
 
-    // Register a JSON endpoint with WebServer's raw-body callback. The normal
+    // Register a JSON endpoint with a raw-body-only request handler. The normal
     // WebServer POST path trusts the client-supplied Content-Length, allocates
     // space for that complete body, and only then calls our endpoint. A size
     // check inside handleApiPostConfig(), for example, would happen after the
