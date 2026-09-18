@@ -179,6 +179,27 @@ int main(void) {
               "F: a replace-mode request ruled MERGE must not convert a v1 tag");
     }
 
+    /* G: ot3d_region_is_zero proves a page range beyond the first window is
+     * untouched before the tag is classified BLANK (#316). An empty read
+     * proves nothing and must not read as "yes, empty". */
+    {
+        uint8_t allZero[64];
+        memset(allZero, 0, sizeof(allZero));
+        CHECK(ot3d_region_is_zero(allZero, sizeof(allZero)) == 1,
+              "G: an all-zero region -> zero");
+
+        uint8_t oneAtEnd[64];
+        memset(oneAtEnd, 0, sizeof(oneAtEnd));
+        oneAtEnd[sizeof(oneAtEnd) - 1] = 0x01;
+        CHECK(ot3d_region_is_zero(oneAtEnd, sizeof(oneAtEnd)) == 0,
+              "G: a single non-zero byte at the end -> not zero");
+
+        CHECK(ot3d_region_is_zero(NULL, 64) == 0,
+              "G: no buffer proves nothing -> not zero");
+        CHECK(ot3d_region_is_zero(allZero, 0) == 0,
+              "G: zero length proves nothing -> not zero");
+    }
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

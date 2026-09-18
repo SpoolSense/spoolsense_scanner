@@ -37,6 +37,13 @@ ot3d_write_decision_t ot3d_decide_write(ot3d_target_state_t target,
  * record the scanner cannot read is not the same thing as no record. */
 int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len);
 
+/* True (1) only when every byte in data[0..len) is zero. Used to prove a page
+ * range beyond the first blank-checked window is also untouched before a tag
+ * is classified OT3D_TARGET_BLANK (#316: a Type 2 tag may legally hold NULL
+ * TLV padding in the first window and its real record later). An empty read
+ * — NULL or len 0 — proves nothing and answers 0, not 1. */
+int ot3d_region_is_zero(const uint8_t *data, uint16_t len);
+
 /* The version to encode with, once the decision is known. A version is minted
  * only for a write that actually replaces the tag: the request's mode is a
  * request, and the same request can be ruled a merge onto a tag that already

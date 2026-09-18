@@ -25,6 +25,22 @@ inline bool writeUidMatches(const char* expectedUid, const char* selectedUidHex)
     return strcmp(expectedUid, selectedUidHex) == 0;
 }
 
+// True only when the tag's write-capacity size was measured for the exact
+// tag now selected on the reader. There is no "unbound" case here — unlike
+// writeUidMatches, an unmeasured or stale size is never safe to trust, so
+// both sides must be present and match exactly (#316: the scan-cooldown
+// dedup can leave a size measured for the previous tag in place while a
+// different, smaller tag is selected).
+inline bool capacityBoundToSelected(const char* capacityUid, const char* selectedUid) {
+    if (capacityUid == nullptr || capacityUid[0] == '\0') {
+        return false;
+    }
+    if (selectedUid == nullptr || selectedUid[0] == '\0') {
+        return false;
+    }
+    return strcmp(capacityUid, selectedUid) == 0;
+}
+
 // Field-update and atomic writes (REMOVE_WEIGHT, CHANGE_COLOR, WRITE_ATOMIC)
 // build their payload from currentSpool's CBOR before writing it to the
 // selected tag, so a bound write must ALSO confirm that currentSpool describes

@@ -493,6 +493,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         currentSpool.blank_tag_present = false;
         currentSpool.variant = scan.variant;
         currentSpool.cc_user_end = scan.cc_user_end;
+        memcpy(capacityUidHex_, scan.uid_hex, sizeof(capacityUidHex_));  // size measured for THIS uid (#316)
         memcpy(lastSeenUid, uid, uidLength);
         lastSeenUidLength = uidLength;
         lastSeenValid = true;
@@ -638,6 +639,7 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
             currentSpool.kind = TagKind::BambuTag;
             currentSpool.variant = NtagVariant::Unknown;
             currentSpool.cc_user_end = 0;   // MIFARE Classic — no Type 2 CC
+            capacityUidHex_[0] = '\0';      // no size measured for this tag
             currentSpool.tag_data_valid = readOk;
             lastBambuTagValid_ = readOk;
             if (readOk) lastBambuTag_ = bambuData;
@@ -726,6 +728,7 @@ void NFCManager::handleTagAbsent() {
     currentSpool.blank_tag_present = false;
     currentSpool.variant = NtagVariant::Unknown;  // don't let the removed tag's identity
     currentSpool.cc_user_end = 0;                 // answer size checks for the next one
+    capacityUidHex_[0] = '\0';
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
@@ -891,6 +894,7 @@ bool NFCManager::readAndParseTag(uint8_t* uid, uint8_t uid_length) {
     currentSpool.tag_data_valid = true;
     currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — no NTAG identity here
     currentSpool.cc_user_end = 0;
+    capacityUidHex_[0] = '\0';
 
     addToRecentSpoolsLocked();
 
@@ -2173,8 +2177,18 @@ void NFCManager::forceRescan() {
 // historical page<64 ceiling now applies only when the CC is also absent or
 // invalid, so an honest clone gets its real capacity instead.
 bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType) {
-    uint16_t maxPages = effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end);
-    if (maxPages == 0) maxPages = 64;
+    // The scan-cooldown dedup can leave currentSpool.variant/cc_user_end
+    // measured for the previous tag while a different, smaller tag is
+    // selected (#316) — never size a write against a measurement that isn't
+    // for the tag actually on the reader.
+    if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) {
+        Serial.printf("NFCManager: %s rejected — tag size was not measured for the selected tag (measured %s, selected %s)\n",
+            writeType, capacityUidHex_[0] ? capacityUidHex_ : "<none>",
+            selectedUidHex_[0] ? selectedUidHex_ : "<none>");
+        LogBuffer::getInstance().logPrintf("%s rejected: tag size not measured for selected tag\n", writeType);
+        return false;
+    }
+    uint16_t maxPages = writablePageLimit();
     if (startPage + pageCount > maxPages) {
         Serial.printf("NFCManager: %s rejected — needs %d pages (start=%d), tag has %d (%s)\n",
             writeType, pageCount, startPage, maxPages, ntagVariantName(currentSpool.variant));
@@ -2183,6 +2197,13 @@ bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const 
         return false;
     }
     return true;
+}
+
+// Shared with classifyOpenTag3DTarget()'s blank-region scan so the two
+// ceilings cannot drift apart (#316).
+uint16_t NFCManager::writablePageLimit() const {
+    uint16_t maxPages = effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end);
+    return maxPages ? maxPages : 64;
 }
 
 // Re-read a written region and compare — a tag can ACK a write that lands
@@ -2343,9 +2364,15 @@ bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRe
     // ~1KB CurrentSpoolState (dominated by its cached opt_tag_t) onto the
     // stack just to read two scalars, and avoids getCurrentSpoolState()'s
     // silent-garbage failure mode on a mutex timeout.
+    // A stale, too-SMALL size left over from the previous tag (#316) must not
+    // truncate the baseline read of the real one — pass "unknown" instead of
+    // trusting a measurement that wasn't taken for the selected tag.
+    uint16_t baselineMaxPages = capacityBoundToSelected(capacityUidHex_, selectedUidHex_)
+        ? effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end)
+        : 0;
     uint8_t payload[OT3D_V2_MAP_SIZE];
     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
-                                            effectiveUserMemoryEnd(currentSpool.variant, currentSpool.cc_user_end));
+                                            baselineMaxPages);
 
     // readNdefPayload can return a truncated prefix. A short read of an
     // extended tag decodes as a valid core-only tag and would silently
@@ -2399,7 +2426,32 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
         // there. Factory-fresh NTAG user memory reads as zeros, and an NDEF
         // TLV declaring a zero-length message carries nothing; nothing else
         // counts as blank.
-        if (ot3d_user_memory_is_blank(pageData, bytesRead)) return OT3D_TARGET_BLANK;
+        if (ot3d_user_memory_is_blank(pageData, bytesRead)) {
+            // The first window (pages 4-13) reads empty, but a Type 2 tag may
+            // legally hold NULL TLV padding there and its real record later
+            // (#316) — blank is only provable by proving every page a write
+            // could touch is empty. An unmeasured size can't prove that.
+            if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) {
+                Serial.println("NFCManager: OT3D classify - tag size not measured for selected tag, cannot prove blank");
+                return OT3D_TARGET_UNREADABLE;
+            }
+            uint16_t limitPage = writablePageLimit();
+            uint8_t chunk[64];
+            for (uint16_t page = 14; page < limitPage; page += 16) {
+                uint16_t remaining = limitPage - page;
+                uint8_t pagesToRead = remaining < 16 ? (uint8_t)remaining : 16;
+                uint16_t chunkBytes = connection_->readISO14443Pages((uint8_t)page, pagesToRead, chunk, sizeof(chunk), true);
+                if (chunkBytes < (uint16_t)pagesToRead * 4) {
+                    Serial.printf("NFCManager: OT3D classify - page read failed at page %u\n", (unsigned)page);
+                    return OT3D_TARGET_UNREADABLE;
+                }
+                if (!ot3d_region_is_zero(chunk, chunkBytes)) {
+                    Serial.printf("NFCManager: OT3D classify - data found past the first window at page %u; not blank\n", (unsigned)page);
+                    return OT3D_TARGET_UNREADABLE;
+                }
+            }
+            return OT3D_TARGET_BLANK;
+        }
         Serial.println("NFCManager: OT3D classify - data present but no readable record");
         return OT3D_TARGET_UNREADABLE;
     }
@@ -3124,6 +3176,7 @@ if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     currentSpool.kind = TagKind::BlankTag;
     currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — a previous ISO14443 tag's
     currentSpool.cc_user_end = 0;                 // identity must not leak into size gates
+    capacityUidHex_[0] = '\0';
     memcpy(lastSeenUid, uid, uidLength);
     lastSeenUidLength = uidLength;
     lastSeenValid = true;
@@ -3146,6 +3199,7 @@ if (blankStateCaptured) {
             currentSpool.present = false;
             currentSpool.blank_tag_present = false;
             currentSpool.cc_user_end = 0;
+            capacityUidHex_[0] = '\0';
             lastSeenValid = false;
 
             // Clear suppression if tag removed

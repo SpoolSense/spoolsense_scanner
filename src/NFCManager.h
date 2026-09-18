@@ -190,6 +190,10 @@ private:
     // to the user need to tell "tag removed" from "reader busy" (#316 review).
     bool validateWriteUid(const char* expectedUid, const char* writeType, bool* outTimedOut = nullptr);
     bool checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const char* writeType);
+    // Shared page-count ceiling for checkWriteCapacity() and the
+    // classifyOpenTag3DTarget() blank-region scan, so their fallback for an
+    // unidentified variant with no CC (#316) cannot drift apart.
+    uint16_t writablePageLimit() const;
     bool executeTigerTagWrite(const NFCWriteRequest& request);
     bool verifyISO14443Readback(uint8_t startPage, uint8_t pageCount, const uint8_t* expected);
     bool tigertagVerifyAndFinish(const NFCWriteRequest& request, const char* how);
@@ -231,6 +235,12 @@ private:
     // currentSpool.spool_id this is refreshed even when the cooldown dedup
     // skips handleNewTag(), which is the whole point of #276.
     char selectedUidHex_[17] = {0};
+    // UID hex of the tag currentSpool.variant/cc_user_end were measured for.
+    // Set only where those two are assigned from a fresh scan, cleared
+    // everywhere they're reset to Unknown/0 — checkWriteCapacity() and
+    // classifyOpenTag3DTarget() must refuse to trust a size that wasn't
+    // measured for the tag now selected (#316).
+    char capacityUidHex_[17] = {0};
     uint8_t absentMisses_ = 0;               // consecutive failed detects while a tag was present
     static constexpr uint8_t TAG_ABSENT_MISS_THRESHOLD = 3;  // ~150ms at 50ms poll before declaring removal
 

@@ -44,6 +44,15 @@ int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len) {
     return 1;
 }
 
+int ot3d_region_is_zero(const uint8_t *data, uint16_t len) {
+    if (data == 0 || len == 0) return 0;
+
+    for (uint16_t i = 0; i < len; i++) {
+        if (data[i] != 0x00) return 0;
+    }
+    return 1;
+}
+
 /* version/1000 >= 2 is the v2 field map (layout 2); everything else,
  * including legacy version 0, is the v1 map (layout 1). */
 static int ot3d_layout(uint16_t version) {
