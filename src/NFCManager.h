@@ -101,7 +101,9 @@ public:
 
     bool getCurrentSpoolState(CurrentSpoolState& out);
     bool getLastTigerTagData(TigerTagData& out);
-    bool getLastOpenTag3DData(opentag3d_t& out);
+    // payloadLenOut, when given, receives the declared byte length of the
+    // record this data was decoded from (0 if no tag has been scanned yet).
+    bool getLastOpenTag3DData(opentag3d_t& out, uint16_t* payloadLenOut = nullptr);
     bool getLastOpenSpoolData(OpenSpoolData& out);
     bool getLastBambuTagData(BambuTagData& out);
     // Returns reader identification string (e.g. "PN5180 v3.4", "PN532 v1.6")
@@ -256,6 +258,7 @@ private:
     // Last parsed OpenTag3D data (retained for /api/status)
     opentag3d_t lastOpenTag3D_;
     bool lastOpenTag3DValid_ = false;
+    uint16_t lastOpenTag3DPayloadLen_ = 0;  // declared record length behind lastOpenTag3D_
     OpenSpoolData lastOpenSpool_;
     bool lastOpenSpoolValid_ = false;
     BambuTagData lastBambuTag_;

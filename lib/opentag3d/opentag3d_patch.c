@@ -1,4 +1,5 @@
 #include <string.h>
+#include <math.h>
 #include "opentag3d_patch.h"
 
 #define APPLY(field_id, stmt) do { if (ot3d_mask_get(mask, field_id)) { stmt; } } while (0)
@@ -65,3 +66,31 @@ void opentag3d_apply_patch(opentag3d_t *base, const opentag3d_t *patch, uint64_t
 
 int opentag3d_patch_touches_extended(uint64_t mask) { return (mask & OT3D_EXT_FIELD_MASK) ? 1 : 0; }
 int opentag3d_patch_touches_v2_only(uint64_t mask)  { return (mask & OT3D_V2_ONLY_FIELD_MASK) ? 1 : 0; }
+
+int opentag3d_apply_deduction(opentag3d_t *tag, float grams, float *applied_out) {
+    if (applied_out) *applied_out = 0.0f;
+    if (!tag || grams <= 0.0f) return 0;
+
+    /* v2 defines the weight field as the nominal spool size — with no
+     * measured weight there is nothing safe to deduct from. */
+    if (opentag3d_major(tag->tag_version) >= 2 && tag->measured_filament_weight_g == 0) return 0;
+
+    float remaining = (tag->measured_filament_weight_g > 0)
+                      ? tag->measured_filament_weight_g
+                      : (float)tag->target_weight_g;
+    float deduction = (grams > remaining) ? remaining : grams;
+
+    /* Subtract from the weight field the tag uses (round to avoid truncation loss) */
+    if (tag->measured_filament_weight_g > 0) {
+        int newMeasured = (int)lroundf(tag->measured_filament_weight_g - deduction);
+        /* Floor at 1 g: measured==0 reads as "never measured" (nominal) on the
+         * next scan, which would freeze the Spoolman weight sync for this tag. */
+        tag->measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 1;
+    } else {
+        int newTarget = (int)lroundf(tag->target_weight_g - deduction);
+        tag->target_weight_g = (newTarget > 0) ? (uint16_t)newTarget : 0;
+    }
+
+    if (applied_out) *applied_out = deduction;
+    return 1;
+}

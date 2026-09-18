@@ -354,6 +354,121 @@ int main(void) {
               "K: target_weight_g alone stays core-only");
     }
 
+    /* L: opentag3d_apply_deduction — the arithmetic DeductionManager used to
+     * own directly, now shared with the WRITE_OPENTAG3D executor so a
+     * deduction can be applied to a freshly-read baseline (#320). */
+    {
+        /* L1: v2 measured weight takes the deduction; target is untouched. */
+        {
+            opentag3d_t tag;
+            build_rich_baseline(&tag);
+            tag.tag_version = 2003;
+            tag.measured_filament_weight_g = 800;
+            tag.target_weight_g = 1000;
+            float applied = -1.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 1, "L1: deduction applied");
+            CHECK(tag.measured_filament_weight_g == 750, "L1: measured reduced");
+            CHECK(tag.target_weight_g == 1000, "L1: target untouched");
+            CHECK(applied == 50.0f, "L1: applied grams reported");
+        }
+
+        /* L2: deduction clamps at what's on the tag; measured floors at 1g,
+         * never 0 — 0 reads back as "never measured" on the next scan. */
+        {
+            opentag3d_t tag;
+            build_rich_baseline(&tag);
+            tag.tag_version = 2003;
+            tag.measured_filament_weight_g = 30;
+            float applied = -1.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 1, "L2: deduction applied");
+            CHECK(tag.measured_filament_weight_g == 1, "L2: measured floors at 1g");
+            CHECK(applied == 30.0f, "L2: applied capped at remaining");
+        }
+
+        /* L3: v1 with no measured weight deducts from target weight instead. */
+        {
+            opentag3d_t tag;
+            build_rich_baseline(&tag);
+            tag.tag_version = 1003;
+            tag.measured_filament_weight_g = 0;
+            tag.target_weight_g = 1000;
+            float applied = -1.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 1, "L3: deduction applied");
+            CHECK(tag.target_weight_g == 950, "L3: target reduced");
+            CHECK(applied == 50.0f, "L3: applied grams reported");
+        }
+
+        /* L4: target weight floors at 0. */
+        {
+            opentag3d_t tag;
+            build_rich_baseline(&tag);
+            tag.tag_version = 1003;
+            tag.measured_filament_weight_g = 0;
+            tag.target_weight_g = 20;
+            float applied = -1.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 1, "L4: deduction applied");
+            CHECK(tag.target_weight_g == 0, "L4: target floors at 0");
+            CHECK(applied == 20.0f, "L4: applied capped at remaining");
+        }
+
+        /* L5: v2 with no measured weight refuses outright — that field is the
+         * nominal spool size on v2, not a consumable — and touches nothing. */
+        {
+            opentag3d_t tag, before;
+            build_rich_baseline(&tag);
+            tag.tag_version = 2003;
+            tag.measured_filament_weight_g = 0;
+            before = tag;
+            float applied = 123.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 0,
+                  "L5: v2 with no measured weight refuses");
+            CHECK(memcmp(&tag, &before, sizeof(tag)) == 0, "L5: struct byte-identical after refusal");
+            CHECK(applied == 0.0f, "L5: applied_out zeroed on refusal");
+        }
+
+        /* L6: non-positive grams refuse without touching the tag. */
+        {
+            opentag3d_t tag, before;
+            build_rich_baseline(&tag);
+            before = tag;
+            CHECK(opentag3d_apply_deduction(&tag, 0.0f, NULL) == 0, "L6: zero grams refuses");
+            CHECK(memcmp(&tag, &before, sizeof(tag)) == 0, "L6: struct unchanged after zero grams");
+            CHECK(opentag3d_apply_deduction(&tag, -5.0f, NULL) == 0, "L6: negative grams refuses");
+            CHECK(memcmp(&tag, &before, sizeof(tag)) == 0, "L6: struct unchanged after negative grams");
+        }
+
+        /* L7: NULL applied_out is accepted. */
+        {
+            opentag3d_t tag;
+            build_rich_baseline(&tag);
+            tag.tag_version = 2003;
+            tag.measured_filament_weight_g = 800;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, NULL) == 1, "L7: NULL applied_out accepted");
+        }
+
+        /* L8: every field other than the one weight field survives. */
+        {
+            opentag3d_t tag, before, expected;
+            build_rich_baseline(&tag);
+            tag.tag_version = 2003;
+            tag.measured_filament_weight_g = 800;
+            before = tag;
+            float applied = 0.0f;
+            CHECK(opentag3d_apply_deduction(&tag, 50.0f, &applied) == 1, "L8: deduction applied");
+            expected = before;
+            expected.measured_filament_weight_g = 750;
+            CHECK(memcmp(&tag, &expected, sizeof(tag)) == 0, "L8: only the weight field changed");
+        }
+    }
+
+    /* M: a zeroed envelope (the web handler's memset) defaults to applying
+     * masked fields, not a deduction. */
+    {
+        ot3d_patch_t patch;
+        memset(&patch, 0, sizeof(patch));
+        CHECK(patch.op == OT3D_OP_FIELDS, "M: zeroed envelope defaults to OT3D_OP_FIELDS");
+    }
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

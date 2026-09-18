@@ -149,11 +149,12 @@ bool NFCManager::getLastTigerTagData(TigerTagData& out) {
     return valid;
 }
 
-bool NFCManager::getLastOpenTag3DData(opentag3d_t& out) {
+bool NFCManager::getLastOpenTag3DData(opentag3d_t& out, uint16_t* payloadLenOut) {
     if (tagMutex == nullptr) return false;
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
     bool valid = lastOpenTag3DValid_;
     if (valid) out = lastOpenTag3D_;
+    if (payloadLenOut) *payloadLenOut = valid ? lastOpenTag3DPayloadLen_ : 0;
     xSemaphoreGive(tagMutex);
     return valid;
 }
@@ -409,6 +410,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
     TigerTagData tigerData;
     OpenSpoolData openSpoolData;
     opentag3d_t ot3dData;
+    uint16_t ot3dPayloadBytes = 0;
     memset(&tigerData, 0, sizeof(tigerData));
     memset(&ot3dData, 0, sizeof(ot3dData));
 
@@ -448,6 +450,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                     opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
+                        ot3dPayloadBytes = payloadBytes;
                         if (res == OT3D_VERSION_WARNING) {
                             uint16_t known = (opentag3d_major(ot3dData.tag_version) >= 2)
                                              ? OT3D_SUPPORTED_V2 : OT3D_SUPPORTED_V1;
@@ -505,6 +508,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             lastTigerTag_ = tigerData;
             lastTigerTagValid_ = true;
             lastOpenTag3DValid_ = false;
+            lastOpenTag3DPayloadLen_ = 0;
             Serial.printf("NFCManager: TigerTag detected — %s %s %s\n",
                           tigerData.brand_name, tigerData.material_name, tigerData.aspect1_name);
             LogBuffer::getInstance().logPrintf("TigerTag: %s %s %s\n",
@@ -514,6 +518,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             currentSpool.tag_data_valid = false;
             lastOpenTag3D_ = ot3dData;
             lastOpenTag3DValid_ = true;
+            lastOpenTag3DPayloadLen_ = ot3dPayloadBytes;
             lastTigerTagValid_ = false;
             lastOpenSpoolValid_ = false;
             Serial.printf("NFCManager: OpenTag3D detected — %s %s %.2fmm %ug\n",
@@ -529,6 +534,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             lastOpenSpoolValid_ = true;
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
+            lastOpenTag3DPayloadLen_ = 0;
             Serial.printf("NFCManager: OpenSpool detected — %s %s #%s\n",
                           openSpoolData.brand, openSpoolData.material, openSpoolData.color_hex);
             LogBuffer::getInstance().logPrintf("OpenSpool: %s %s #%s\n",
@@ -538,6 +544,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             currentSpool.tag_data_valid = false;
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
+            lastOpenTag3DPayloadLen_ = 0;
             lastOpenSpoolValid_ = false;
         }
         xSemaphoreGive(tagMutex);
@@ -645,6 +652,7 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
             if (readOk) lastBambuTag_ = bambuData;
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
+            lastOpenTag3DPayloadLen_ = 0;
             lastOpenSpoolValid_ = false;
             memcpy(lastSeenUid, uid, uidLength);
             lastSeenUidLength = uidLength;
@@ -732,6 +740,7 @@ void NFCManager::handleTagAbsent() {
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
+    lastOpenTag3DPayloadLen_ = 0;
     suppressReDetection_ = false;       // allow fresh detection on next tag
     suppressReDetectionUid_[0] = '\0';
     clearSelectedUid();                 // no tag selected — bound writes fail closed
@@ -2495,35 +2504,51 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    // Exactly two staged shapes exist: the ot3d_patch_t envelope (web UI) and
-    // the bare opentag3d_t (DeductionManager). A future struct change that
-    // made the two sizes collide would silently misroute one as the other.
-    static_assert(sizeof(ot3d_patch_t) != sizeof(opentag3d_t),
-                  "OpenTag3D patch envelope must not collide with the bare struct size");
-
-    ot3d_patch_t patch;
-    opentag3d_t ot3d;
-    bool isPatch = false;
-    if (localSize == sizeof(ot3d_patch_t)) {
-        memcpy(&patch, localBuf, sizeof(patch));
-        if (patch.magic != OT3D_PATCH_MAGIC) {
-            Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
-            OT3D_SET_ERR("bad envelope");
-            return false;
-        }
-        isPatch = true;
-    } else if (localSize == sizeof(opentag3d_t)) {
-        // DeductionManager still queues a bare, complete struct with its own
-        // version. Leave that path exactly as it was.
-        memcpy(&ot3d, localBuf, sizeof(ot3d));
-    } else {
+    // Exactly one staged shape exists now: the ot3d_patch_t envelope. A bare
+    // opentag3d_t (DeductionManager's old shape) is just an unrecognized size.
+    if (localSize != sizeof(ot3d_patch_t)) {
         Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u - refusing write\n",
                       (unsigned)localSize);
         OT3D_SET_ERR("bad payload size");
         return false;
     }
 
-    if (isPatch) {
+    ot3d_patch_t patch;
+    memcpy(&patch, localBuf, sizeof(patch));
+    if (patch.magic != OT3D_PATCH_MAGIC) {
+        Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
+        OT3D_SET_ERR("bad envelope");
+        return false;
+    }
+
+    opentag3d_t ot3d;
+    if (patch.op == OT3D_OP_DEDUCT) {
+        // A deduction only ever adjusts the weight field of a tag already
+        // written — never creates or replaces one — and always against a
+        // fresh read, so a racing web patch can't be undone by a stale
+        // DeductionManager cache (#320).
+        opentag3d_t baseline;
+        ot3d_target_state_t target = classifyOpenTag3DTarget(baseline);
+        if (target != OT3D_TARGET_WRITTEN) {
+            Serial.printf("NFCManager: WRITE_OPENTAG3D - deduct refused, target state %d\n", (int)target);
+            LogBuffer::getInstance().logPrintf("Write OpenTag3D: REFUSED (deduct target not writable)\n");
+            OT3D_SET_ERR("tag unreadable");
+            return false;
+        }
+        if (!opentag3d_can_encode(baseline.tag_version)) {
+            Serial.printf("NFCManager: WRITE_OPENTAG3D - cannot re-encode version %u\n", baseline.tag_version);
+            OT3D_SET_ERR("unsupported version");
+            return false;
+        }
+
+        ot3d = baseline;
+        float applied = 0.0f;
+        if (!opentag3d_apply_deduction(&ot3d, patch.deduct_grams, &applied)) {
+            OT3D_SET_ERR("no weight to deduct");
+            return false;
+        }
+        Serial.printf("NFCManager: WRITE_OPENTAG3D - deducted %.1fg from tag\n", applied);
+    } else if (patch.op == OT3D_OP_FIELDS) {
         // The request's mode is advisory. The browser's idea of what is on the
         // reader can be stale, absent, or from a different tag; the tag itself
         // cannot be. So read the target and let it decide: a written tag is
@@ -2590,6 +2615,10 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             // and a core-only v1 grows only if an extended field was actually set.
             ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_PRESERVE, patch.mask, baselineExtended);
         }
+    } else {
+        Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized op %u - refusing write\n", (unsigned)patch.op);
+        OT3D_SET_ERR("bad envelope");
+        return false;
     }
 
     size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE

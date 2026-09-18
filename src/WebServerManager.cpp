@@ -1545,10 +1545,15 @@ void WebServerManager::serializeTigerTagStatus(JsonDocument& doc) {
 
 void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     opentag3d_t ot3d;
-    if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d)) return;
+    uint16_t payloadLen = 0;
+    if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d, &payloadLen)) return;
 
     JsonObject obj = doc["opentag3d"].to<JsonObject>();
     obj["tag_version"] = ot3d.tag_version;
+    // A tag this build can re-encode, at a length it can rewrite without
+    // dropping data — the same test the write path applies before touching it.
+    obj["writable"] = opentag3d_can_encode(ot3d.tag_version) &&
+                       opentag3d_is_canonical_len(ot3d.tag_version, payloadLen);
     obj["base_material"] = ot3d.base_material;
     if (ot3d.material_modifiers[0]) obj["modifiers"] = ot3d.material_modifiers;
     obj["manufacturer"] = ot3d.manufacturer;
