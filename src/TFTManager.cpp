@@ -579,7 +579,7 @@ void TFTManager::drawSpool240(LGFX_Sprite& canvas, int yOffset, const DisplaySpo
 // yOffset lets one call fill a strip band; rows outside the canvas are skipped.
 void TFTManager::drawSpoolImage(LGFX_Sprite& canvas, int cx, int cy, uint32_t tint, int yOffset,
                                 int size) {
-    const int w = size > 0 ? size : SPOOL_IMG_W;
+    const int w = size > 0 ? size : SPOOL_IMG_DEFAULT_DRAW;
     const int h = w;  // square source
     const int x0 = cx - w / 2, y0 = cy - h / 2;
     const int cr = (tint >> 16) & 0xFF, cg = (tint >> 8) & 0xFF, cb = tint & 0xFF;
