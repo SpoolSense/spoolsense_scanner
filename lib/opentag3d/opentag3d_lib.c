@@ -357,9 +357,11 @@ static int opentag3d_encode_v2(const opentag3d_t *tag, uint8_t *buf, size_t bufl
     write_u16(buf + OT3D_V2_OFF_MEASURED_LENGTH, tag->measured_filament_length_m);
     write_u16(buf + OT3D_V2_OFF_MEASURED_WEIGHT, tag->measured_filament_weight_g);
     buf[OT3D_V2_OFF_SPOOL_CORE_DIAMETER] = tag->spool_core_diameter_mm;
-    /* transmission_distance is uint16_t in the struct but 1 byte on-tag; the
-     * spec caps TD at 25.0mm (250), so clamp to avoid silent byte truncation. */
-    buf[OT3D_V2_OFF_TD] = (uint8_t)(tag->transmission_distance > 250 ? 250 : tag->transmission_distance);
+    /* transmission_distance is uint16_t in the struct — v1 stores TD across
+     * two bytes — but 1 byte on-tag in v2. The spec defines no maximum, so on
+     * a v1->v2 replace clamp to what the byte can hold rather than truncate
+     * silently; a v2 round trip never exceeds 255 to begin with. */
+    buf[OT3D_V2_OFF_TD] = (uint8_t)(tag->transmission_distance > 255 ? 255 : tag->transmission_distance);
     buf[OT3D_V2_OFF_MFI_TEMP] = tag->mfi_temp_encoded;
     buf[OT3D_V2_OFF_MFI_LOAD] = tag->mfi_load;
     buf[OT3D_V2_OFF_MFI_VALUE] = tag->mfi_value;

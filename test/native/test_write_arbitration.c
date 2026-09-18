@@ -124,22 +124,58 @@ int main(void) {
 
     /* F: the version to encode is resolved from the DECISION, never from the
      * mode the request arrived with. Minting a version when the request was
-     * parsed converts a tag that the arbitration then rules a merge onto. */
-    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 1003) == 1003,
-          "F: merge with no requested version keeps the tag's v1 version");
-    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 2003) == 2003,
-          "F: merge with no requested version keeps the tag's v2 version");
-    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 2003, 1003) == 2003,
-          "F: an explicitly requested version is still an explicit conversion");
-    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 0, 0) == OT3D_SUPPORTED_VERSION,
-          "F: replace with no requested version mints the supported one");
-    CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 1003, 0) == 1003,
-          "F: replace honours an explicitly requested version");
+     * parsed converts a tag that the arbitration then rules a merge onto.
+     * A merge that would also change the tag's layout (version/1000 >= 2 is
+     * layout 2, else layout 1) rewrites the whole field map — that is a
+     * replace in disguise, so it is refused rather than resolved. */
+    {
+        uint16_t v;
+
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 1003, &v) == 1 && v == 1003,
+              "F: merge with no requested version keeps the tag's v1 version");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 2003, &v) == 1 && v == 2003,
+              "F: merge with no requested version keeps the tag's v2 version");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 0, 0, &v) == 1 && v == 0,
+              "F: merge with no requested version keeps a legacy v0 baseline");
+
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 2003, 2000, &v) == 1 && v == 2003,
+              "F: merge restamp within layout 2 (2000 -> 2003) resolves");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 1003, 0, &v) == 1 && v == 1003,
+              "F: merge restamp of a legacy v0 baseline to v1 resolves (both layout 1)");
+
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 1003, 2003, &v) == 0,
+              "F: merge, v2 baseline + requested v1 -> layout change refused");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 2003, 1003, &v) == 0,
+              "F: merge, v1 baseline + requested v2 -> layout change refused");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_MERGE, 2000, 0, &v) == 0,
+              "F: merge, legacy v0 baseline + requested v2 -> layout change refused");
+
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 0, 0, &v) == 1 && v == OT3D_SUPPORTED_VERSION,
+              "F: replace with no requested version mints the supported one");
+        v = 0xFFFF;
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 1003, 0, &v) == 1 && v == 1003,
+              "F: replace honours an explicitly requested version");
+
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REFUSE, 1003, 1003, &v) == 0,
+              "F: a REFUSE decision never resolves a version");
+        CHECK(ot3d_resolve_write_version(OT3D_DECIDE_REPLACE, 1003, 0, NULL) == 0,
+              "F: a NULL out_version is refused, not crashed on");
+    }
     {
         /* The reported defect end to end: mode=replace, no tag_version, a
          * written v1 tag. Arbitration rules MERGE, so nothing may convert it. */
         ot3d_write_decision_t d = ot3d_decide_write(OT3D_TARGET_WRITTEN, 1, 0);
-        CHECK(d == OT3D_DECIDE_MERGE && ot3d_resolve_write_version(d, 0, 1003) == 1003,
+        uint16_t v = 0xFFFF;
+        CHECK(d == OT3D_DECIDE_MERGE && ot3d_resolve_write_version(d, 0, 1003, &v) == 1 && v == 1003,
               "F: a replace-mode request ruled MERGE must not convert a v1 tag");
     }
 

@@ -2427,7 +2427,13 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             // The handler no longer mints a version, because the request it
             // parsed can be ruled a merge here. Stamp the supported one only
             // now, when this write really is creating the tag's content.
-            ot3d.tag_version = ot3d_resolve_write_version(decision, patch.values.tag_version, 0);
+            uint16_t resolvedVersion = 0;
+            if (!ot3d_resolve_write_version(decision, patch.values.tag_version, 0, &resolvedVersion)) {
+                // Can't happen for REPLACE, but never encode with a stale version.
+                OT3D_SET_ERR("version unresolved");
+                return false;
+            }
+            ot3d.tag_version = resolvedVersion;
             // The handler never sets has_extended — it is a layout decision,
             // not a field. A v1 replace carrying any extended value must emit
             // the 187-byte map, or every extended value the caller supplied is
@@ -2451,7 +2457,13 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             opentag3d_apply_patch(&ot3d, &patch.values, patch.mask);
 
             // Version changes are an explicit conversion, never a side effect.
-            ot3d.tag_version = ot3d_resolve_write_version(decision, patch.values.tag_version, baselineVersion);
+            uint16_t resolvedVersion = 0;
+            if (!ot3d_resolve_write_version(decision, patch.values.tag_version, baselineVersion, &resolvedVersion)) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - version change on a merge needs a confirmed replace");
+                OT3D_SET_ERR("version change needs replace");
+                return false;
+            }
+            ot3d.tag_version = resolvedVersion;
             // An extended v1 tag stays extended even when the edit is core-only,
             // and a core-only v1 grows only if an extended field was actually set.
             ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_PRESERVE, patch.mask, baselineExtended);

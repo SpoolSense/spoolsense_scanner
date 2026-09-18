@@ -44,10 +44,33 @@ int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len) {
     return 1;
 }
 
-uint16_t ot3d_resolve_write_version(ot3d_write_decision_t decision,
-                                    uint16_t requested_version,
-                                    uint16_t baseline_version) {
-    if (requested_version) return requested_version;
-    return (decision == OT3D_DECIDE_REPLACE) ? (uint16_t)OT3D_SUPPORTED_VERSION
-                                             : baseline_version;
+/* version/1000 >= 2 is the v2 field map (layout 2); everything else,
+ * including legacy version 0, is the v1 map (layout 1). */
+static int ot3d_layout(uint16_t version) {
+    return (opentag3d_major(version) >= 2) ? 2 : 1;
+}
+
+int ot3d_resolve_write_version(ot3d_write_decision_t decision,
+                               uint16_t requested_version,
+                               uint16_t baseline_version,
+                               uint16_t *out_version) {
+    if (out_version == NULL) return 0;
+
+    if (decision == OT3D_DECIDE_REPLACE) {
+        *out_version = requested_version ? requested_version : (uint16_t)OT3D_SUPPORTED_VERSION;
+        return 1;
+    }
+    if (decision != OT3D_DECIDE_MERGE) return 0;
+
+    if (requested_version == 0) {
+        *out_version = baseline_version;
+        return 1;
+    }
+
+    /* A minor restamp inside one layout touches no field offsets; a layout
+     * change rewrites the whole map and needs a confirmed replace instead. */
+    if (ot3d_layout(requested_version) != ot3d_layout(baseline_version)) return 0;
+
+    *out_version = requested_version;
+    return 1;
 }

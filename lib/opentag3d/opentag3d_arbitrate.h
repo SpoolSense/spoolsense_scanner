@@ -42,10 +42,18 @@ int ot3d_user_memory_is_blank(const uint8_t *data, uint16_t len);
  * request, and the same request can be ruled a merge onto a tag that already
  * carries a version, so a version stamped when the request was parsed would
  * silently convert that tag. requested_version is non-zero only when the
- * caller explicitly asked for one, which stays an explicit conversion. */
-uint16_t ot3d_resolve_write_version(ot3d_write_decision_t decision,
-                                    uint16_t requested_version,
-                                    uint16_t baseline_version);
+ * caller explicitly asked for one, which stays an explicit conversion.
+ *
+ * A version's layout is version/1000 >= 2 for layout 2, otherwise layout 1
+ * (legacy version 0 included). A merge that would change layout rewrites the
+ * whole field map — that is a replace, not a merge, so it is refused rather
+ * than resolved. Returns 1 and writes *out_version on success; 0 to refuse,
+ * including when out_version is NULL, since 0 is a legal baseline version
+ * and cannot double as a sentinel. */
+int ot3d_resolve_write_version(ot3d_write_decision_t decision,
+                               uint16_t requested_version,
+                               uint16_t baseline_version,
+                               uint16_t *out_version);
 
 #ifdef __cplusplus
 }

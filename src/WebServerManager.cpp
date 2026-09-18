@@ -2269,7 +2269,14 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     // Absent version means "keep whatever the tag has"; the NFC task mints one
     // only for a write it has decided is a replacement.
     if (doc["tag_version"].is<long long>()) {
-        patch.values.tag_version = (uint16_t)doc["tag_version"].as<long long>();
+        long long rawVersion = doc["tag_version"].as<long long>();
+        // Validate before the narrowing cast — 66539 aliases to 1003 as a
+        // uint16_t, which would silently pass the check below.
+        if (rawVersion < 0 || rawVersion > 65535) {
+            sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
+            return;
+        }
+        patch.values.tag_version = (uint16_t)rawVersion;
         if (!opentag3d_can_encode(patch.values.tag_version)) {
             sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
             return;

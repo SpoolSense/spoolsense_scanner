@@ -458,7 +458,8 @@ int main(void) {
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
     CHECK(n == -1, "N: encode refuses major >= 3 (v3000)");
 
-    /* O: transmission distance clamped to the 25.0mm (250) spec cap. */
+    /* O: transmission distance clamped to what the on-tag byte can hold —
+     * the spec defines no maximum for this field. */
     printf("[O] transmission distance clamp\n");
     memset(&src, 0, sizeof(src));
     src.tag_version = 2000;
@@ -466,7 +467,15 @@ int main(void) {
     n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
     CHECK(n == OT3D_V2_MAP_SIZE, "O: v2 encode returns MAP_SIZE");
     r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
-    CHECK(out.transmission_distance == 250, "O: td 400 clamped to 250");
+    CHECK(out.transmission_distance == 255, "O: td 400 clamped to 255");
+
+    memset(&src, 0, sizeof(src));
+    src.tag_version = 2000;
+    src.transmission_distance = 253;
+    n = opentag3d_encode(&src, buf, OT3D_V2_MAP_SIZE);
+    CHECK(n == OT3D_V2_MAP_SIZE, "O: v2 encode returns MAP_SIZE (no-change case)");
+    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE, &out);
+    CHECK(out.transmission_distance == 253, "O: td 253 round-trips unchanged");
 
     /* P: minor-ahead encode refusal — a struct stamped past the supported
      * ceiling (OT3D_SUPPORTED_V1/V2) carries a layout newer than our
