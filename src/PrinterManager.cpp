@@ -3,6 +3,9 @@
 #include "ApplicationManager.h"
 #include "NFCManager.h"
 #include "NFCTypes.h"
+#ifndef NATIVE_TEST
+#include "WebServerManager.h"
+#endif
 #include <Arduino.h>
 #include <cstring>
 #ifndef NATIVE_TEST
@@ -87,6 +90,9 @@ bool PrinterManager::isConnected() const {
 
 void PrinterManager::poll() {
     if (!strategy_) return;
+#ifndef NATIVE_TEST
+    if (WebServerManager::getInstance().otaExclusive()) return;
+#endif
 
     strategy_->update();
 

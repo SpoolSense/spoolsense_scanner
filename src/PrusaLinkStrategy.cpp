@@ -1,5 +1,6 @@
 #include "PrusaLinkStrategy.h"
 #include "ConfigurationManager.h"
+#include "WebServerManager.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -88,7 +89,7 @@ bool PrusaLinkStrategy::fetchStatus() {
     connected_ = true;
 
     // filter reduces memory footprint (esp32 heap pressure); omit unnecessary fields
-    StaticJsonDocument<64> filter;
+    JsonDocument filter;
     filter["job"]["id"] = true;
     filter["job"]["progress"] = true;
     filter["printer"]["temp_nozzle"] = true;
@@ -97,7 +98,7 @@ bool PrusaLinkStrategy::fetchStatus() {
     filter["printer"]["target_bed"] = true;
     filter["printer"]["state"] = true;
 
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
 
@@ -107,7 +108,9 @@ bool PrusaLinkStrategy::fetchStatus() {
     }
 
     JsonObject job = doc["job"];
-    if (!job.isNull() && job.containsKey("id")) {
+    // ArduinoJson 7's migration guide directly recommends is<JsonVariant>()
+    // when replacing containsKey() while preserving presence-only semantics.
+    if (!job.isNull() && job["id"].is<JsonVariant>()) {
         jobId_ = job["id"].as<int>();
         progress_ = job["progress"] | 0.0f;
         hasJob_ = true;
@@ -138,12 +141,12 @@ void PrusaLinkStrategy::fetchInfo() {
         return;  // retry next poll cycle
     }
 
-    StaticJsonDocument<64> filter;
+    JsonDocument filter;
     filter["mmu"] = true;
     filter["nozzle_diameter"] = true;
     filter["name"] = true;
 
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
 
@@ -188,7 +191,7 @@ bool PrusaLinkStrategy::fetchJob() {
     }
 
     // filter reduces memory; omit unnecessary metadata
-    StaticJsonDocument<256> filter;
+    JsonDocument filter;
     filter["state"] = true;
     filter["file"]["meta"]["filament used [g]"] = true;
     filter["file"]["meta"]["filament_type"] = true;
@@ -198,7 +201,7 @@ bool PrusaLinkStrategy::fetchJob() {
     filter["file"]["meta"]["filament used [g] per tool"] = true;
     filter["file"]["meta"]["filament_type per tool"] = true;
 
-    StaticJsonDocument<768> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
     http.end();
 
@@ -277,10 +280,19 @@ float PrusaLinkStrategy::fetchDeferredFilament(int expectedJobId) {
             vTaskDelay(pdMS_TO_TICKS(attempt * 1000));
         }
 
+        // An OTA that started during the unlocked backoff would otherwise see
+        // this retry re-acquire the drained mutex and run HTTP mid-download.
+        if (WebServerManager::getInstance().otaExclusive()) break;
+
         // acquire mutex only for this HTTP call, not for entire attempt sequence
         if (httpMutex_ != nullptr) {
             if (xSemaphoreTake(httpMutex_, pdMS_TO_TICKS(10000)) != pdTRUE) {
                 continue;
+            }
+            if (WebServerManager::getInstance().otaExclusive()) {
+                // OTA started during the unlocked backoff or the mutex wait.
+                xSemaphoreGive(httpMutex_);
+                break;
             }
         }
 
@@ -296,10 +308,10 @@ float PrusaLinkStrategy::fetchDeferredFilament(int expectedJobId) {
 
         int code = http.GET();
         if (code == 200) {
-            StaticJsonDocument<64> filter;
+            JsonDocument filter;
             filter["file"]["meta"]["filament used [g]"] = true;
 
-            StaticJsonDocument<256> doc;
+            JsonDocument doc;
             if (!deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter))) {
                 float filGrams = doc["file"]["meta"]["filament used [g]"] | 0.0f;
                 if (filGrams > 0.0f) {

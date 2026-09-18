@@ -13,13 +13,14 @@
 #ifndef NATIVE_TEST
 #include <Preferences.h>
 #endif
+#ifndef NATIVE_TEST
+#include <esp_heap_caps.h>
+#endif
 #include <cmath>
+#include "SpoolCacheJson.h"
 #include "openprinttag_lib.h"
 #include "LogBuffer.h"
-
-static constexpr size_t JSON_SMALL_CAPACITY = 256;
-static constexpr size_t JSON_MEDIUM_CAPACITY = 768;
-static constexpr size_t JSON_LARGE_CAPACITY = 2048;
+#include "WebServerManager.h"
 
 using namespace io;
 using namespace json;
@@ -34,6 +35,21 @@ static bool readIntValue(json_reader& reader, int& outValue) {
     }
     if (reader.value_type() == json_value_type::real) {
         outValue = static_cast<int>(reader.value_real());
+        return true;
+    }
+    return false;
+}
+
+static bool readFloatValue(json_reader& reader, float& outValue) {
+    if (reader.node_type() != json_node_type::value) {
+        return false;
+    }
+    if (reader.value_type() == json_value_type::integer) {
+        outValue = static_cast<float>(reader.value_int());
+        return true;
+    }
+    if (reader.value_type() == json_value_type::real) {
+        outValue = static_cast<float>(reader.value_real());
         return true;
     }
     return false;
@@ -506,7 +522,7 @@ static bool ensureExtraFields() {
             // Field missing — create it via POST /api/v1/field/{entity}/{key}
             char createPath[64];
             snprintf(createPath, sizeof(createPath), "/api/v1/field/%s/%s", f.entity, f.key);
-            StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+            JsonDocument doc;
             doc["name"] = f.name;
             doc["field_type"] = "text";
             // nfc_id needs a default empty value for Spoolman queries
@@ -567,7 +583,7 @@ static int findOrCreateVendor(const char* name) {
 
     // Definitive miss — create new vendor
     int code;
-    StaticJsonDocument<JSON_SMALL_CAPACITY> createDoc;
+    JsonDocument createDoc;
     createDoc["name"] = name;
     String body;
     serializeJson(createDoc, body);
@@ -779,10 +795,10 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
                 String filResp;
                 int filCode = httpGet(filPath, filResp);
                 if (filCode == 200) {
-                    DynamicJsonDocument filDoc(2048);
+                    JsonDocument filDoc;
                     if (deserializeJson(filDoc, filResp) == DeserializationError::Ok) {
                         bool hasUpdate = false;
-                        StaticJsonDocument<JSON_SMALL_CAPACITY> patchDoc;
+                        JsonDocument patchDoc;
 
                         int existingExtruder = filDoc["settings_extruder_temp"] | 0;
                         int16_t extruderAvg = avgTemp(req.min_print_temp, req.max_print_temp);
@@ -809,7 +825,9 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
                         // Fill blank extra fields (aspect, dry temps)
                         JsonObject existingExtra = filDoc["extra"].as<JsonObject>();
                         bool extraChanged = false;
-                        JsonObject patchExtra = patchDoc.createNestedObject("extra");
+                        // ArduinoJson 7's migration guide directly recommends
+                        // member.to<JsonObject>() instead of createNestedObject().
+                        JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
 
                         // Preserve existing extras
                         if (!existingExtra.isNull()) {
@@ -860,7 +878,7 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
 
     // Create new filament
 
-    StaticJsonDocument<JSON_MEDIUM_CAPACITY> createDoc;
+    JsonDocument createDoc;
     // Name formula: "material aspect" (e.g. "PLA Silk") or just "PLA" when no aspect
     createDoc["name"] = filamentName;
     createDoc["vendor_id"] = vendorId;
@@ -877,7 +895,7 @@ static int findOrCreateFilament(int vendorId, const SpoolmanSyncRequest& req) {
     if (bedAvg > 0) createDoc["settings_bed_temp"] = bedAvg;
 
     // Extra fields — Spoolman requires values as JSON-encoded strings ("\"value\"")
-    JsonObject filExtra = createDoc.createNestedObject("extra");
+    JsonObject filExtra = createDoc["extra"].to<JsonObject>();
     if (req.aspect[0] != '\0') {
         char buf[32]; snprintf(buf, sizeof(buf), "\"%s\"", req.aspect);
         filExtra["aspect"] = buf;
@@ -913,7 +931,7 @@ static int createSpool(int filamentId, const SpoolmanSyncRequest& req) {
     char colorHex[7];
     snprintf(colorHex, sizeof(colorHex), "%02X%02X%02X", req.color[0], req.color[1], req.color[2]);
 
-    StaticJsonDocument<JSON_MEDIUM_CAPACITY> doc;
+    JsonDocument doc;
     doc["filament_id"] = filamentId;
     // Spoolman 0.23.x rejects weight fields with value 0 — omit when not set
     if (req.remaining_weight_g > 0) doc["remaining_weight"] = req.remaining_weight_g;
@@ -923,7 +941,7 @@ static int createSpool(int filamentId, const SpoolmanSyncRequest& req) {
     // Spoolman expects extra field values to be valid JSON — wrap the string in quotes
     char nfcIdJson[34];
     snprintf(nfcIdJson, sizeof(nfcIdJson), "\"%s\"", req.spool_id);
-    JsonObject spoolExtra = doc.createNestedObject("extra");
+    JsonObject spoolExtra = doc["extra"].to<JsonObject>();
     spoolExtra["nfc_id"] = nfcIdJson;
     if (req.tag_format[0] != '\0') {
         char buf[32]; snprintf(buf, sizeof(buf), "\"%s\"", req.tag_format);
@@ -1000,8 +1018,8 @@ static void clearNfcIdFromOtherSpools(const char* uuid, int keepSpoolId) {
         const char* nfcId = spool["extra"]["nfc_id"] | "";
         if (strcasecmp(nfcId, uuid) != 0 && strcasecmp(nfcId, quotedUuid) != 0) continue;
 
-        StaticJsonDocument<768> patchDoc;
-        JsonObject patchExtra = patchDoc.createNestedObject("extra");
+        JsonDocument patchDoc;
+        JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
         for (JsonPair kv : spool["extra"].as<JsonObject>()) {
             patchExtra[kv.key()] = kv.value();
         }
@@ -1024,7 +1042,7 @@ static void clearNfcIdFromOtherSpools(const char* uuid, int keepSpoolId) {
 }
 
 static bool archiveSpool(int spoolId) {
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     doc["archived"] = true;
 
     String body;
@@ -1125,7 +1143,7 @@ static SpoolReconcileAction reconcileSpool(int existingSpoolId,
 }
 
 static bool updateSpool(int spoolId, int filamentId, float remainingWeight) {
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     // Only send remaining_weight when the tag actually has weight data.
     // Sending 0 would overwrite Spoolman's tracked weight for non-writable tags.
     if (remainingWeight > 0.0f) {
@@ -1464,11 +1482,64 @@ void SpoolmanManager::taskFunc(void* param) {
     self->taskLoop();
 }
 
+void SpoolmanManager::processSyncRequest(const SpoolmanSyncRequest& req, AppMessage& msg) {
+    if (req.lookup_only) {
+        Serial.printf("SpoolmanManager: lookup %s\n", req.spool_id);
+        SpoolDetails details = {};
+        bool found = lookupSpoolByUid(req.spool_id, details);
+        msg.payload.spoolmanSynced.success = found;
+        msg.payload.spoolmanSynced.spoolman_id = found ? details.spoolman_id : -1;
+        msg.payload.spoolmanSynced.kg_remaining = found ? details.remaining_weight_g / 1000.0f : 0.0f;
+        msg.payload.spoolmanSynced.initial_weight_g = found ? details.initial_weight_g : 0.0f;
+        strncpy(msg.payload.spoolmanSynced.material_name,
+                found ? details.material_type : "",
+                sizeof(msg.payload.spoolmanSynced.material_name) - 1);
+        msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+        strncpy(msg.payload.spoolmanSynced.manufacturer,
+                found ? details.manufacturer : "",
+                sizeof(msg.payload.spoolmanSynced.manufacturer) - 1);
+        msg.payload.spoolmanSynced.manufacturer[sizeof(msg.payload.spoolmanSynced.manufacturer) - 1] = '\0';
+        strncpy(msg.payload.spoolmanSynced.color_hex,
+                found ? details.color_hex : "",
+                sizeof(msg.payload.spoolmanSynced.color_hex) - 1);
+        msg.payload.spoolmanSynced.color_hex[sizeof(msg.payload.spoolmanSynced.color_hex) - 1] = '\0';
+        msg.payload.spoolmanSynced.extruder_temp = found ? details.extruder_temp : 0;
+        msg.payload.spoolmanSynced.bed_temp = found ? details.bed_temp : 0;
+        msg.payload.spoolmanSynced.density = found ? details.density : 0.0f;
+        msg.payload.spoolmanSynced.diameter_mm = found ? details.diameter_mm : 0.0f;
+    } else {
+        Serial.printf("SpoolmanManager: sync %s\n", req.spool_id);
+        int resolvedSpoolmanId = -1;
+        bool success = syncSpool(req, resolvedSpoolmanId);
+        if (success) spoolCacheRefreshRequested_.store(true);
+        msg.payload.spoolmanSynced.success = success;
+        msg.payload.spoolmanSynced.kg_remaining = req.remaining_weight_g / 1000.0f;
+        msg.payload.spoolmanSynced.spoolman_id = resolvedSpoolmanId;
+        strncpy(msg.payload.spoolmanSynced.material_name, req.material_name,
+                sizeof(msg.payload.spoolmanSynced.material_name) - 1);
+        msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+    }
+}
+
 void SpoolmanManager::taskLoop() {
     SpoolmanSyncRequest req;
+    bool otaHoldLogged = false;
     while (true) {
-        if (xQueueReceive(syncQueue, &req, portMAX_DELAY) == pdTRUE) {
+        if (xQueuePeek(syncQueue, &req, pdMS_TO_TICKS(1000)) == pdTRUE) {
             MemoryDiagnostics::reportSelf(MemoryDiagnostics::Task::SpoolmanSync);
+            if (WebServerManager::getInstance().otaExclusive()) {
+                // Leave the request queued: a stationary tag never re-enqueues
+                // (isSkippableDuplicate), so dropping here would lose its sync
+                // after a failed OTA until the tag is lifted.
+                if (!otaHoldLogged) {
+                    Serial.println("SpoolmanManager: OTA hold");
+                    otaHoldLogged = true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
+            }
+            otaHoldLogged = false;
+            xQueueReceive(syncQueue, &req, 0);
             if (!isConfigured()) {
                 continue;
             }
@@ -1482,50 +1553,42 @@ void SpoolmanManager::taskLoop() {
             msg.payload.spoolmanSynced.spool_id[sizeof(msg.payload.spoolmanSynced.spool_id) - 1] = '\0';
             msg.payload.spoolmanSynced.is_uid_lookup = req.lookup_only;
 
-            if (req.lookup_only) {
-                Serial.printf("SpoolmanManager: UID lookup for %s\n", req.spool_id);
-                SpoolDetails details = {};
-                bool found = lookupSpoolByUid(req.spool_id, details);
-                msg.payload.spoolmanSynced.success = found;
-                msg.payload.spoolmanSynced.spoolman_id = found ? details.spoolman_id : -1;
-                msg.payload.spoolmanSynced.kg_remaining = found ? details.remaining_weight_g / 1000.0f : 0.0f;
-                msg.payload.spoolmanSynced.initial_weight_g = found ? details.initial_weight_g : 0.0f;
-                strncpy(msg.payload.spoolmanSynced.material_name,
-                        found ? details.material_type : "",
-                        sizeof(msg.payload.spoolmanSynced.material_name) - 1);
-                msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
-                strncpy(msg.payload.spoolmanSynced.manufacturer,
-                        found ? details.manufacturer : "",
-                        sizeof(msg.payload.spoolmanSynced.manufacturer) - 1);
-                msg.payload.spoolmanSynced.manufacturer[sizeof(msg.payload.spoolmanSynced.manufacturer) - 1] = '\0';
-                strncpy(msg.payload.spoolmanSynced.color_hex,
-                        found ? details.color_hex : "",
-                        sizeof(msg.payload.spoolmanSynced.color_hex) - 1);
-                msg.payload.spoolmanSynced.color_hex[sizeof(msg.payload.spoolmanSynced.color_hex) - 1] = '\0';
-                msg.payload.spoolmanSynced.extruder_temp = found ? details.extruder_temp : 0;
-                msg.payload.spoolmanSynced.bed_temp = found ? details.bed_temp : 0;
-                msg.payload.spoolmanSynced.density = found ? details.density : 0.0f;
-                msg.payload.spoolmanSynced.diameter_mm = found ? details.diameter_mm : 0.0f;
-            } else {
-                Serial.printf("SpoolmanManager: Syncing spool %s\n", req.spool_id);
-                int resolvedSpoolmanId = -1;
-                bool success = syncSpool(req, resolvedSpoolmanId);
-                msg.payload.spoolmanSynced.success = success;
-                msg.payload.spoolmanSynced.kg_remaining = req.remaining_weight_g / 1000.0f;
-                msg.payload.spoolmanSynced.spoolman_id = resolvedSpoolmanId;
-                strncpy(msg.payload.spoolmanSynced.material_name, req.material_name,
-                        sizeof(msg.payload.spoolmanSynced.material_name) - 1);
-                msg.payload.spoolmanSynced.material_name[sizeof(msg.payload.spoolmanSynced.material_name) - 1] = '\0';
+            processSyncRequest(req, msg);
+            while (!msg.payload.spoolmanSynced.success &&
+                   WebServerManager::getInstance().otaExclusive()) {
+                // A failure while OTA owns the network is a stand-down, not a
+                // Spoolman answer. Wait the OTA out and reprocess the same
+                // request in place — requeueing could drop it if the queue
+                // refilled behind the peek.
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                processSyncRequest(req, msg);
             }
 
             ApplicationManager::getInstance().sendMessage(msg);
+        } else {
+#ifndef BOARD_NO_SPOOL_CACHE
+            // Idle tick: refresh the picker cache when asked or stale. The
+            // OTA check runs FIRST so an active OTA never consumes the
+            // request flag — the trigger survives until the update ends.
+            const bool ttlExpired = spoolCacheValid_ &&
+                (millis() - spoolCacheRefreshedAt_ > SPOOL_CACHE_TTL_MS);
+            if (!WebServerManager::getInstance().otaExclusive() &&
+                (spoolCacheRefreshRequested_.exchange(false) || ttlExpired)) {
+                refreshSpoolCache();
+            }
+#endif
         }
     }
 }
 
 bool SpoolmanManager::lookupSpoolByUid(const char* uid, SpoolDetails& outDetails) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: lookupSpoolByUid could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: lookup mutex timeout");
+        return false;
+    }
+    if (WebServerManager::getInstance().otaExclusive()) {
+        // OTA may have started while this call waited on the mutex.
+        xSemaphoreGive(httpMutex_);
         return false;
     }
 
@@ -1569,7 +1632,268 @@ void SpoolmanManager::recordLinkResult(int32_t spoolId, bool ok, const char* uid
     strncpy(lastLinkResult_.uid, uid ? uid : "", sizeof(lastLinkResult_.uid) - 1);
     lastLinkResult_.uid[sizeof(lastLinkResult_.uid) - 1] = '\0';
     xSemaphoreGive(cacheMutex_);
+    if (ok) spoolCacheRefreshRequested_.store(true);
 }
+
+// --- Spool picker RAM cache (#248) ---
+// Compiled out on flash-full boards (BOARD_NO_SPOOL_CACHE): they keep the
+// live-streaming picker path, which remains the universal fallback.
+#ifndef BOARD_NO_SPOOL_CACHE
+
+// Fixed-capacity allocation, once per boot, never grown. PSRAM first; an
+// internal fallback needs both a free-heap floor and a largest-block margin
+// so a WROOM+TFT board (~74KB free) declines cleanly and stays on the
+// streaming fallback instead of fragmenting its heap.
+bool SpoolmanManager::spoolCacheEnsureAllocated() {
+    if (!spoolCache_) {
+        const size_t bytes = sizeof(CachedSpool) * SPOOL_CACHE_CAP;
+        if (psramFound()) {
+            spoolCache_ = static_cast<CachedSpool*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
+        } else if (ESP.getFreeHeap() >= 100000 &&
+                   heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 4 * bytes) {
+            spoolCache_ = static_cast<CachedSpool*>(malloc(bytes));
+        }
+        if (!spoolCache_) return false;
+        Serial.printf("SpoolmanManager: spool cache allocated (%u bytes, %s)\n",
+                      (unsigned)bytes, psramFound() ? "PSRAM" : "internal");
+    }
+    if (!spoolCacheMutex_) {
+        // Lazy, after the heap guard passes: a guard-rejected board (WROOM+TFT)
+        // keeps its fallback heap floor byte-identical — no mutex, no cache.
+        // Only the sync task creates it; readers null-check and fall back.
+        spoolCacheMutex_ = xSemaphoreCreateMutex();
+    }
+    return spoolCacheMutex_ != nullptr;
+}
+
+// Pull-parse /api/v1/spool?archived=false into spoolCache_ in place, same
+// reader setup and docComplete guard as streamFindSpoolByNfcId: a malformed
+// stream that stops the reader silently must never validate the cache.
+// Caller holds httpMutex_ and cacheMutex_. Returns false with the cache left
+// invalid on any transport/parse failure; true with count + freshness set.
+bool SpoolmanManager::parseSpoolCacheStream() {
+    const char* baseUrl = ConfigurationManager::getInstance().getSpoolmanURL();
+    char url[256];
+    snprintf(url, sizeof(url), "%s/api/v1/spool?archived=false", baseUrl);
+
+    WiFiClient streamClient;
+    HTTPClient streamHttp;
+    streamHttp.useHTTP10(true);
+    streamHttp.begin(streamClient, url);
+    streamHttp.setTimeout(10000);
+    int code = streamHttp.GET();
+    if (code != 200) {
+        Serial.printf("SpoolmanManager: spool cache refresh HTTP %d\n", code);
+        streamHttp.end();
+        return false;
+    }
+
+    HttpClientStream stm(*streamHttp.getStreamPtr());
+    json_reader reader(stm);
+
+    size_t count = 0;
+    bool sawAnyNode = false;
+    bool parseError = false;
+    bool overCap = false;
+    bool docComplete = false;  // saw the outer array close — reader stops silently on malformed JSON
+    bool inElement = false;
+    int nestLevel = 0;         // containers nested INSIDE the current element
+    bool inFilament = false;   // element's top-level "filament" object
+    bool inVendor = false;     // filament's nested "vendor" object
+    CachedSpool cur;
+    memset(&cur, 0, sizeof(cur));
+
+    while (!overCap && reader.read()) {
+        sawAnyNode = true;
+        json_node_type nt = reader.node_type();
+        if (nt == json_node_type::error) { parseError = true; break; }
+
+        if (!inElement) {
+            if (nt == json_node_type::object) {
+                inElement = true;
+                nestLevel = 0;
+                inFilament = false;
+                inVendor = false;
+                memset(&cur, 0, sizeof(cur));
+            } else if (nt == json_node_type::end_array) {
+                docComplete = true;
+            }
+            continue;
+        }
+
+        if (nt == json_node_type::object || nt == json_node_type::array) {
+            nestLevel++;
+            continue;
+        }
+        if (nt == json_node_type::end_object || nt == json_node_type::end_array) {
+            if (nestLevel > 0) {
+                nestLevel--;
+                if (nestLevel == 1) inVendor = false;
+                else if (nestLevel == 0) inFilament = false;
+                continue;
+            }
+            // Element complete — commit, or refuse the cache at >150 spools
+            if (count >= SPOOL_CACHE_CAP) {
+                overCap = true;
+                break;
+            }
+            spoolCache_[count++] = cur;
+            inElement = false;
+            continue;
+        }
+
+        if (nt == json_node_type::field) {
+            char fieldName[26];
+            const char* fv = reader.value();
+            strncpy(fieldName, fv ? fv : "", sizeof(fieldName) - 1);
+            fieldName[sizeof(fieldName) - 1] = '\0';
+            bool topLevelField = (nestLevel == 0);
+            bool fieldInFilament = (nestLevel == 1) && inFilament;
+            bool fieldInVendor = (nestLevel == 2) && inVendor;
+            if (!reader.read()) break;
+            json_node_type vt = reader.node_type();
+            if (vt == json_node_type::error) { parseError = true; break; }
+            if (vt == json_node_type::object || vt == json_node_type::array) {
+                if (topLevelField && vt == json_node_type::object &&
+                    strcmp(fieldName, "filament") == 0) {
+                    inFilament = true;
+                } else if (fieldInFilament && vt == json_node_type::object &&
+                           strcmp(fieldName, "vendor") == 0) {
+                    inVendor = true;
+                }
+                nestLevel++;
+                continue;
+            }
+            if (topLevelField) {
+                if (strcmp(fieldName, "id") == 0) {
+                    int v;
+                    if (readIntValue(reader, v)) cur.id = v;
+                } else if (strcmp(fieldName, "remaining_weight") == 0) {
+                    readFloatValue(reader, cur.remaining_g);
+                }
+            } else if (fieldInVendor) {
+                if (strcmp(fieldName, "name") == 0) {
+                    readStringValue(reader, cur.vendor, sizeof(cur.vendor));
+                }
+            } else if (fieldInFilament) {
+                if (strcmp(fieldName, "name") == 0) {
+                    readStringValue(reader, cur.name, sizeof(cur.name));
+                } else if (strcmp(fieldName, "material") == 0) {
+                    readStringValue(reader, cur.material, sizeof(cur.material));
+                } else if (strcmp(fieldName, "color_hex") == 0) {
+                    readStringValue(reader, cur.color_hex, sizeof(cur.color_hex));
+                } else if (strcmp(fieldName, "weight") == 0) {
+                    readFloatValue(reader, cur.initial_g);
+                } else if (strcmp(fieldName, "density") == 0) {
+                    readFloatValue(reader, cur.density);
+                } else if (strcmp(fieldName, "diameter") == 0) {
+                    readFloatValue(reader, cur.diameter);
+                } else if (strcmp(fieldName, "settings_extruder_temp") == 0) {
+                    int v;
+                    if (readIntValue(reader, v)) cur.extruder_temp = (uint16_t)v;
+                } else if (strcmp(fieldName, "settings_bed_temp") == 0) {
+                    int v;
+                    if (readIntValue(reader, v)) cur.bed_temp = (uint16_t)v;
+                }
+            }
+        }
+    }
+    bool truncated = (reader.error() != json_error::none);
+    streamHttp.end();
+
+    if (overCap) {
+        Serial.println("SpoolmanManager: >150 spools — picker cache disabled, serving live");
+        spoolCacheOverCap_ = true;
+        return false;
+    }
+    if (parseError || !sawAnyNode || truncated || !docComplete) {
+        Serial.println("SpoolmanManager: spool cache parse/transport failure — cache stays cold");
+        return false;
+    }
+
+    spoolCacheCount_ = count;
+    return true;
+}
+
+// Runs ONLY on the SpoolmanSync task. Never during OTA.
+void SpoolmanManager::refreshSpoolCache() {
+    if (!isConfigured()) return;
+    if (spoolCacheOverCap_) return;
+    if (WebServerManager::getInstance().otaExclusive()) return;
+    if (!spoolCacheEnsureAllocated()) return;
+
+    // Cache lock FIRST: a slow browser draining a warm response can hold it
+    // for seconds, and the global HTTP mutex must never wait behind that.
+    if (xSemaphoreTake(spoolCacheMutex_, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        Serial.println("SpoolmanManager: spool cache refresh cache mutex timeout");
+        return;
+    }
+    if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
+        Serial.println("SpoolmanManager: spool cache refresh http mutex timeout");
+        xSemaphoreGive(spoolCacheMutex_);
+        return;
+    }
+    // OTA may have started while this call waited on the mutex
+    // (lookupSpoolByUid pattern)
+    if (WebServerManager::getInstance().otaExclusive()) {
+        xSemaphoreGive(httpMutex_);
+        xSemaphoreGive(spoolCacheMutex_);
+        return;
+    }
+    spoolCacheValid_ = false;
+    if (parseSpoolCacheStream()) {
+        spoolCacheValid_ = true;
+        spoolCacheRefreshedAt_ = millis();
+        Serial.printf("SpoolmanManager: spool cache refreshed (%u spools)\n",
+                      (unsigned)spoolCacheCount_);
+    } else if (spoolCacheOverCap_ && spoolCache_) {
+        // Over-cap is terminal for this boot — return the buffer instead of
+        // stranding ~16KB beside the live fallback on no-PSRAM boards.
+        free(spoolCache_);
+        spoolCache_ = nullptr;
+        spoolCacheCount_ = 0;
+    }
+    xSemaphoreGive(spoolCacheMutex_);
+    xSemaphoreGive(httpMutex_);
+}
+
+bool SpoolmanManager::spoolCacheLockRead(TickType_t timeout) {
+    // AP mode skips begin(): no mutex, no cache — callers use the fallback.
+    if (!spoolCacheMutex_) return false;
+    if (xSemaphoreTake(spoolCacheMutex_, timeout) != pdTRUE) {
+        return false;
+    }
+    if (!spoolCacheValid_) {
+        xSemaphoreGive(spoolCacheMutex_);
+        return false;
+    }
+    return true;
+}
+
+const CachedSpool* SpoolmanManager::spoolCacheRecords(size_t& countOut) {
+    countOut = spoolCacheCount_;
+    return spoolCache_;
+}
+
+void SpoolmanManager::spoolCacheUnlockRead() {
+    xSemaphoreGive(spoolCacheMutex_);
+}
+
+void SpoolmanManager::requestSpoolCacheRefresh() {
+    spoolCacheRefreshRequested_.store(true);
+}
+
+#else  // BOARD_NO_SPOOL_CACHE
+
+bool SpoolmanManager::spoolCacheLockRead(TickType_t) { return false; }
+const CachedSpool* SpoolmanManager::spoolCacheRecords(size_t& countOut) {
+    countOut = 0;
+    return nullptr;
+}
+void SpoolmanManager::spoolCacheUnlockRead() {}
+void SpoolmanManager::requestSpoolCacheRefresh() {}
+
+#endif  // BOARD_NO_SPOOL_CACHE
 
 SpoolmanManager::PendingLinkStatus SpoolmanManager::getPendingLinkStatus() {
     PendingLinkStatus st;
@@ -1620,7 +1944,7 @@ bool SpoolmanManager::fetchSpoolCore(int32_t spoolId, SpoolCore& out) {
     }
     if (code != 200) return false;
 
-    DynamicJsonDocument doc(3072);
+    JsonDocument doc;
     if (deserializeJson(doc, resp) != DeserializationError::Ok) return false;
 
     out.archived = doc["archived"] | false;
@@ -1726,8 +2050,12 @@ int SpoolmanManager::findSpoolIdByUidNoLock(const char* uid) {
 float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* success) {
     if (success) *success = false;
     if (!isConfigured()) return 0.0f;
+    if (WebServerManager::getInstance().otaExclusive()) {
+        Serial.println("SpoolmanManager: deduct deferred (OTA)");
+        return 0.0f;
+    }
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: deductFromSpoolman — mutex timeout");
+        Serial.println("SpoolmanManager: deduct mutex timeout");
         return 0.0f;
     }
 
@@ -1751,7 +2079,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
         return 0.0f;
     }
 
-    StaticJsonDocument<JSON_SMALL_CAPACITY> doc;
+    JsonDocument doc;
     if (deserializeJson(doc, response)) {
         xSemaphoreGive(httpMutex_);
         return 0.0f;
@@ -1780,7 +2108,7 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
     }
 
     // PATCH with new remaining weight
-    StaticJsonDocument<JSON_SMALL_CAPACITY> patchDoc;
+    JsonDocument patchDoc;
     patchDoc["remaining_weight"] = newRemaining;
     String body;
     serializeJson(patchDoc, body);
@@ -1792,6 +2120,9 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
         Serial.printf("SpoolmanManager: Deducted %.1fg from spool %d (%.1fg -> %.1fg)\n",
                       deduction, spoolId, currentRemaining, newRemaining);
         LogBuffer::getInstance().logPrintf("Spoolman: Deducted %.1fg from spool %d\n", deduction, spoolId);
+#ifndef BOARD_NO_SPOOL_CACHE
+        spoolCacheRefreshRequested_.store(true);  // picker must not serve the pre-deduct weight
+#endif
         if (success) *success = true;
         return deduction;
     }
@@ -1803,7 +2134,12 @@ float SpoolmanManager::deductFromSpoolman(const char* uid, float grams, bool* su
 
 bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpoolmanId) {
     if (xSemaphoreTake(httpMutex_, HTTP_MUTEX_TIMEOUT) != pdTRUE) {
-        Serial.println("SpoolmanManager: Could not acquire HTTP mutex");
+        Serial.println("SpoolmanManager: sync mutex timeout");
+        return false;
+    }
+    if (WebServerManager::getInstance().otaExclusive()) {
+        // OTA may have started while this call waited on the mutex.
+        xSemaphoreGive(httpMutex_);
         return false;
     }
 
@@ -1832,13 +2168,12 @@ bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpo
 
             // Read-merge-write: PATCHing extra replaces the whole map, so carry the
             // spool's existing extras (tag_format, middleware fields) along with the
-            // new nfc_id and the durable user-link stamp. Heap docs deliberately —
-            // SpoolmanSync's measured stack floor is under 2KB.
-            // 4096: a failed parse here would skip the merge and the PATCH would
-            // wipe the spool's other extras — size generously (heap, transient)
-            DynamicJsonDocument spoolDoc(4096);
-            DynamicJsonDocument patchDoc(1024);
-            JsonObject patchExtra = patchDoc.createNestedObject("extra");
+            // new nfc_id and the durable user-link stamp. ArduinoJson 7 documents
+            // grow elastically on the heap, which protects SpoolmanSync's measured
+            // stack floor of under 2KB.
+            JsonDocument spoolDoc;
+            JsonDocument patchDoc;
+            JsonObject patchExtra = patchDoc["extra"].to<JsonObject>();
             {
                 String spoolResp;
                 if (httpGet(patchPath, spoolResp) == 200) {

@@ -9,7 +9,7 @@ OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_opentag3d_runner
+all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -20,7 +20,7 @@ cbor_native.o: ../../lib/openprinttag/cbor_native.c
 opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v2_map.h
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
 
-test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h $(OPT_OBJS)
+test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h ../../src/PrinterManager.cpp $(OPT_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ test_printer_manager.cpp native_stubs.cpp $(OPT_OBJS)
 
 test_opt_ndef_bounds: test_opt_ndef_bounds.c $(OPT_OBJS)
@@ -44,10 +44,13 @@ test_write_uid_guard: test_write_uid_guard.cpp ../../src/WriteUidGuard.h
 test_cc_sizing: test_cc_sizing.cpp ../../src/NFCTypes.h
 	$(CXX) $(CXXFLAGS) -o $@ test_cc_sizing.cpp
 
+test_spool_cache: test_spool_cache.cpp ../../src/SpoolCacheJson.h
+	$(CXX) $(CXXFLAGS) -o $@ test_spool_cache.cpp
+
 test_opentag3d_runner: test_opentag3d_runner.c $(OT3D_OBJS)
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_runner.c $(OT3D_OBJS)
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_opentag3d_runner
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -73,6 +76,9 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo "=== Running CC sizing tests ==="
 	@./test_cc_sizing
 	@echo ""
+	@echo "=== Running spool cache JSON tests ==="
+	@./test_spool_cache
+	@echo ""
 	@echo "=== Running OpenTag3D parser tests ==="
 	@./test_opentag3d_runner
 	@echo ""
@@ -80,4 +86,4 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
-	      test_write_uid_guard test_cc_sizing test_opentag3d_runner *.o
+	      test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner *.o

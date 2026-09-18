@@ -20,13 +20,18 @@
 #include "PrusaLinkStrategy.h"
 #include "InputManager.h"
 #include "HardwareNFCConnectionPN532.h"
+#include "HardwareNFCConnectionRC522.h"
 #include "BoardPins.h"
 #include <Wire.h>
 
 // main.cpp — ESP32 firmware entry point and hardware init. Manages WiFi, AP mode, NTP, display/LED/
 // keypad peripherals, NFC reader selection, and the main loop that dispatches to task managers
 
-// Global HTTP mutex for serializing WiFi HTTP requests (blocks SpoolmanManager + ApplicationManager + PrinterManager)
+// Serializes every outbound HTTP path (Spoolman, printer poll, U1, web proxy
+// handlers, diagnostics) except the OTA download itself: OTA holds this from
+// start through the TLS handshake as a drain barrier, then streams under
+// WebServerManager::otaExclusive() alone — periodic tickers stand down and
+// proxy handlers 503 instantly while it runs.
 SemaphoreHandle_t g_httpMutex = nullptr;
 
 // AP mode state
@@ -345,11 +350,14 @@ void setup() {
     Serial.println("AP mode active - skipping Spoolman, HA, automation init");
   }
 
-  // NFC reader selection: PN532 (ISO14443A only) vs PN5180 (multi-format default)
+  // NFC reader selection: PN532/RC522 (ISO14443A only) vs PN5180 (multi-format default)
   const char* nfcReader = config.getNfcReader();
   if (strcmp(nfcReader, "pn532") == 0) {
     Serial.println("NFC reader: PN532 (ISO14443A only)");
     NFCManager::getInstance().setConnection(new HardwareNFCConnectionPN532());
+  } else if (strcmp(nfcReader, "rc522") == 0) {
+    Serial.println("NFC reader: RC522 (ISO14443A only, no OpenPrintTag)");
+    NFCManager::getInstance().setConnection(new HardwareNFCConnectionRC522());
   } else {
     Serial.printf("NFC reader: %s (default)\n", nfcReader);
   }

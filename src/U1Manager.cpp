@@ -9,6 +9,7 @@
   #include "NFCTypes.h"             // CurrentSpoolState, TagKind
   #include "ConfigurationManager.h"
 #include "LogBuffer.h"
+  #include "WebServerManager.h"
   #include <Arduino.h>
   #include <WiFi.h>
   #include <HTTPClient.h>
@@ -260,9 +261,11 @@ int postFilamentDetectSet(uint8_t channel, const U1FilamentInfo& info) {
         return -1001;
     }
 
-    StaticJsonDocument<512> body;
+    JsonDocument body;
     body["channel"] = channel;
-    JsonObject infoObj = body.createNestedObject("info");
+    // ArduinoJson 7's migration guide directly recommends
+    // member.to<JsonObject>() instead of createNestedObject().
+    JsonObject infoObj = body["info"].to<JsonObject>();
 
     if (info.vendor[0] != '\0')   infoObj["VENDOR"] = info.vendor;
     if (info.main_type[0] != '\0') infoObj["MAIN_TYPE"] = info.main_type;
@@ -275,7 +278,8 @@ int postFilamentDetectSet(uint8_t channel, const U1FilamentInfo& info) {
     if (info.hotend_max_temp > 0) infoObj["HOTEND_MAX_TEMP"] = info.hotend_max_temp;
     if (info.bed_temp > 0)         infoObj["BED_TEMP"] = info.bed_temp;
     if (info.card_uid_len > 0) {
-        JsonArray uidArr = infoObj.createNestedArray("CARD_UID");
+        // The same guide recommends to<JsonArray>() for nested arrays.
+        JsonArray uidArr = infoObj["CARD_UID"].to<JsonArray>();
         for (uint8_t i = 0; i < info.card_uid_len; i++) {
             uidArr.add((int)info.card_uid[i]);
         }
@@ -423,7 +427,7 @@ bool U1Manager::queryLaneSensors(bool loaded[4]) {
         return false;
     }
 
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc;
     if (deserializeJson(doc, resp) != DeserializationError::Ok) return false;
     JsonObject status = doc["result"]["status"];
     if (status.isNull()) return false;
@@ -439,6 +443,7 @@ bool U1Manager::queryLaneSensors(bool loaded[4]) {
 }
 
 void U1Manager::loopTick() {
+    if (WebServerManager::getInstance().otaExclusive()) return;
     auto& cfg = ConfigurationManager::getInstance();
     if (!cfg.isU1Enabled() || !cfg.isU1StageMode() || !cfg.isU1AutoPickEnabled()) return;
     if (!hasStagedSpool()) return;
