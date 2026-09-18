@@ -233,7 +233,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="field">
                   <label for="transmission_distance">Transmission Dist. (&times;0.1mm)</label>
-                  <input id="transmission_distance" type="number" min="0" max="250" />
+                  <input id="transmission_distance" type="number" min="0" max="255" />
                 </div>
               </div>
               <div class="grid-3">
@@ -276,6 +276,8 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
           </div>
 
           <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.003 &mdash; requires NTAG215 or larger.</div>
+
+          <div class="hint" id="readOnlyHint" style="display:none;margin-top:12px;color:#d97706">This tag can be read, but its record has a length this firmware cannot rewrite without losing data, so writing is turned off. To reuse the tag, format it first.</div>
 
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
@@ -409,6 +411,22 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     // real zero or empty string read off the tag is applied, not skipped.
     // Binds ot3dSource to this UID on success so a write back to the same
     // tag can preserve fields this function left untouched.
+    // Older firmware sends no "writable" field; only an explicit false turns
+    // writing off, so a missing field never locks the page.
+    function ot3dWritableVerdict(status) {
+      var ot = status && status.opentag3d;
+      if (!ot) return true;
+      return ot.writable !== false;
+    }
+
+    function applyWritableState(status) {
+      var ok = ot3dWritableVerdict(status);
+      var btn = document.getElementById('writeBtn');
+      var hint = document.getElementById('readOnlyHint');
+      if (btn) btn.disabled = !ok;
+      if (hint) hint.style.display = ok ? 'none' : '';
+    }
+
     function fillForm(status, uid) {
       var ot = status.opentag3d;
       if (!ot) return;
@@ -458,11 +476,14 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       put('min_nozzle_diameter_mm', ot.min_nozzle_mm);
 
       ot3dSource = { uid: uid || '', snapshot: snapshotForm(OT3D_EDITABLE_IDS) };
+
+      applyWritableState(status);
     }
 
     writerForm.addEventListener('reset', function () {
       ot3dSource = null;
       replaceConfirmedUid = null;
+      applyWritableState(null);
     });
 
     syncColorPicker('colorPicker', 'colorHex');
@@ -506,6 +527,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         fillForm(status, status.uid);
         return;
       }
+      applyWritableState(null);
       prefillFromTag({
         material: 'base_material',
         color: 'colorHex',

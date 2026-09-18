@@ -68,6 +68,23 @@ for (; i < writerHtml.length && depth > 0; i++) {
 const verifyBody = writerHtml.slice(bodyStart, i - 1);
 const verifyFn = new Function('status', 'payload', 'requestId', verifyBody);
 
+// ---- Extract the OpenTag3D writable verdict from OpenTag3DWriterHTML.h -----
+// Same brace-counting strategy as the verify callback above.
+const verdictAnchor = 'function ot3dWritableVerdict(status) {';
+const verdictStart = writerHtml.indexOf(verdictAnchor);
+if (verdictStart === -1) {
+  console.error('FAIL: could not locate ot3dWritableVerdict in OpenTag3DWriterHTML.h');
+  process.exit(1);
+}
+const verdictBodyStart = verdictStart + verdictAnchor.length;
+let verdictDepth = 1;
+let vi = verdictBodyStart;
+for (; vi < writerHtml.length && verdictDepth > 0; vi++) {
+  if (writerHtml[vi] === '{') verdictDepth++;
+  else if (writerHtml[vi] === '}') verdictDepth--;
+}
+const verdictFn = new Function('status', writerHtml.slice(verdictBodyStart, vi - 1));
+
 // ---- Assertions -------------------------------------------------------------
 let passed = 0, failed = 0;
 function check(name, actual, expected) {
@@ -157,6 +174,19 @@ check(
 // deadline or a slow poller can lose a result before ever seeing it.
 check('ring holds at least the write queue depth', writeOutcomeRingSize >= 8, true);
 check('outcome TTL outlasts the browser polling deadline', writeOutcomeTtlMs > pollDeadlineMs, true);
+
+// #316 read-only tag: only an explicit writable:false turns writing off;
+// any other shape (true, missing, no opentag3d, null status) keeps it on.
+check('writable false turns writing off', verdictFn({ opentag3d: { writable: false } }), false);
+check('writable true keeps writing on', verdictFn({ opentag3d: { writable: true } }), true);
+check('a missing writable field keeps writing on (older firmware)', verdictFn({ opentag3d: {} }), true);
+check('no opentag3d object keeps writing on', verdictFn({ present: true }), true);
+check('a null status keeps writing on', verdictFn(null), true);
+
+// Source-shape checks: the hint element and the raised transmission
+// distance form limit must exist in the shipped page.
+check('read-only hint element exists', writerHtml.indexOf('id="readOnlyHint"') !== -1, true);
+check('transmission distance form limit is 255', /id="transmission_distance"[^>]*max="255"/.test(writerHtml), true);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
