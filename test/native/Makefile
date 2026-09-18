@@ -9,7 +9,7 @@ OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch
+all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -41,6 +41,9 @@ test_bambutag_parser: test_bambutag_parser.cpp ../../lib/bambutag/BambuTagParser
 test_write_uid_guard: test_write_uid_guard.cpp ../../src/WriteUidGuard.h
 	$(CXX) $(CXXFLAGS) -o $@ test_write_uid_guard.cpp
 
+test_opentag3d_layout: test_opentag3d_layout.cpp ../../src/OpenTag3DLayout.h $(OT3D_OBJS) opentag3d_patch.o
+	$(CXX) $(CXXFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_layout.cpp $(OT3D_OBJS) opentag3d_patch.o
+
 test_cc_sizing: test_cc_sizing.cpp ../../src/NFCTypes.h
 	$(CXX) $(CXXFLAGS) -o $@ test_cc_sizing.cpp
 
@@ -56,7 +59,7 @@ opentag3d_patch.o: ../../lib/opentag3d/opentag3d_patch.c ../../lib/opentag3d/ope
 test_opentag3d_patch: test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_patch.c $(OT3D_OBJS) opentag3d_patch.o
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_write_result_gate.js
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_result_gate.js
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -91,6 +94,9 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo "=== Running OpenTag3D patch tests ==="
 	@./test_opentag3d_patch
 	@echo ""
+	@echo "=== Running OpenTag3D layout tests ==="
+	@./test_opentag3d_layout
+	@echo ""
 	@echo "=== Running write-result gate tests (Node) ==="
 	@if command -v node >/dev/null 2>&1; then \
 		node test_write_result_gate.js; \
@@ -103,4 +109,4 @@ clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
 	      test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner \
-	      test_opentag3d_patch *.o
+	      test_opentag3d_patch test_opentag3d_layout *.o
