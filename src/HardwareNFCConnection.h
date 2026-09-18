@@ -46,6 +46,7 @@ private:
     PN5180ISO14443* iso14443a_ = nullptr;
     opt_nfc_hal_t hal_;
     uint8_t currentUid_[8];
+    uint8_t currentUidLen_ = 0;
 
     // Read cache: filled by a single readMultipleBlocks call on first halReadPage
     // access, then served page-by-page. Invalidated when a new tag is presented.
@@ -72,6 +73,12 @@ private:
     // Static HAL callbacks
     static opt_error_t halReadPage(void* ctx, uint8_t page, uint8_t* buffer);
     static opt_error_t halWritePage(void* ctx, uint8_t page, const uint8_t* data);
+
+    // A reactivation can bring up whichever tag is now in the field. Writing to a
+    // tag other than the one detected corrupts a different spool's data and then
+    // verifies the corruption successfully, so every reactivation must prove
+    // identity. Mirrors HardwareNFCConnectionPN532::reactivateTag().
+    bool activatedTagMatches(const uint8_t* response, uint8_t uidLen) const;
 };
 
 #endif // HARDWARE_NFC_CONNECTION_H

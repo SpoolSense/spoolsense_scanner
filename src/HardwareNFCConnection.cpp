@@ -380,6 +380,12 @@ uint16_t HardwareNFCConnection::readISO14443Pages(uint8_t startPage, uint8_t pag
             Serial.println("HardwareNFC: readISO14443Pages - tag reactivation failed");
             return 0;
         }
+        if (!activatedTagMatches(response, uidLen)) {
+            Serial.println("HardwareNFC: readISO14443Pages - different tag activated, aborting");
+            iso14443a_->mifareHalt();
+            tagSessionActive_ = false;
+            return 0;
+        }
     }
 
     // mifareBlockRead reads 16 bytes (4 pages) per call; read in 4-page chunks starting from startPage
@@ -432,6 +438,12 @@ bool HardwareNFCConnection::writeISO14443Pages(uint8_t startPage, uint8_t pageCo
             Serial.println("HardwareNFC: writeISO14443Pages - tag reactivation failed");
             return false;
         }
+        if (!activatedTagMatches(response, uidLen)) {
+            Serial.println("HardwareNFC: writeISO14443Pages - different tag activated, refusing write");
+            iso14443a_->mifareHalt();
+            tagSessionActive_ = false;
+            return false;
+        }
         tagSessionActive_ = true;
     }
 
@@ -465,6 +477,12 @@ bool HardwareNFCConnection::writeISO14443Pages(uint8_t startPage, uint8_t pageCo
                     Serial.printf("HardwareNFC: writeISO14443Pages - re-activation failed on retry %d\n", retry + 1);
                     continue;
                 }
+                if (!activatedTagMatches(response, uidLen)) {
+                    Serial.println("HardwareNFC: writeISO14443Pages - different tag on retry, aborting");
+                    iso14443a_->mifareHalt();
+                    tagSessionActive_ = false;
+                    return false;
+                }
                 tagSessionActive_ = true;
                 pageOk = iso14443a_->mifareBlockWrite4(page, data + (i * 4));
             }
@@ -489,8 +507,15 @@ bool HardwareNFCConnection::writeISO14443Pages(uint8_t startPage, uint8_t pageCo
 }
 
 void HardwareNFCConnection::setCurrentUid(const uint8_t* uid, uint8_t length) {
-    memcpy(currentUid_, uid, length < 8 ? length : 8);
+    currentUidLen_ = length < 8 ? length : 8;
+    memcpy(currentUid_, uid, currentUidLen_);
     readCacheValid_ = false;  // new tag invalidates cached page reads
+}
+
+bool HardwareNFCConnection::activatedTagMatches(const uint8_t* response, uint8_t uidLen) const {
+    if (currentUidLen_ == 0) return true;   // nothing bound yet — detect path
+    if (uidLen != currentUidLen_) return false;
+    return memcmp(response + 3, currentUid_, uidLen) == 0;
 }
 
 opt_nfc_hal_t* HardwareNFCConnection::getHal() {
