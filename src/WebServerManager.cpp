@@ -1359,9 +1359,7 @@ void WebServerManager::handleApiUpdateFromUrl() {
     _server.send(200, "application/json", "{\"success\":true,\"status\":\"started\"}");
 }
 
-void WebServerManager::otaDownloadTask(void* param) {
-    WebServerManager* self = static_cast<WebServerManager*>(param);
-
+bool WebServerManager::runOtaDownload(WebServerManager* self) {
     Serial.printf("OTA: Downloading from %s\n", self->_otaUrl);
 
     // Pause NFC during OTA
@@ -1384,8 +1382,7 @@ void WebServerManager::otaDownloadTask(void* param) {
         if (self->_display) {
             self->_display->showOTAError(self->_otaError);
         }
-        vTaskDelete(nullptr);
-        return;
+        return false;
     }
 
     // Stop display rendering and release any display buffers before the TLS
@@ -1416,8 +1413,7 @@ void WebServerManager::otaDownloadTask(void* param) {
         if (self->_display) {
             self->_display->showOTAError(self->_otaError);
         }
-        vTaskDelete(nullptr);
-        return;
+        return false;
     }
 
     if (g_httpMutex) xSemaphoreGive(g_httpMutex);
@@ -1438,8 +1434,7 @@ void WebServerManager::otaDownloadTask(void* param) {
         if (self->_display) {
             self->_display->showOTAError(self->_otaError);
         }
-        vTaskDelete(nullptr);
-        return;
+        return false;
     }
 
     WiFiClient* stream = http.getStreamPtr();
@@ -1472,10 +1467,7 @@ void WebServerManager::otaDownloadTask(void* param) {
 
     if (Update.end(true)) {
         Serial.printf("OTA: Success, %u bytes written\n", written);
-        self->_otaProgress = 100;
-        self->_otaState = OtaState::SUCCESS;
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP.restart();
+        return true;
     } else {
         Serial.println("OTA: Update.end() failed");
         Update.printError(Serial);
@@ -1485,6 +1477,18 @@ void WebServerManager::otaDownloadTask(void* param) {
         if (self->_display) {
             self->_display->showOTAError(self->_otaError);
         }
+        return false;
+    }
+}
+
+void WebServerManager::otaDownloadTask(void* param) {
+    WebServerManager* self = static_cast<WebServerManager*>(param);
+
+    if (runOtaDownload(self)) {
+        self->_otaProgress = 100;
+        self->_otaState = OtaState::SUCCESS;
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP.restart();
     }
 
     vTaskDelete(nullptr);
