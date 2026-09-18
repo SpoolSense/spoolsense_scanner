@@ -8,13 +8,12 @@
 // The has_extended flag is a LAYOUT DECISION, not a user-supplied field — it
 // determines whether a v1 tag encodes to 102 bytes (core-only) or 187 bytes
 // (extended). The HTTP handler never sets it; we derive it from the write mode
-// and the patch content.
+// and the patch content. The caller's encodeSize already short-circuits on
+// version, so this function is version-agnostic by design.
 //
 //   mode                — OT3D_MODE_REPLACE or OT3D_MODE_PRESERVE
 //   mask                — patch mask bitfield identifying which fields are set
 //   baselineHasExtended — the has_extended flag of the tag being read (preserve mode)
-//   baselineVersion     — the tag version (checked for v2; layout decision
-//                         ignored when major version >= 2)
 //
 // Returns: 0 or 1, the has_extended flag to encode with.
 //
@@ -25,12 +24,8 @@
 // Preserve mode: derived from baseline + patch. An extended v1 tag stays
 // extended even when the patch touches only core fields, and a core-only
 // v1 tag grows only if the patch actually sets an extended field.
-//
-// V2 tags (major version >= 2) ignore this flag in the encode-size decision,
-// so the value is computed for consistency but not used by encodeSize.
 static inline uint8_t deriveOpenTag3DLayout(uint8_t mode, uint64_t mask,
-                                             uint8_t baselineHasExtended,
-                                             uint16_t baselineVersion __attribute__((unused))) {
+                                             uint8_t baselineHasExtended) {
     if (mode == OT3D_MODE_REPLACE) {
         // Replace: bare assignment from patch. Derive the flag so a patch
         // setting extended fields produces the extended layout. V2 tags ignore

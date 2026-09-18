@@ -2258,7 +2258,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             // not a field. A v1 replace carrying any extended value must emit
             // the 187-byte map, or every extended value the caller supplied is
             // dropped and the readback verifies the loss.
-            ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_REPLACE, patch.mask, 0, ot3d.tag_version);
+            ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_REPLACE, patch.mask, 0);
         } else {
             uint16_t baseLen = 0;
             if (!readOpenTag3DBaseline(ot3d, baseLen)) {
@@ -2287,7 +2287,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
             ot3d.tag_version = patch.values.tag_version ? patch.values.tag_version : baselineVersion;
             // An extended v1 tag stays extended even when the edit is core-only,
             // and a core-only v1 grows only if an extended field was actually set.
-            ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_PRESERVE, patch.mask, baselineExtended, baselineVersion);
+            ot3d.has_extended = deriveOpenTag3DLayout(OT3D_MODE_PRESERVE, patch.mask, baselineExtended);
         }
     }
 
