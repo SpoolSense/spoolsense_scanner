@@ -34,6 +34,7 @@ struct NFCWriteRequest {
     uint32_t request_id;         // Unique ID for deduplication
     NFCWriteType type;
     uint8_t suppress_sync;       // If 1, don't trigger Spoolman sync (used for batched writes like Mode B)
+    uint8_t wants_outcome;       // 1 = a caller will poll /api/status for this request's result
     char expected_spool_id[17];  // Only write if this spool is present (empty = any)
     union {
         float grams_to_remove;

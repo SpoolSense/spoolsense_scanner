@@ -122,13 +122,14 @@ bool NFCManager::getLastWriteOutcome(uint32_t request_id, WriteOutcome& out) {
     if (xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(50)) != pdTRUE) return false;
     bool found = false;
     if (request_id == 0) {
-        if (writeOutcomeRing_[writeOutcomeLastIndex_].done) {
+        if (writeOutcomeRing_[writeOutcomeLastIndex_].state == WriteOutcomeSlotState::Done) {
             out = writeOutcomeRing_[writeOutcomeLastIndex_];
             found = true;
         }
     } else {
         for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
-            if (writeOutcomeRing_[i].done && writeOutcomeRing_[i].request_id == request_id) {
+            if (writeOutcomeRing_[i].state == WriteOutcomeSlotState::Done &&
+                writeOutcomeRing_[i].request_id == request_id) {
                 out = writeOutcomeRing_[i];
                 found = true;
                 break;
@@ -1599,6 +1600,10 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
         Serial.println("NFCManager: enqueueRawWrite - refused, a write is in flight");
     } else if (rawWriteSlot_ == RawWriteSlot::Staged) {
         Serial.println("NFCManager: enqueueRawWrite - refused, a payload is already staged");
+    } else if (isRequestCompleted(req.request_id)) {
+        // enqueueWrite() below would report success without queueing for a
+        // duplicate id, leaving this slot staged with nothing to release it.
+        Serial.println("NFCManager: enqueueRawWrite - refused, duplicate request id");
     } else {
         memcpy(rawWriteBuffer_, data, dataSize);
         rawWriteBufferSize_ = dataSize;
@@ -1710,7 +1715,59 @@ bool NFCManager::enqueueWrite(const NFCWriteRequest& req) {
         return true;  // Already done, return success
     }
 
+    // A caller that will poll /api/status needs its slot reserved before the
+    // request is queued — reserving after xQueueSend races processWriteQueue,
+    // which can dequeue and finish the write before this function returns.
+    bool reserved = false;
+    if (req.wants_outcome) {
+        if (writeOutcomeMutex_ == nullptr ||
+            xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) != pdTRUE) {
+            Serial.println("NFCManager: enqueueWrite - refused, no outcome slot free");
+            return false;
+        }
+        WriteOutcomeSlotState states[WRITE_OUTCOME_RING_SIZE];
+        uint32_t completedMs[WRITE_OUTCOME_RING_SIZE];
+        for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+            states[i] = writeOutcomeRing_[i].state;
+            completedMs[i] = writeOutcomeRing_[i].completed_ms;
+        }
+        int slotIdx = writeOutcomeReserveSlot(states, completedMs, WRITE_OUTCOME_RING_SIZE,
+                                              millis(), WRITE_OUTCOME_TTL_MS);
+        if (slotIdx < 0) {
+            xSemaphoreGive(writeOutcomeMutex_);
+            Serial.println("NFCManager: enqueueWrite - refused, no outcome slot free");
+            return false;
+        }
+        WriteOutcome& slot = writeOutcomeRing_[(size_t)slotIdx];
+        slot.request_id = req.request_id;
+        slot.uid[0] = '\0';
+        slot.error[0] = '\0';
+        slot.done = false;
+        slot.ok = false;
+        slot.state = WriteOutcomeSlotState::Pending;
+        xSemaphoreGive(writeOutcomeMutex_);
+        reserved = true;
+    }
+
     bool queued = xQueueSend(writeQueue, &req, pdMS_TO_TICKS(100)) == pdTRUE;
+
+    if (!queued && reserved) {
+        // The request never entered the queue — the reservation must not
+        // outlive it, or a Pending slot with no request behind it is stuck
+        // until reboot (a Pending slot is never reclaimed by TTL).
+        if (xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
+            for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+                if (writeOutcomeRing_[i].state == WriteOutcomeSlotState::Pending &&
+                    writeOutcomeRing_[i].request_id == req.request_id) {
+                    writeOutcomeRing_[i].state = WriteOutcomeSlotState::Empty;
+                    break;
+                }
+            }
+            xSemaphoreGive(writeOutcomeMutex_);
+        } else {
+            Serial.println("NFCManager: enqueueWrite - could not release outcome reservation after failed queue send");
+        }
+    }
 
     // If this is part of a batch (suppress_sync or FORMAT_NEW), set suppression flag
     if (queued && (req.suppress_sync || req.type == NFCWriteType::FORMAT_NEW)) {
@@ -1741,6 +1798,22 @@ void NFCManager::processWriteQueue() {
         // Check if already completed — skip without counting as our one write
         if (isRequestCompleted(request.request_id)) {
             xQueueReceive(writeQueue, &request, 0);
+            // A duplicate id (see enqueueWrite/enqueueRawWrite) can leave a
+            // second Pending reservation under the same request_id after the
+            // first one already completed and was recorded Done — whoever was
+            // polling for that id already has its answer from that slot, so
+            // this orphaned one is simply freed rather than filled in.
+            if (request.wants_outcome && writeOutcomeMutex_ != nullptr &&
+                xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
+                for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+                    if (writeOutcomeRing_[i].state == WriteOutcomeSlotState::Pending &&
+                        writeOutcomeRing_[i].request_id == request.request_id) {
+                        writeOutcomeRing_[i].state = WriteOutcomeSlotState::Empty;
+                        break;
+                    }
+                }
+                xSemaphoreGive(writeOutcomeMutex_);
+            }
             continue;
         }
 
@@ -1771,38 +1844,35 @@ void NFCManager::processWriteQueue() {
 
         // Record this request's outcome for the browser's /api/status poll,
         // under its own mutex so contention on the unrelated tagMutex can't
-        // drop it (#316 review).
-        if (writeOutcomeMutex_ != nullptr &&
-            xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
-            bool done[WRITE_OUTCOME_RING_SIZE];
-            uint32_t completedMs[WRITE_OUTCOME_RING_SIZE];
-            for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
-                done[i] = writeOutcomeRing_[i].done;
-                completedMs[i] = writeOutcomeRing_[i].completed_ms;
+        // drop it (#316 review). Only a request someone will poll for holds a
+        // Pending reservation (made at enqueue time — see enqueueWrite); an
+        // internal write with wants_outcome == 0 has none, and that is normal.
+        if (request.wants_outcome) {
+            if (writeOutcomeMutex_ != nullptr &&
+                xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
+                for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+                    WriteOutcome& slot = writeOutcomeRing_[i];
+                    if (slot.state != WriteOutcomeSlotState::Pending ||
+                        slot.request_id != request.request_id) {
+                        continue;
+                    }
+                    strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
+                    slot.uid[sizeof(slot.uid) - 1] = '\0';
+                    slot.ok = success;
+                    const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
+                    strncpy(slot.error, reason, sizeof(slot.error) - 1);
+                    slot.error[sizeof(slot.error) - 1] = '\0';
+                    slot.completed_ms = millis();
+                    slot.state = WriteOutcomeSlotState::Done;
+                    slot.done = true;
+                    writeOutcomeLastIndex_ = i;
+                    break;
+                }
+                xSemaphoreGive(writeOutcomeMutex_);
+            } else {
+                Serial.printf("NFCManager: write outcome for request %lu LOST — outcome lock timeout\n",
+                        (unsigned long)request.request_id);
             }
-            WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs,
-                    WRITE_OUTCOME_RING_SIZE, millis(), WRITE_OUTCOME_TTL_MS);
-            if (choice.evictedLive) {
-                Serial.printf("NFCManager: write outcome ring full — evicting live result for request %lu\n",
-                        (unsigned long)writeOutcomeRing_[choice.index].request_id);
-            }
-
-            WriteOutcome& slot = writeOutcomeRing_[choice.index];
-            slot.request_id = request.request_id;
-            strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
-            slot.uid[sizeof(slot.uid) - 1] = '\0';
-            slot.done = true;
-            slot.ok = success;
-            const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
-            strncpy(slot.error, reason, sizeof(slot.error) - 1);
-            slot.error[sizeof(slot.error) - 1] = '\0';
-            slot.completed_ms = millis();
-            writeOutcomeLastIndex_ = choice.index;
-
-            xSemaphoreGive(writeOutcomeMutex_);
-        } else {
-            Serial.printf("NFCManager: write outcome for request %lu LOST — outcome lock timeout\n",
-                    (unsigned long)request.request_id);
         }
 
         // Build and send the update message with snapshotted data

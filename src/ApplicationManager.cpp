@@ -844,7 +844,9 @@ void ApplicationManager::finishPrint(float gramsUsed, bool /*canceled*/) {
             }
 
             // Enqueue write with expected spool ID validation (prevent wrong tag updates)
-            NFCWriteRequest request;
+            // Zero-init: suppress_sync and wants_outcome are read by the NFC
+            // task, and stack garbage in either changes what the write does.
+            NFCWriteRequest request{};
             request.request_id = NFCManager::getInstance().generateRequestId();
             request.type = NFCWriteType::REMOVE_WEIGHT;
             strncpy(request.expected_spool_id, startingSpoolId, sizeof(request.expected_spool_id) - 1);
@@ -1016,8 +1018,8 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             int32_t existingId = -1;
             opt_get_gp_spoolman_id(&state.tag_data, &existingId);
             if (existingId != msg.payload.spoolmanSynced.spoolman_id) {
-                NFCWriteRequest request;
-                request.request_id = millis();
+                NFCWriteRequest request{};
+                request.request_id = NFCManager::getInstance().generateRequestId();
                 request.type = NFCWriteType::WRITE_SPOOLMAN_ID;
                 strncpy(request.expected_spool_id, msg.payload.spoolmanSynced.spool_id,
                         sizeof(request.expected_spool_id) - 1);

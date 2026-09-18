@@ -87,6 +87,10 @@ public:
         bool     ok = false;
         char     error[48] = {0};
         uint32_t completed_ms = 0;
+        // Reservation state: Empty (free), Pending (write accepted, no result
+        // yet), Done (done == true). Kept consistent with `done` above —
+        // other code and the JSON status path still read `done` directly.
+        WriteOutcomeSlotState state = WriteOutcomeSlotState::Empty;
     };
     // request_id == 0 returns the most recently completed write, whatever it
     // is; otherwise looks that specific request up in the ring. A second

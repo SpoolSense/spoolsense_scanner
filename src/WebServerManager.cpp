@@ -1952,9 +1952,10 @@ void WebServerManager::handleApiWriteTag() {
     // Enqueue single atomic write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_ATOMIC;
     req.suppress_sync = 0;
+    req.wants_outcome = 1;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
 
     if (!NFCManager::getInstance().enqueueWrite(req)) {
@@ -1991,8 +1992,9 @@ void WebServerManager::handleApiFormatTag() {
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::FORMAT_NEW;
+    req.wants_outcome = 1;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     if (!NFCManager::getInstance().enqueueWrite(req)) {
         sendError(503, "Write queue full");
@@ -2086,8 +2088,9 @@ void WebServerManager::handleApiWriteTigerTag() {
     // Enqueue write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_TIGERTAG;
+    req.wants_outcome = 1;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     memcpy(req.data.tigertag_data, payload, 40);
     if (!NFCManager::getInstance().enqueueWrite(req)) {
@@ -2343,6 +2346,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     memset(&req, 0, sizeof(req));
     req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_OPENTAG3D;
+    req.wants_outcome = 1;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
 
     if (!NFCManager::getInstance().enqueueRawWrite(req, (const uint8_t*)&patch, sizeof(patch))) {
@@ -2399,6 +2403,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
     memset(&req, 0, sizeof(req));
     req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_OPENSPOOL;
+    req.wants_outcome = 1;
     // Bind the write to the UID the page detected when Write was pressed,
     // exactly as the TigerTag and OpenTag3D handlers do. Without it
     // validateWriteUid() accepts whatever tag happens to be present, so a tag

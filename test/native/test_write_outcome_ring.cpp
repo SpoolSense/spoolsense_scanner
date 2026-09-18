@@ -1,7 +1,9 @@
-// Write-outcome ring slot selection tests (#316 follow-up): a browser polls
-// for its result for up to 15 s, so eviction must prefer a free slot, then
-// the oldest expired one, and only fall back to overwriting a live result
-// as a last resort — which the caller must be able to detect and log.
+// Write-outcome ring slot reservation tests (#316 follow-up): an outcome slot
+// is reserved the moment a polled write is ACCEPTED, not when it finishes, so
+// a burst of later requests can never steal the result out from under a
+// browser that is still polling for it. A Pending slot and a Done slot still
+// inside its TTL must never be handed out; only an Empty slot or an expired
+// Done slot may be reserved, and refusing the new write is the fallback.
 #include "../../src/WriteOutcomeRing.h"
 #include <cstdio>
 
@@ -13,75 +15,90 @@ static int failures = 0;
         else { printf("  FAIL  %s\n", name); failures++; } \
     } while (0)
 
+using State = WriteOutcomeSlotState;
+
 int main() {
-    printf("=== Write outcome ring slot selection tests ===\n");
+    printf("=== Write outcome ring slot reservation tests ===\n");
 
-    // a. Empty ring: nothing is done yet, so the first slot is free.
+    // a. All empty: nothing reserved yet, so the first slot is free.
     {
-        bool done[4] = {false, false, false, false};
+        State states[4] = {State::Empty, State::Empty, State::Empty, State::Empty};
         uint32_t completedMs[4] = {0, 0, 0, 0};
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 4, 1000, 20000);
-        CHECK(choice.index == 0 && !choice.evictedLive, "empty ring picks index 0, not evicting a live result");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 4, 1000, 20000);
+        CHECK(slot == 0, "all empty picks index 0");
     }
 
-    // b. Some slots done, first free slot is index 3.
+    // b. First Empty slot is index 3 — picked over any Done slot.
     {
-        bool done[5] = {true, true, true, false, true};
+        State states[5] = {State::Done, State::Done, State::Done, State::Empty, State::Done};
         uint32_t completedMs[5] = {100, 200, 300, 0, 400};
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 5, 1000, 20000);
-        CHECK(choice.index == 3 && !choice.evictedLive, "first free slot (index 3) is picked over any done slot");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 5, 1000, 20000);
+        CHECK(slot == 3, "first free slot (index 3) is picked over any done slot");
     }
 
-    // c. All done, one slot older than the TTL and the rest young.
+    // c. No Empty, one Done expired — that index is reused.
     {
-        bool done[3] = {true, true, true};
+        State states[3] = {State::Done, State::Done, State::Done};
         uint32_t completedMs[3] = {5000, 29000, 29500};   // nowMs=30000 -> ages 25000/1000/500
-        uint32_t nowMs = 30000;
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 3, nowMs, 20000);
-        CHECK(choice.index == 0 && !choice.evictedLive, "the single expired slot (oldest) is picked, not flagged as live eviction");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 3, 30000, 20000);
+        CHECK(slot == 0, "the single expired slot is reused");
     }
 
-    // d. All done, two expired slots — the OLDER of the two is picked.
+    // d. No Empty, two expired — the OLDER of the two is picked.
     {
-        bool done[2] = {true, true};
+        State states[2] = {State::Done, State::Done};
         uint32_t completedMs[2] = {5000, 10000};          // nowMs=50000 -> ages 45000/40000
-        uint32_t nowMs = 50000;
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 2, nowMs, 20000);
-        CHECK(choice.index == 0 && !choice.evictedLive, "older of two expired slots is picked");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 2, 50000, 20000);
+        CHECK(slot == 0, "older of two expired slots is picked");
     }
 
-    // e. All done, all younger than the TTL — must evict a live result and say so.
+    // e. No Empty, all Done but younger than the TTL — nothing may be taken.
     {
-        bool done[3] = {true, true, true};
+        State states[3] = {State::Done, State::Done, State::Done};
         uint32_t completedMs[3] = {49000, 48000, 49500};  // nowMs=50000 -> ages 1000/2000/500
-        uint32_t nowMs = 50000;
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 3, nowMs, 20000);
-        CHECK(choice.index == 1 && choice.evictedLive, "oldest of all-live slots is picked and flagged as a live eviction");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 3, 50000, 20000);
+        CHECK(slot == -1, "no slot may be taken when every Done result is still live");
     }
 
-    // f. millis() wrap: a slot completed just before the wrap is far older
-    // than its raw completedMs value suggests once now has wrapped around.
+    // f. A Pending slot is never returned, even when its completedMs (stale
+    // from a previous occupant, or simply zero) looks ancient — a younger but
+    // already-expired Done slot next to it is reused instead.
     {
-        bool done[2] = {true, true};
-        uint32_t completedMs[2] = {0xFFFFF000u, 500};     // nowMs=1000 -> ages ~5096 / 500
-        uint32_t nowMs = 1000;
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 2, nowMs, 20000);
-        CHECK(choice.index == 0 && choice.evictedLive, "millis() wrap is handled by unsigned subtraction, wrapped slot is older");
+        State states[2] = {State::Pending, State::Done};
+        uint32_t completedMs[2] = {0, 25000};             // nowMs=50000 -> Done age 25000 (expired)
+        int slot = writeOutcomeReserveSlot(states, completedMs, 2, 50000, 20000);
+        CHECK(slot == 1, "Pending slot is skipped in favor of the expired Done slot");
     }
 
-    // g. Age exactly equal to the TTL counts as expired, not live.
+    // g. Pending plus a still-live Done, no Empty — must refuse, never touch Pending.
     {
-        bool done[1] = {true};
+        State states[2] = {State::Pending, State::Done};
+        uint32_t completedMs[2] = {0, 49000};             // nowMs=50000 -> Done age 1000 (live)
+        int slot = writeOutcomeReserveSlot(states, completedMs, 2, 50000, 20000);
+        CHECK(slot == -1, "Pending plus a live Done refuses rather than reserving Pending");
+    }
+
+    // h. millis() wrap: a Done slot completed just before the wrap is far
+    // older than its raw completedMs value suggests once now has wrapped.
+    {
+        State states[1] = {State::Done};
+        uint32_t completedMs[1] = {0xFFFFF000u};          // nowMs=1000 -> age 5096 (wraps)
+        int slot = writeOutcomeReserveSlot(states, completedMs, 1, 1000, 4000);
+        CHECK(slot == 0, "millis() wrap is handled by unsigned subtraction, wrapped slot is expired");
+    }
+
+    // i. Age exactly equal to the TTL counts as expired, not live.
+    {
+        State states[1] = {State::Done};
         uint32_t completedMs[1] = {30000};                // nowMs=50000 -> age exactly 20000
-        uint32_t nowMs = 50000;
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs, 1, nowMs, 20000);
-        CHECK(choice.index == 0 && !choice.evictedLive, "age exactly equal to the TTL counts as expired");
+        int slot = writeOutcomeReserveSlot(states, completedMs, 1, 50000, 20000);
+        CHECK(slot == 0, "age exactly equal to the TTL counts as expired");
     }
 
-    // h. count == 0 must not crash and returns a harmless default.
+    // j. count == 0 must not crash and returns -1.
     {
-        WriteOutcomeSlotChoice choice = writeOutcomePickSlot(nullptr, nullptr, 0, 1000, 20000);
-        CHECK(choice.index == 0 && !choice.evictedLive, "zero-length ring returns {0, false} without crashing");
+        int slot = writeOutcomeReserveSlot(nullptr, nullptr, 0, 1000, 20000);
+        CHECK(slot == -1, "zero-length ring returns -1 without crashing");
     }
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
