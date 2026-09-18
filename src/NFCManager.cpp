@@ -77,6 +77,12 @@ bool NFCManager::begin() {
         return false;
     }
 
+    stagingMutex = xSemaphoreCreateMutex();
+    if (stagingMutex == nullptr) {
+        Serial.println("NFCManager: Failed to create staging mutex");
+        return false;
+    }
+
     // Initialize state
     memset(&currentSpool, 0, sizeof(currentSpool));
     memset(lastSeenUid, 0, sizeof(lastSeenUid));
@@ -1563,22 +1569,35 @@ void NFCManager::sendTagRemovedMessage() {
 }
 
 bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize) {
-    if (dataSize == 0 || dataSize > RAW_WRITE_BUFFER_SIZE) {
+    if (dataSize == 0 || dataSize > RAW_WRITE_BUFFER_SIZE) return false;
+    if (stagingMutex == nullptr) return false;
+    if (xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("NFCManager: enqueueRawWrite - staging busy");
         return false;
     }
+
+    bool ok = false;
     if (rawWritePending_) {
         Serial.println("NFCManager: Raw write already pending");
-        return false;
+    } else {
+        memcpy(rawWriteBuffer_, data, dataSize);
+        rawWriteBufferSize_ = dataSize;
+        rawWritePending_ = true;
+        // Publish the queue entry last, and only while still holding the slot:
+        // a consumer that dequeues before the flag is set finds no data, and a
+        // second producer that slips in overwrites the bytes a queued request
+        // already owns — and OpenSpool reinterprets this same buffer as JSON.
+        if (enqueueWrite(req)) {
+            ok = true;
+        } else {
+            rawWritePending_ = false;
+            rawWriteBufferSize_ = 0;
+            Serial.println("NFCManager: enqueueRawWrite - queue full");
+        }
     }
-    memcpy(rawWriteBuffer_, data, dataSize);
-    rawWriteBufferSize_ = dataSize;
-    if (!enqueueWrite(req)) {
-        rawWriteBufferSize_ = 0;
-        Serial.println("NFCManager: enqueueRawWrite - queue full");
-        return false;
-    }
-    rawWritePending_ = true;
-    return true;
+
+    xSemaphoreGive(stagingMutex);
+    return ok;
 }
 
 uint32_t NFCManager::generateRequestId() {
@@ -1781,11 +1800,31 @@ void NFCManager::processWriteQueue() {
 bool NFCManager::writeRawTag() {
     Serial.println("NFCManager: writeRawTag() called");
 
+    // Claim the staged bytes under the mutex, then release before any radio
+    // work — writeISO14443Pages/readISO14443Pages below take hundreds of ms
+    // and must not stall the HTTP task behind stagingMutex.
+    uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
+    size_t localSize = 0;
+    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("NFCManager: writeRawTag - could not acquire stagingMutex");
+        return false;
+    }
+    if (!rawWritePending_) {
+        xSemaphoreGive(stagingMutex);
+        Serial.println("NFCManager: writeRawTag - no raw data pending");
+        return false;
+    }
+    localSize = rawWriteBufferSize_;
+    memcpy(localBuf, rawWriteBuffer_, localSize);
+    rawWritePending_ = false;
+    rawWriteBufferSize_ = 0;
+    xSemaphoreGive(stagingMutex);
+
     // Copy raw data into a local opt_tag_t
     opt_tag_t localTag;
     opt_init(&localTag);
-    memcpy(localTag.data, rawWriteBuffer_, rawWriteBufferSize_);
-    localTag.data_size = rawWriteBufferSize_;
+    memcpy(localTag.data, localBuf, localSize);
+    localTag.data_size = localSize;
     localTag.initialized = true;
 
     // Write all pages to NFC tag
@@ -1794,7 +1833,6 @@ bool NFCManager::writeRawTag() {
     opt_error_t err = opt_write_to_nfc(&localTag, hal);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to write raw tag: %s\n", opt_error_str(err));
-        rawWritePending_ = false;
         return false;
     }
 
@@ -1810,7 +1848,6 @@ bool NFCManager::writeRawTag() {
             if (err == OPT_OK) {
                 if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
                     Serial.println("NFCManager: Could not acquire tagMutex after raw write verify");
-                    rawWritePending_ = false;
                     return false;
                 }
                 currentSpool.tag_data = localTag;
@@ -1822,7 +1859,6 @@ bool NFCManager::writeRawTag() {
                 sendOpenPrintTagMessage();
                 xSemaphoreGive(tagMutex);
 
-                rawWritePending_ = false;
                 Serial.println("NFCManager: writeRawTag() complete - verified");
                 return true;
             }
@@ -1837,13 +1873,11 @@ bool NFCManager::writeRawTag() {
     err = opt_parse_ndef(&localTag);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to parse in-memory raw data: %s\n", opt_error_str(err));
-        rawWritePending_ = false;
         return false;
     }
 
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("NFCManager: Could not acquire tagMutex after raw write fallback");
-        rawWritePending_ = false;
         return false;
     }
     currentSpool.tag_data = localTag;
@@ -1855,7 +1889,6 @@ bool NFCManager::writeRawTag() {
     sendOpenPrintTagMessage();
     xSemaphoreGive(tagMutex);
 
-    rawWritePending_ = false;
     Serial.println("NFCManager: writeRawTag() complete - unverified");
     return true;
 }
@@ -2204,19 +2237,38 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 
     bool uidTimedOut = false;
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D", &uidTimedOut)) {
-        rawWritePending_ = false;
+        if (stagingMutex != nullptr && xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            rawWritePending_ = false;
+            rawWriteBufferSize_ = 0;
+            xSemaphoreGive(stagingMutex);
+        }
         // Tag-removed-or-swapped is the common case; a lock timeout is rare
         // and means something else — don't tell the user the wrong one.
         OT3D_SET_ERR(uidTimedOut ? "reader busy" : "tag removed");
         return false;
     }
 
+    // Claim the staged bytes under the mutex, then release before any radio
+    // work — checkWriteCapacity/writeISO14443Pages below take hundreds of ms
+    // and must not stall the HTTP task behind stagingMutex.
+    uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
+    size_t localSize = 0;
+    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("NFCManager: WRITE_OPENTAG3D - could not acquire stagingMutex");
+        OT3D_SET_ERR("staging busy");
+        return false;
+    }
     if (!rawWritePending_) {
+        xSemaphoreGive(stagingMutex);
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
-        rawWritePending_ = false;
         OT3D_SET_ERR("no data queued");
         return false;
     }
+    localSize = rawWriteBufferSize_;
+    memcpy(localBuf, rawWriteBuffer_, localSize);
+    rawWritePending_ = false;
+    rawWriteBufferSize_ = 0;
+    xSemaphoreGive(stagingMutex);
 
     // Exactly two staged shapes exist: the ot3d_patch_t envelope (web UI) and
     // the bare opentag3d_t (DeductionManager). A future struct change that
@@ -2227,29 +2279,24 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     ot3d_patch_t patch;
     opentag3d_t ot3d;
     bool isPatch = false;
-    if (rawWriteBufferSize_ == sizeof(ot3d_patch_t)) {
-        memcpy(&patch, rawWriteBuffer_, sizeof(patch));
+    if (localSize == sizeof(ot3d_patch_t)) {
+        memcpy(&patch, localBuf, sizeof(patch));
         if (patch.magic != OT3D_PATCH_MAGIC) {
             Serial.println("NFCManager: WRITE_OPENTAG3D - unrecognized envelope magic - refusing write");
-            rawWritePending_ = false;
-            rawWriteBufferSize_ = 0;
             OT3D_SET_ERR("bad envelope");
             return false;
         }
         isPatch = true;
-    } else if (rawWriteBufferSize_ == sizeof(opentag3d_t)) {
+    } else if (localSize == sizeof(opentag3d_t)) {
         // DeductionManager still queues a bare, complete struct with its own
         // version. Leave that path exactly as it was.
-        memcpy(&ot3d, rawWriteBuffer_, sizeof(ot3d));
+        memcpy(&ot3d, localBuf, sizeof(ot3d));
     } else {
         Serial.printf("NFCManager: WRITE_OPENTAG3D - unrecognized payload size %u - refusing write\n",
-                      (unsigned)rawWriteBufferSize_);
-        rawWritePending_ = false;
-        rawWriteBufferSize_ = 0;
+                      (unsigned)localSize);
         OT3D_SET_ERR("bad payload size");
         return false;
     }
-    rawWritePending_ = false;
 
     if (isPatch) {
         if (patch.mode == OT3D_MODE_REPLACE) {
@@ -2331,17 +2378,29 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
 
+    // Claim the staged bytes under the mutex, then release before any radio
+    // work — checkWriteCapacity/writeISO14443Pages below take hundreds of ms
+    // and must not stall the HTTP task behind stagingMutex.
+    uint8_t localBuf[RAW_WRITE_BUFFER_SIZE];
+    size_t localSize = 0;
+    if (stagingMutex == nullptr || xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        Serial.println("NFCManager: WRITE_OPENSPOOL - could not acquire stagingMutex");
+        return false;
+    }
     if (!rawWritePending_ || rawWriteBufferSize_ == 0) {
+        xSemaphoreGive(stagingMutex);
         Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data available");
         return false;
     }
-
-    const uint8_t* jsonPayload = rawWriteBuffer_;
-    uint16_t payloadLen = (uint16_t)rawWriteBufferSize_;
+    localSize = rawWriteBufferSize_;
+    memcpy(localBuf, rawWriteBuffer_, localSize);
     rawWritePending_ = false;
+    rawWriteBufferSize_ = 0;
+    xSemaphoreGive(stagingMutex);
 
+    uint16_t payloadLen = (uint16_t)localSize;
     uint8_t ndefBuf[256];
-    uint16_t ndefLen = buildNdefTlv("application/json", jsonPayload, payloadLen, ndefBuf, sizeof(ndefBuf));
+    uint16_t ndefLen = buildNdefTlv("application/json", localBuf, payloadLen, ndefBuf, sizeof(ndefBuf));
     if (ndefLen == 0) {
         Serial.printf("NFCManager: WRITE_OPENSPOOL - NDEF too large\n");
         return false;
@@ -2498,7 +2557,13 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
             return false;
         }
         if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
-            rawWritePending_ = false;
+            // Tag changed underneath us — drop the stale staged payload under
+            // the same lock enqueueRawWrite/writeRawTag use for this slot.
+            if (stagingMutex != nullptr && xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                rawWritePending_ = false;
+                rawWriteBufferSize_ = 0;
+                xSemaphoreGive(stagingMutex);
+            }
             return false;
         }
         return writeRawTag();

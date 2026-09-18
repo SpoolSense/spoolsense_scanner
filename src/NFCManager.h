@@ -255,6 +255,7 @@ private:
     // Write queue (FreeRTOS)
     QueueHandle_t writeQueue = nullptr;
     SemaphoreHandle_t tagMutex = nullptr;
+    SemaphoreHandle_t stagingMutex = nullptr;   // guards rawWriteBuffer_/Size_/Pending_
 
     // Completed request tracking (circular buffer)
     static constexpr size_t COMPLETED_REQUESTS_SIZE = 32;
