@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.11.2] - 2026-09-18
+
+### Added
+
+- **RC522 (MFRC522) NFC reader support** — a third reader option for low-cost RC522 modules. It reads and writes every ISO14443A format (TigerTag, OpenTag3D, OpenSpool, NFC+, Bambu) and is selected on the config page like the PN532. It cannot read OpenPrintTag (ISO15693). The README has a wiring table for every supported board; power the module from 3.3 V. Contributed by Mitch (@thekakester) of the OpenTag3D team. (#319)
+- **The spool picker is served from memory** — the writer and reader pages used to make the scanner fetch the whole spool list from Spoolman on every picker open, and the web UI waited on it. The scanner now keeps a compact copy in RAM, refreshes it every 60 seconds and right after a sync, registration, enrichment save, or deduction, and falls back to the live fetch whenever the copy is not available. Boards without the memory for it (WROOM with a TFT) and the ESP32-C3 keep the live fetch. (#248)
+- **Contributor guide** — `CONTRIBUTING.md` now covers environment setup, building for every board, flashing, configuration, and the native tests. Contributed by Mitch (@thekakester) of the OpenTag3D team. (#318)
+- **Third-party license notice** — `THIRD-PARTY-LICENSES.md` lists every bundled library with its license and includes the LGPL texts. (#319)
+
+### Fixed
+
+- **Background network activity stands down during a firmware download** — a download is the scanner's tightest memory moment, yet Spoolman syncs, printer polls, and deductions could run beside it. They now pause and resume by themselves, queued syncs and deductions are kept and retried, and API calls that cannot run answer "update in progress" at once instead of hanging. (#277)
+- **A failed firmware download no longer uses up memory** — every failed update from a URL (bad link, GitHub unreachable, WiFi drop) left about 43 KB of memory locked until the next reboot, so a few failed attempts in a row could make the scanner unstable. The memory is now released on every failure. (#321)
+- **OpenTag3D manufacturer tags with a 216-byte record now read** — tags that stop at the last defined v2 field instead of padding to 224 bytes were rejected as too short. Contributed by Mitch (@thekakester) of the OpenTag3D team. (#319)
+- **A half-read OpenTag3D tag is never treated as valid** — the scanner decodes a tag only when it received the complete record the tag declares, so a tag pulled away mid-read can no longer be written back with missing fields. (#319)
+
+### Changed
+
+- **Web API requests are size-limited** — JSON bodies sent to the scanner are now capped at 4 KB and collected in one bounded buffer, so an oversized or malformed request gets a clear error (413) instead of using up memory. Contributed by Mitch (@thekakester) of the OpenTag3D team. (#318)
+
 ## [1.11.1] - 2026-09-15
 
 ### Added
