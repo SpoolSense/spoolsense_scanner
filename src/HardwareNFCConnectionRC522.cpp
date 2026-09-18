@@ -3,6 +3,7 @@
 #include "BoardPins.h"
 #include "ConfigurationManager.h"
 #include "SharedSPIBus.h"
+#include "NfcSpiBus.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -81,8 +82,11 @@ bool HardwareNFCConnectionRC522::begin() {
     }
     SPIClass* spiBus = &SharedSPIBus::bus();
 #else
-    SPI.begin(pinSck_, pinMiso_, pinMosi_, pinSs_);
-    SPIClass* spiBus = &SPI;
+    // Arduino's global SPI is the TFT's host on the WROOM (VSPI) and the
+    // S3-Zero (SPI2). Take the peripheral the PN5180 uses on this board.
+    static SPIClass nfcSpi(PN5180_SPI_BUS);
+    nfcSpi.begin(pinSck_, pinMiso_, pinMosi_, pinSs_);
+    SPIClass* spiBus = &nfcSpi;
 #endif
 
     SharedSPIBus::Guard spiGuard;
@@ -148,6 +152,7 @@ bool HardwareNFCConnectionRC522::begin() {
 
 void HardwareNFCConnectionRC522::reset() {
     // Implements NFCConnectionI::reset() using the MFRC522v2 soft-reset path.
+    tagSessionActive_ = false;
     if (!reader_) return;
     SharedSPIBus::Guard spiGuard;
     if (!spiGuard) {
@@ -322,16 +327,21 @@ uint16_t HardwareNFCConnectionRC522::readISO14443Pages(
         byte responseLen = sizeof(response);
         uint8_t page = startPage + static_cast<uint8_t>(pageOffset);
 
+        // A READ answers with 16 data bytes + 2 CRC bytes, and the library
+        // reports all 18. It can also pass a shorter frame whose last two
+        // bytes happen to be a valid CRC, which would put CRC bytes and
+        // zeros into the page data — so anything but 18 is a failure.
         MFRC522::StatusCode status = reader_->MIFARE_Read(page, response, &responseLen);
-        if (status != MFRC522::StatusCode::STATUS_OK) {
-            Serial.printf("RC522: page read failed at page %u — %s (0x%02X); reselecting tag\n",
-                          page, statusName(status), static_cast<uint8_t>(status));
+        if (status != MFRC522::StatusCode::STATUS_OK || responseLen != sizeof(response)) {
+            Serial.printf("RC522: page read failed at page %u — %s (0x%02X), %u bytes; reselecting tag\n",
+                          page, statusName(status), static_cast<uint8_t>(status), responseLen);
             if (!reactivateTagUnlocked()) return 0;
+            memset(response, 0, sizeof(response));
             responseLen = sizeof(response);
             status = reader_->MIFARE_Read(page, response, &responseLen);
-            if (status != MFRC522::StatusCode::STATUS_OK) {
-                Serial.printf("RC522: page read retry failed at page %u — %s (0x%02X)\n",
-                              page, statusName(status), static_cast<uint8_t>(status));
+            if (status != MFRC522::StatusCode::STATUS_OK || responseLen != sizeof(response)) {
+                Serial.printf("RC522: page read retry failed at page %u — %s (0x%02X), %u bytes\n",
+                              page, statusName(status), static_cast<uint8_t>(status), responseLen);
                 return 0;
             }
         }
@@ -413,7 +423,9 @@ bool HardwareNFCConnectionRC522::ntagGetVersion(uint8_t* versionOut) {
     byte responseLen = sizeof(response);
     MFRC522::StatusCode status = reader_->PCD_TransceiveData(
         command, sizeof(command), response, &responseLen, nullptr, 0, true);
-    if (status != MFRC522::StatusCode::STATUS_OK || responseLen < 8) {
+    // 8 version bytes + 2 CRC bytes. A shorter valid-CRC frame would put a CRC
+    // byte where the storage-size byte is read, and mis-size the tag.
+    if (status != MFRC522::StatusCode::STATUS_OK || responseLen != sizeof(response)) {
         Serial.printf("RC522: NTAG GET_VERSION failed — %s (0x%02X), response bytes=%u\n",
                       statusName(status), static_cast<uint8_t>(status), responseLen);
         return false;
@@ -458,7 +470,7 @@ bool HardwareNFCConnectionRC522::mifareClassicRead(uint8_t blockNo, uint8_t* buf
     byte response[18] = {0};
     byte responseLen = sizeof(response);
     MFRC522::StatusCode status = reader_->MIFARE_Read(blockNo, response, &responseLen);
-    if (status != MFRC522::StatusCode::STATUS_OK || responseLen < 16) {
+    if (status != MFRC522::StatusCode::STATUS_OK || responseLen != sizeof(response)) {
         Serial.printf("RC522: MIFARE block %u read failed — %s (0x%02X), response bytes=%u\n",
                       blockNo, statusName(status), static_cast<uint8_t>(status), responseLen);
         return false;
