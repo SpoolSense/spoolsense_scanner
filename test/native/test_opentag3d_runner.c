@@ -178,11 +178,26 @@ int main(void) {
     CHECK(r == OT3D_VERSION_WARNING, "B: result OT3D_VERSION_WARNING");
     CHECK(out.barcode == 12345543210ULL && out.has_extended == 1, "B: fields still parsed at 2050");
 
-    /* C: v2 truncated — 223 bytes */
-    printf("[C] v2 truncated (223B)\n");
+    /* C: v2 truncated — a record shorter than its last defined field is a
+     * partial read. Decoding it would hand zeros to the full-map re-encode. */
+    printf("[C] v2 truncated (100B, 215B)\n");
     build_v2_nominal(buf);
-    r = opentag3d_decode(buf, OT3D_V2_MAP_SIZE - 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "C: result OT3D_PARSE_ERROR");
+    r = opentag3d_decode(buf, 100, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "C: 100-byte v2 payload rejected");
+    r = opentag3d_decode(buf, OT3D_V2_MIN_SIZE - 1, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "C: v2 payload one byte short of the last field rejected");
+    r = opentag3d_decode(buf, 2, &out);
+    CHECK(r == OT3D_PARSE_ERROR && out.tag_version == 2000,
+          "C: version-only v2 payload rejected, version still reported");
+
+    /* Manufacturer tags may stop at the final defined v2 field rather than
+     * padding the record to the canonical encoded map size. */
+    printf("[C2] v2 final-field length (216B)\n");
+    build_v2_nominal(buf);
+    r = opentag3d_decode(buf, OT3D_V2_OFF_DATA_URL + OT3D_V2_LEN_DATA_URL, &out);
+    CHECK(OT3D_V2_MIN_SIZE == 216, "C2: minimum v2 record is 216 bytes");
+    CHECK(r == OT3D_OK, "C2: 216-byte manufacturer payload decodes");
+    if (r == OT3D_OK) check_v2_fields(&out);
 
     /* D: future major — 3000 rejected, version kept */
     printf("[D] future major (v3000)\n");
@@ -229,6 +244,30 @@ int main(void) {
     CHECK(r == OT3D_VERSION_WARNING, "G: result OT3D_VERSION_WARNING");
 
     /* H: runt — 1 byte */
+    /* F2: v1 lengths. Core-only runs to the start of the extended block; a
+     * length that cuts through the extended block is rejected, because it
+     * would re-encode as core-only and drop the extended bytes on the tag. */
+    printf("[F2] v1 length boundaries (101/112/113/186/187B)\n");
+    memset(buf, 0, OT3D_V2_MAP_SIZE);
+    put_u16(buf + 0x00, 1000);
+    put_u16(buf + 0x5E, 1000);
+    memcpy(buf + 0x90, "SERIAL-IN-EXT", 13);
+    r = opentag3d_decode(buf, OT3D_CORE_SIZE - 1, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "F2: 101-byte v1 payload rejected");
+    r = opentag3d_decode(buf, OT3D_EXTENDED_START, &out);
+    CHECK(r == OT3D_OK && out.has_extended == 0 && out.target_weight_g == 1000,
+          "F2: 112-byte v1 payload is core-only");
+    r = opentag3d_decode(buf, OT3D_EXTENDED_START + 1, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "F2: 113-byte v1 payload (1 extended byte) rejected");
+    r = opentag3d_decode(buf, 150, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "F2: 150-byte v1 payload (partial extended) rejected");
+    r = opentag3d_decode(buf, OT3D_EXTENDED_MIN - 1, &out);
+    CHECK(r == OT3D_PARSE_ERROR, "F2: 186-byte v1 payload rejected");
+    r = opentag3d_decode(buf, OT3D_EXTENDED_MIN, &out);
+    CHECK(r == OT3D_OK && out.has_extended == 1 &&
+          strcmp(out.serial_number, "SERIAL-IN-EXT") == 0,
+          "F2: 187-byte v1 payload decodes the extended block");
+
     printf("[H] runt (1B)\n");
     memset(buf, 0, 4);
     r = opentag3d_decode(buf, 1, &out);

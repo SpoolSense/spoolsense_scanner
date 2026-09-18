@@ -401,7 +401,14 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                 SCAN_PHASE(22);
                 uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
                                                         effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
-                if (payloadBytes >= OT3D_CORE_SIZE) {
+                // readNdefPayload returns what it actually got, which is short
+                // after a failed page read (PN5180 hands back partial reads) or
+                // a record declared past the end of the tag, and is capped at
+                // this buffer. Decode only a complete record that fits the
+                // map: anything else re-encodes with bytes missing.
+                const bool complete = rec.payloadLen <= sizeof(payload) &&
+                                      payloadBytes > 0 && payloadBytes == rec.payloadLen;
+                if (complete) {
                     opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
@@ -415,6 +422,9 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
                         Serial.printf("NFCManager: OpenTag3D major version too new (%u) — cannot parse\n",
                                       ot3dData.tag_version);
                     }
+                } else {
+                    Serial.printf("NFCManager: OpenTag3D payload incomplete or oversized (%u of %u bytes) — not decoding\n",
+                                  payloadBytes, (unsigned)rec.payloadLen);
                 }
             }
 
@@ -2553,7 +2563,6 @@ bool NFCManager::isDuplicateSpool(const uint8_t* uid, uint8_t uid_length) {
     if (lastSeenUidLength > 0 && uid_length >= 3 && lastSeenUidLength >= 3 &&
         (millis() - lastSeenMs) < SCAN_COOLDOWN_MS &&
         memcmp(uid, lastSeenUid, 3) == 0) {
-        Serial.println("NFCManager: Suppressed re-read (cooldown, partial UID match)");
         return true;
     }
 

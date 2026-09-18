@@ -14,8 +14,8 @@ void sanitizeHostname(char* buf, size_t cap);
 #define DEVICE_VERSION FIRMWARE_VERSION
 
 // Runtime-configurable NFC reader pins (#201). Index order is fixed — NVS
-// keys, config API fields, and the UI all follow it. PN532 uses the same six
-// slots (SS=NSS; no BUSY — that slot is simply unused by the PN532 driver).
+// keys, config API fields, and the UI all follow it. PN532 and RC522 use the
+// same six slots (SS=NSS; no BUSY — that slot is unused by those drivers).
 enum class NfcPinId : uint8_t { Rst = 0, Nss, Busy, Sck, Mosi, Miso, Count };
 
 // led_pin sentinel: absent in NVS or 0xFF means "use the board default"
@@ -44,7 +44,7 @@ struct ConfigUpdate {
     char prusalink_url[128];
     char prusalink_api_key[64];
     // NFC reader selection
-    char nfc_reader[8];  // "pn5180" or "pn532"
+    char nfc_reader[8];  // "pn5180", "pn532", or "rc522" (no ISO15693/OpenPrintTag)
     // mDNS / WiFi hostname
     char hostname[33];   // max 32 chars + null
     uint16_t low_spool_threshold_g;  // grams below which LED breathes (default 100)

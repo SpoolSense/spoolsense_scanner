@@ -1151,7 +1151,9 @@ void WebServerManager::handleApiPostConfig() {
     strncpy(update.prusalink_url, doc["prusalink_url"] | "", sizeof(update.prusalink_url) - 1);
     strncpy(update.prusalink_api_key, doc["prusalink_api_key"] | "", sizeof(update.prusalink_api_key) - 1);
     const char* nfcVal = doc["nfc_reader"] | "pn5180";
-    if (strcmp(nfcVal, "pn532") != 0) nfcVal = "pn5180";  // only allow known values
+    if (strcmp(nfcVal, "pn532") != 0 && strcmp(nfcVal, "rc522") != 0) {
+        nfcVal = "pn5180";  // only allow known values
+    }
     strncpy(update.nfc_reader, nfcVal, sizeof(update.nfc_reader) - 1);
 
     // Hostname: sanitize via shared helper (lowercase alphanum + hyphens, 1-32 chars)
