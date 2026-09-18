@@ -83,6 +83,12 @@ bool NFCManager::begin() {
         return false;
     }
 
+    writeOutcomeMutex_ = xSemaphoreCreateMutex();
+    if (writeOutcomeMutex_ == nullptr) {
+        Serial.println("NFCManager: Failed to create write outcome mutex");
+        return false;
+    }
+
     // Initialize state
     memset(&currentSpool, 0, sizeof(currentSpool));
     memset(lastSeenUid, 0, sizeof(lastSeenUid));
@@ -112,13 +118,12 @@ bool NFCManager::getCurrentSpoolState(CurrentSpoolState& out) {
 }
 
 bool NFCManager::getLastWriteOutcome(uint32_t request_id, WriteOutcome& out) {
-    if (tagMutex == nullptr) return false;
-    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    if (writeOutcomeMutex_ == nullptr) return false;
+    if (xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(50)) != pdTRUE) return false;
     bool found = false;
     if (request_id == 0) {
-        size_t mostRecent = (writeOutcomeRingNext_ + WRITE_OUTCOME_RING_SIZE - 1) % WRITE_OUTCOME_RING_SIZE;
-        if (writeOutcomeRing_[mostRecent].done) {
-            out = writeOutcomeRing_[mostRecent];
+        if (writeOutcomeRing_[writeOutcomeLastIndex_].done) {
+            out = writeOutcomeRing_[writeOutcomeLastIndex_];
             found = true;
         }
     } else {
@@ -130,7 +135,7 @@ bool NFCManager::getLastWriteOutcome(uint32_t request_id, WriteOutcome& out) {
             }
         }
     }
-    xSemaphoreGive(tagMutex);
+    xSemaphoreGive(writeOutcomeMutex_);
     return found;
 }
 
@@ -1749,8 +1754,7 @@ void NFCManager::processWriteQueue() {
 
         markRequestCompleted(request.request_id);
 
-        // Snapshot spool info under mutex for the notification message, and
-        // record this request's outcome for the browser's /api/status poll.
+        // Snapshot spool info under mutex for the notification message.
         char snapshotSpoolId[64];
         float snapshotRemainingGrams = 0;
         bool snapshotValid = false;
@@ -1762,7 +1766,28 @@ void NFCManager::processWriteQueue() {
                 snapshotValid = true;
             }
 
-            WriteOutcome& slot = writeOutcomeRing_[writeOutcomeRingNext_];
+            xSemaphoreGive(tagMutex);
+        }
+
+        // Record this request's outcome for the browser's /api/status poll,
+        // under its own mutex so contention on the unrelated tagMutex can't
+        // drop it (#316 review).
+        if (writeOutcomeMutex_ != nullptr &&
+            xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
+            bool done[WRITE_OUTCOME_RING_SIZE];
+            uint32_t completedMs[WRITE_OUTCOME_RING_SIZE];
+            for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+                done[i] = writeOutcomeRing_[i].done;
+                completedMs[i] = writeOutcomeRing_[i].completed_ms;
+            }
+            WriteOutcomeSlotChoice choice = writeOutcomePickSlot(done, completedMs,
+                    WRITE_OUTCOME_RING_SIZE, millis(), WRITE_OUTCOME_TTL_MS);
+            if (choice.evictedLive) {
+                Serial.printf("NFCManager: write outcome ring full — evicting live result for request %lu\n",
+                        (unsigned long)writeOutcomeRing_[choice.index].request_id);
+            }
+
+            WriteOutcome& slot = writeOutcomeRing_[choice.index];
             slot.request_id = request.request_id;
             strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
             slot.uid[sizeof(slot.uid) - 1] = '\0';
@@ -1771,9 +1796,13 @@ void NFCManager::processWriteQueue() {
             const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
             strncpy(slot.error, reason, sizeof(slot.error) - 1);
             slot.error[sizeof(slot.error) - 1] = '\0';
-            writeOutcomeRingNext_ = (writeOutcomeRingNext_ + 1) % WRITE_OUTCOME_RING_SIZE;
+            slot.completed_ms = millis();
+            writeOutcomeLastIndex_ = choice.index;
 
-            xSemaphoreGive(tagMutex);
+            xSemaphoreGive(writeOutcomeMutex_);
+        } else {
+            Serial.printf("NFCManager: write outcome for request %lu LOST — outcome lock timeout\n",
+                    (unsigned long)request.request_id);
         }
 
         // Build and send the update message with snapshotted data

@@ -12,6 +12,7 @@ const path = require('path');
 const SRC_DIR = path.join(__dirname, '..', '..', 'src');
 const sharedJs = fs.readFileSync(path.join(SRC_DIR, 'SharedJS.h'), 'utf8');
 const writerHtml = fs.readFileSync(path.join(SRC_DIR, 'OpenTag3DWriterHTML.h'), 'utf8');
+const nfcManagerH = fs.readFileSync(path.join(SRC_DIR, 'NFCManager.h'), 'utf8');
 
 // ---- Extract the poll-loop gate from SharedJS.h ----------------------------
 // Pulls the exact "var mine = ...;" line and the "if ((status.present ||
@@ -29,6 +30,24 @@ const gateFn = new Function(
   'status', 'payload', 'requestId', 'config',
   `var mine = ${mineExpr};\nreturn (${gateCondition});`
 );
+
+// ---- Extract the browser's poll deadline from SharedJS.h -------------------
+const deadlineMatch = sharedJs.match(/var verifyDeadline = Date\.now\(\) \+ (\d+);/);
+if (!deadlineMatch) {
+  console.error('FAIL: could not locate the poll deadline in SharedJS.h — source shape changed');
+  process.exit(1);
+}
+const pollDeadlineMs = parseInt(deadlineMatch[1], 10);
+
+// ---- Extract the write-outcome ring constants from NFCManager.h ------------
+const ringSizeMatch = nfcManagerH.match(/WRITE_OUTCOME_RING_SIZE\s*=\s*(\d+)/);
+const ttlMatch = nfcManagerH.match(/WRITE_OUTCOME_TTL_MS\s*=\s*(\d+)/);
+if (!ringSizeMatch || !ttlMatch) {
+  console.error('FAIL: could not locate the write-outcome ring constants in NFCManager.h — source shape changed');
+  process.exit(1);
+}
+const writeOutcomeRingSize = parseInt(ringSizeMatch[1], 10);
+const writeOutcomeTtlMs = parseInt(ttlMatch[1], 10);
 
 // ---- Extract the OpenTag3D verify() callback from OpenTag3DWriterHTML.h ---
 // Brace-counts from the known anchor to its matching close, so this tracks
@@ -132,6 +151,12 @@ check(
   verifyFn({}, { uid: 'AA11' }, 7),
   false
 );
+
+// #316 ring sizing/TTL: the ring must not be smaller than the write queue
+// (xQueueCreate(8, ...)), and outcomes must outlive the browser's own poll
+// deadline or a slow poller can lose a result before ever seeing it.
+check('ring holds at least the write queue depth', writeOutcomeRingSize >= 8, true);
+check('outcome TTL outlasts the browser polling deadline', writeOutcomeTtlMs > pollDeadlineMs, true);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

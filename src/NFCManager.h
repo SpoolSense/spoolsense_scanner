@@ -17,6 +17,7 @@
 #include "opentag3d_patch.h"
 #include "opentag3d_arbitrate.h"
 #include "BambuTagParser.h"
+#include "WriteOutcomeRing.h"
 
 // Sidecar for WRITE_ATOMIC: filled by HTTP handler, consumed by scan task.
 // All fields are optional — only those with has_* = true are applied.
@@ -85,6 +86,7 @@ public:
         bool     done = false;
         bool     ok = false;
         char     error[48] = {0};
+        uint32_t completed_ms = 0;
     };
     // request_id == 0 returns the most recently completed write, whatever it
     // is; otherwise looks that specific request up in the ring. A second
@@ -289,13 +291,13 @@ private:
     SemaphoreHandle_t completedMutex = nullptr;
     static uint32_t s_write_request_id_counter;
 
-    // Ring of recent write outcomes (tagMutex-guarded), not just the latest —
-    // a completed write can be followed by an unrelated one (rescan-triggered
-    // Spoolman write-back, another tab/DeductionManager) before the browser's
-    // next poll, which would clobber a single slot the browser still needs.
-    static constexpr size_t WRITE_OUTCOME_RING_SIZE = 4;
+    // One slot per write-queue entry (xQueueCreate(8, ...)), and outcomes stay
+    // protected for longer than the browser's 15 s polling deadline.
+    static constexpr size_t   WRITE_OUTCOME_RING_SIZE = 8;
+    static constexpr uint32_t WRITE_OUTCOME_TTL_MS = 20000;
     WriteOutcome writeOutcomeRing_[WRITE_OUTCOME_RING_SIZE];
-    size_t writeOutcomeRingNext_ = 0;
+    SemaphoreHandle_t writeOutcomeMutex_ = nullptr;
+    uint32_t writeOutcomeLastIndex_ = 0;
     // Scan-task scratch: failure reason set by executeOpenTag3DWrite before
     // each `return false`, consumed into the ring once the write queue
     // consumer has the executor's result. Cleared before each request.

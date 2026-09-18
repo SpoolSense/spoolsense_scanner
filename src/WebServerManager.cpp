@@ -1812,7 +1812,7 @@ void WebServerManager::handleApiStatus() {
     }
     NFCManager::WriteOutcome wr;
     if (NFCManager::getInstance().getLastWriteOutcome(wantedRequestId, wr) && wr.done) {
-        JsonObject w = doc.createNestedObject("write_result");
+        JsonObject w = doc["write_result"].to<JsonObject>();
         w["request_id"] = wr.request_id;
         w["uid"] = wr.uid;
         w["ok"] = wr.ok;
