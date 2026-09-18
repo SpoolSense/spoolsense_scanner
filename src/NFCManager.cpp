@@ -2171,9 +2171,15 @@ bool NFCManager::readOpenTag3DBaseline(opentag3d_t& out, uint16_t& payloadLenOut
 
     // readNdefPayload can return a truncated prefix. A short read of an
     // extended tag decodes as a valid core-only tag and would silently
-    // discard the extension — demand the exact declared length.
-    if (payloadBytes == 0 || (uint32_t)payloadBytes != rec.payloadLen) {
-        Serial.printf("NFCManager: OT3D baseline - incomplete read (%u of %lu)\n",
+    // discard the extension — demand the exact declared length. That alone
+    // isn't enough: the decoder accepts any length >= 102 and only treats a
+    // tag as extended at 187+, so a declared length of, say, 150 still
+    // passes and would be classified core-only and rewritten at 102 bytes,
+    // dropping everything past the core fields. Refuse any length that
+    // isn't one of the three sizes this firmware can re-encode without loss.
+    if (payloadBytes == 0 || (uint32_t)payloadBytes != rec.payloadLen ||
+        !opentag3d_is_canonical_len(payloadBytes)) {
+        Serial.printf("NFCManager: OT3D baseline - unusable payload (%u of %lu)\n",
                       payloadBytes, (unsigned long)rec.payloadLen);
         return false;
     }

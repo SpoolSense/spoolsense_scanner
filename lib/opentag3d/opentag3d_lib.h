@@ -126,6 +126,17 @@ static inline int opentag3d_can_encode(uint16_t version) {
     return version <= OT3D_SUPPORTED_V1;
 }
 
+/* The only three payload sizes this firmware can round-trip without loss.
+ * The decoder accepts any length >= 102, treating 103..186 as core-only — so
+ * length alone does not prove a layout, and rewriting such a tag would drop
+ * its extended half. Read paths that will later re-encode must use this.
+ * 0xE0 is OT3D_V2_MAP_SIZE, defined in opentag3d_v2_map.h; using the literal
+ * here keeps this header free of that dependency (pinned by a
+ * _Static_assert in opentag3d_lib.c, which includes both headers). */
+static inline int opentag3d_is_canonical_len(size_t len) {
+    return len == OT3D_CORE_SIZE || len == OT3D_EXTENDED_MIN || len == 0xE0;
+}
+
 /* Inline helpers for decoded temperature/dimension values */
 static inline float opentag3d_temp_c(uint8_t encoded) { return encoded * 5.0f; }
 static inline float opentag3d_diameter_mm(const opentag3d_t *t) { return t->diameter_um / 1000.0f; }

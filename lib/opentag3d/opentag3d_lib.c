@@ -3,6 +3,12 @@
 #include "opentag3d_v2_map.h"
 #include <string.h>
 
+/* opentag3d_is_canonical_len() hardcodes 0xE0 instead of including this
+ * header's OT3D_V2_MAP_SIZE — this pins the two together so the literal
+ * cannot drift silently. */
+_Static_assert(OT3D_V2_MAP_SIZE == 0xE0,
+               "opentag3d_is_canonical_len hardcodes 0xE0 for the v2 map size");
+
 /* Read big-endian uint16 from buffer */
 static uint16_t read_u16(const uint8_t *p) {
     return (uint16_t)((p[0] << 8) | p[1]);

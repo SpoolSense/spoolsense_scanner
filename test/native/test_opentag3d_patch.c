@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include "opentag3d_lib.h"
 #include "opentag3d_patch.h"
+#include "opentag3d_v2_map.h"
 
 static int failures = 0;
 
@@ -313,6 +314,20 @@ int main(void) {
             CHECK(1, buf);
             next_field:;
         }
+    }
+
+    /* J: only canonical v1/v2 payload lengths describe a layout this firmware
+     * understands. 103..186 decodes as core-only and would silently truncate
+     * an extended tag on rewrite. */
+    {
+        CHECK(opentag3d_is_canonical_len(OT3D_CORE_SIZE) == 1,    "J: 102 is canonical");
+        CHECK(opentag3d_is_canonical_len(OT3D_EXTENDED_MIN) == 1, "J: 187 is canonical");
+        CHECK(opentag3d_is_canonical_len(OT3D_V2_MAP_SIZE) == 1,  "J: 224 is canonical");
+        CHECK(opentag3d_is_canonical_len(150) == 0, "J: 150 is not canonical");
+        CHECK(opentag3d_is_canonical_len(186) == 0, "J: 186 is not canonical");
+        CHECK(opentag3d_is_canonical_len(103) == 0, "J: 103 is not canonical");
+        CHECK(opentag3d_is_canonical_len(0) == 0,   "J: 0 is not canonical");
+        CHECK(opentag3d_is_canonical_len(225) == 0, "J: 225 is not canonical");
     }
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
