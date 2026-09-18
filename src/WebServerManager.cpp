@@ -83,6 +83,133 @@ WebServerManager& WebServerManager::getInstance() {
     return instance;
 }
 
+namespace {
+
+// WebServer::on() uses its fourth argument for BOTH raw bodies and multipart
+// file uploads, but only the raw path creates the HTTPRaw that
+// WebServer::raw() dereferences. A multipart POST to a route registered that
+// way runs the body collector against a null HTTPRaw and reboots the scanner.
+// This handler takes raw bodies only: canUpload() stays false, so the
+// framework parses multipart requests itself and the collector never runs.
+class JsonPostHandler : public RequestHandler {
+public:
+    JsonPostHandler(const char* uri, WebServer::THandlerFunction onRequest,
+                    WebServer::THandlerFunction onBodyChunk)
+        : _uri(uri), _onRequest(onRequest), _onBodyChunk(onBodyChunk) {}
+
+    bool canHandle(HTTPMethod method, const String& uri) override {
+        return method == HTTP_POST && uri == _uri;
+    }
+    bool canHandle(WebServer&, HTTPMethod method, const String& uri) override {
+        return canHandle(method, uri);
+    }
+    bool canRaw(const String& uri) override { return uri == _uri; }
+    bool canRaw(WebServer&, const String& uri) override { return canRaw(uri); }
+
+    bool handle(WebServer&, HTTPMethod method, const String& uri) override {
+        if (!canHandle(method, uri)) return false;
+        _onRequest();
+        return true;
+    }
+    void raw(WebServer&, const String& uri, HTTPRaw&) override {
+        if (canRaw(uri)) _onBodyChunk();
+    }
+
+private:
+    String _uri;
+    WebServer::THandlerFunction _onRequest;
+    WebServer::THandlerFunction _onBodyChunk;
+};
+
+}  // namespace
+
+void WebServerManager::releaseJsonBody() {
+    free(_jsonBody);
+    _jsonBody = nullptr;
+    _jsonBodyLength = 0;
+    _jsonBodyExpectedLength = 0;
+}
+
+void WebServerManager::handleJsonBodyChunk() {
+    // This function does not parse JSON. It safely assembles one request body
+    // without letting a client-selected Content-Length cause an unbounded heap
+    // allocation. Arduino-ESP32 calls it several times for the same request:
+    // RAW_START, one or more RAW_WRITE chunks, then RAW_END (or RAW_ABORTED).
+    HTTPRaw& raw = _server.raw();
+
+    if (raw.status == RAW_ABORTED) {
+        // The client disconnected before completing the declared body.
+        releaseJsonBody();
+        _jsonBodyError = JsonBodyError::NONE;
+        return;
+    }
+
+    if (raw.status == RAW_START) {
+        releaseJsonBody();
+        _jsonBodyError = JsonBodyError::NONE;
+
+        // This check runs before any body bytes are copied into application
+        // memory. Oversized requests are still drained by WebServer in small
+        // framework-owned chunks, but this class allocates no body buffer and
+        // copies none of their data. registerJsonPost() later returns HTTP 413.
+        const int contentLength = _server.clientContentLength();
+        if (contentLength < 0 || static_cast<size_t>(contentLength) > MAX_JSON_BODY_BYTES) {
+            _jsonBodyError = JsonBodyError::TOO_LARGE;
+            return;
+        }
+
+        _jsonBodyExpectedLength = static_cast<size_t>(contentLength);
+        _jsonBody = static_cast<char*>(malloc(_jsonBodyExpectedLength + 1));
+        if (!_jsonBody) {
+            _jsonBodyError = JsonBodyError::OUT_OF_MEMORY;
+            return;
+        }
+        _jsonBody[0] = '\0';
+        return;
+    }
+
+    if (raw.status == RAW_WRITE && _jsonBodyError == JsonBodyError::NONE) {
+        // For a permitted request, copy the current framework-sized chunk into
+        // the exact-size buffer allocated at RAW_START. totalSize includes the
+        // current chunk, so subtract currentSize to find its starting offset.
+        // The second bounds check protects against inconsistent framework or
+        // client lengths even after the initial Content-Length check.
+        const size_t offset = raw.totalSize - raw.currentSize;
+        if (offset > _jsonBodyExpectedLength ||
+            raw.currentSize > _jsonBodyExpectedLength - offset) {
+            _jsonBodyError = JsonBodyError::TOO_LARGE;
+            releaseJsonBody();
+            return;
+        }
+
+        memcpy(_jsonBody + offset, raw.buf, raw.currentSize);
+        _jsonBodyLength = offset + raw.currentSize;
+        _jsonBody[_jsonBodyLength] = '\0';
+    }
+}
+
+void WebServerManager::registerJsonPost(const char* uri, WebServer::THandlerFunction handler) {
+    _server.addHandler(new JsonPostHandler(uri,
+        [this, handler]() {
+            // The raw callback records the result while the request arrives;
+            // this final callback sends the appropriate response or hands the
+            // completed, bounded body to the endpoint for JSON parsing.
+            if (_jsonBodyError == JsonBodyError::TOO_LARGE) {
+                _server.send(413, "application/json", "{\"error\":\"JSON body too large\"}");
+            } else if (_jsonBodyError == JsonBodyError::OUT_OF_MEMORY) {
+                _server.send(503, "application/json", "{\"error\":\"Insufficient memory\"}");
+            } else if (_jsonBodyLength != _jsonBodyExpectedLength) {
+                _server.send(400, "application/json", "{\"error\":\"Incomplete request body\"}");
+            } else {
+                handler();
+            }
+
+            releaseJsonBody();
+            _jsonBodyError = JsonBodyError::NONE;
+        },
+        [this]() { handleJsonBodyChunk(); }));
+}
+
 bool WebServerManager::begin(bool apMode, uint16_t port) {
     _apMode = apMode;
 
@@ -124,31 +251,31 @@ bool WebServerManager::begin(bool apMode, uint16_t port) {
     _server.on("/api/upload-firmware",  HTTP_POST,
         [this]() { handleApiUploadFirmwareComplete(); },
         [this]() { handleApiUploadFirmwareChunk(); });
-    _server.on("/api/update-from-url", HTTP_POST, [this]() { handleApiUpdateFromUrl(); });
+    registerJsonPost("/api/update-from-url", [this]() { handleApiUpdateFromUrl(); });
     _server.on("/api/ota-status",      HTTP_GET,  [this]() { handleApiOtaStatus(); });
     _server.on("/api/config",          HTTP_GET,  [this]() { handleApiGetConfig(); });
-    _server.on("/api/config",          HTTP_POST, [this]() { handleApiPostConfig(); });
+    registerJsonPost("/api/config", [this]() { handleApiPostConfig(); });
     _server.on("/api/status",          HTTP_GET,  [this]() { handleApiStatus(); });
     _server.on("/api/diagnostics",     HTTP_GET,  [this]() { handleApiDiagnostics(); });
-    _server.on("/api/diagnostics/session",        HTTP_POST, [this]() { handleApiSelfTestStart(); });
+    registerJsonPost("/api/diagnostics/session", [this]() { handleApiSelfTestStart(); });
     _server.on("/api/diagnostics/session",        HTTP_GET,  [this]() { handleApiSelfTestStatus(); });
     _server.on("/api/diagnostics/session/input",  HTTP_POST, [this]() { handleApiSelfTestInput(); });
     _server.on("/api/diagnostics/session/cancel", HTTP_POST, [this]() { handleApiSelfTestCancel(); });
     _server.on("/api/diagnostics/report",         HTTP_GET,  [this]() { handleApiSelfTestReport(); });
-    _server.on("/api/write-tag",       HTTP_POST, [this]() { handleApiWriteTag(); });
-    _server.on("/api/format-tag",      HTTP_POST, [this]() { handleApiFormatTag(); });
-    _server.on("/api/write-tigertag",  HTTP_POST, [this]() { handleApiWriteTigerTag(); });
-    _server.on("/api/write-opentag3d", HTTP_POST, [this]() { handleApiWriteOpenTag3D(); });
-    _server.on("/api/write-openspool", HTTP_POST, [this]() { handleApiWriteOpenSpool(); });
-    _server.on("/api/register-uid",    HTTP_POST, [this]() { handleApiRegisterUid(); });
+    registerJsonPost("/api/write-tag", [this]() { handleApiWriteTag(); });
+    registerJsonPost("/api/format-tag", [this]() { handleApiFormatTag(); });
+    registerJsonPost("/api/write-tigertag", [this]() { handleApiWriteTigerTag(); });
+    registerJsonPost("/api/write-opentag3d", [this]() { handleApiWriteOpenTag3D(); });
+    registerJsonPost("/api/write-openspool", [this]() { handleApiWriteOpenSpool(); });
+    registerJsonPost("/api/register-uid", [this]() { handleApiRegisterUid(); });
     _server.on("/api/spoolman/spools", HTTP_GET,  [this]() { handleApiSpoolmanSpools(); });
-    _server.on("/api/spoolman/link",         HTTP_POST, [this]() { handleApiSpoolmanLink(); });
-    _server.on("/api/spoolman/pending-link", HTTP_POST, [this]() { handleApiSpoolmanPendingLink(); });
+    registerJsonPost("/api/spoolman/link", [this]() { handleApiSpoolmanLink(); });
+    registerJsonPost("/api/spoolman/pending-link", [this]() { handleApiSpoolmanPendingLink(); });
     _server.on("/api/spoolman/pending-link", HTTP_GET, [this]() { handleApiSpoolmanPendingLink(); });
-    _server.on("/api/u1/assign", HTTP_POST, [this]() { handleApiU1Assign(); });
+    registerJsonPost("/api/u1/assign", [this]() { handleApiU1Assign(); });
     _server.on("/api/spoolman/find-vendor",     HTTP_GET,  [this]() { handleApiSpoolmanFindVendor(); });
     _server.on("/api/spoolman/find-filament",   HTTP_GET,  [this]() { handleApiSpoolmanFindFilament(); });
-    _server.on("/api/spoolman/save-enrichment", HTTP_POST, [this]() { handleApiSpoolmanSaveEnrichment(); });
+    registerJsonPost("/api/spoolman/save-enrichment", [this]() { handleApiSpoolmanSaveEnrichment(); });
 
     // Log viewer
     _server.on("/logs",           HTTP_GET,  [this]() { handleLogViewer(); });
@@ -306,8 +433,8 @@ void WebServerManager::handleApiRegisterUid() {
     if (otaStandDown503()) return;
     Serial.println("WebServerManager: POST /api/register-uid received");
 
-    StaticJsonDocument<1024> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -362,7 +489,7 @@ void WebServerManager::handleApiRegisterUid() {
 
     if (vendorId < 0) {
         // Create vendor
-        StaticJsonDocument<128> vendorBody;
+        JsonDocument vendorBody;
         vendorBody["name"] = manufacturer;
         String vendorJson;
         serializeJson(vendorBody, vendorJson);
@@ -373,7 +500,7 @@ void WebServerManager::handleApiRegisterUid() {
         code = http.POST(vendorJson);
         if (code == 200 || code == 201) {
             response = http.getString();
-            StaticJsonDocument<512> vDoc;
+            JsonDocument vDoc;
             if (!deserializeJson(vDoc, response)) {
                 vendorId = vDoc["id"] | -1;
             }
@@ -420,12 +547,14 @@ void WebServerManager::handleApiRegisterUid() {
         }
     } else {
         // No existing spool — create new
-        StaticJsonDocument<512> spoolBody;
+        JsonDocument spoolBody;
         spoolBody["filament_id"] = filamentId;
         spoolBody["initial_weight"] = initialWeight > 0 ? initialWeight : 1000.0f;
         if (remainingWeight > 0) spoolBody["remaining_weight"] = remainingWeight;
 
-        JsonObject extra = spoolBody.createNestedObject("extra");
+        // ArduinoJson 7's migration guide directly recommends
+        // member.to<JsonObject>() instead of createNestedObject().
+        JsonObject extra = spoolBody["extra"].to<JsonObject>();
         extra["nfc_id"] = quotedUid;
 
         String spoolJson;
@@ -448,7 +577,7 @@ void WebServerManager::handleApiRegisterUid() {
         response = http.getString();
         http.end();
 
-        StaticJsonDocument<1024> spoolDoc;
+        JsonDocument spoolDoc;
         if (!deserializeJson(spoolDoc, response)) {
             spoolId = spoolDoc["id"] | -1;
         }
@@ -458,7 +587,7 @@ void WebServerManager::handleApiRegisterUid() {
 #ifndef BOARD_NO_SPOOL_CACHE
     SpoolmanManager::getInstance().requestSpoolCacheRefresh();
 #endif
-    StaticJsonDocument<256> result;
+    JsonDocument result;
     result["success"] = true;
     result["spool_id"] = spoolId;
     result["filament_id"] = filamentId;
@@ -568,8 +697,8 @@ void WebServerManager::handleApiSpoolmanSpools() {
 void WebServerManager::handleApiSpoolmanLink() {
     if (otaStandDown503()) return;
 
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -654,8 +783,8 @@ void WebServerManager::handleApiU1Assign() {
     if (otaStandDown503()) return;
     // Same task as the ApplicationManager dispatch loop (both run from loop()),
     // so calling the U1Manager directly is single-threaded by construction
-    StaticJsonDocument<64> doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    JsonDocument doc;
+    if (deserializeJson(doc, jsonBody())) {
         sendError(400, "Invalid JSON");
         return;
     }
@@ -699,8 +828,8 @@ void WebServerManager::handleApiSpoolmanPendingLink() {
         return;
     }
 
-    StaticJsonDocument<128> doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    JsonDocument doc;
+    if (deserializeJson(doc, jsonBody())) {
         sendError(400, "Invalid JSON");
         return;
     }
@@ -720,16 +849,18 @@ void WebServerManager::handleApiSpoolmanPendingLink() {
 
 void WebServerManager::handleApiSelfTestStart() {
     DiagnosticsManager::Options opts;  // defaults: network + stability on
-    if (_server.hasArg("plain") && _server.arg("plain").length() > 0) {
-        StaticJsonDocument<128> body;
+    if (_jsonBodyLength > 0) {
+        JsonDocument body;
         // A malformed body must not silently start a full session (network
         // checks + a scan pause window) — reject it instead.
-        if (deserializeJson(body, _server.arg("plain"))) {
+        if (deserializeJson(body, jsonBody())) {
             sendError(400, "Invalid JSON");
             return;
         }
-        if (body.containsKey("network"))   opts.network   = body["network"].as<bool>();
-        if (body.containsKey("stability")) opts.stability = body["stability"].as<bool>();
+        // ArduinoJson 7's migration guide directly recommends is<JsonVariant>()
+        // when replacing containsKey() while preserving presence-only semantics.
+        if (body["network"].is<JsonVariant>())   opts.network   = body["network"].as<bool>();
+        if (body["stability"].is<JsonVariant>()) opts.stability = body["stability"].as<bool>();
     }
     if (!DiagnosticsManager::getInstance().startSession(opts)) {
         sendError(409, "A self-test is already running");
@@ -789,8 +920,8 @@ void WebServerManager::handleApiSelfTestReport() {
 void WebServerManager::handleApiDiagnostics() {
     if (otaStandDown503()) return;
 
-    // 1536: task stack-hwm entries added on top of the original 1024 payload
-    StaticJsonDocument<1536> doc;
+    // Includes task stack high-water-mark entries in addition to device status.
+    JsonDocument doc;
 
     // Device ID
     char deviceId[8];
@@ -813,7 +944,7 @@ void WebServerManager::handleApiDiagnostics() {
     }
 
     // WiFi
-    JsonObject wifi = doc.createNestedObject("wifi");
+    JsonObject wifi = doc["wifi"].to<JsonObject>();
     wifi["connected"] = (WiFi.status() == WL_CONNECTED);
     if (WiFi.status() == WL_CONNECTED) {
         wifi["ssid"]     = WiFi.SSID();
@@ -824,14 +955,14 @@ void WebServerManager::handleApiDiagnostics() {
     // MQTT
     ConfigUpdate cfg;
     ConfigurationManager::getInstance().getCurrentConfig(cfg);
-    JsonObject mqtt = doc.createNestedObject("mqtt");
+    JsonObject mqtt = doc["mqtt"].to<JsonObject>();
     bool mqttEnabled = (strlen(cfg.mqtt_host) > 0);
     mqtt["enabled"]   = mqttEnabled;
     mqtt["broker"]    = cfg.mqtt_host;
     mqtt["connected"] = HomeAssistantManager::getInstance().isConnected();
 
     // Spoolman
-    JsonObject spoolman = doc.createNestedObject("spoolman");
+    JsonObject spoolman = doc["spoolman"].to<JsonObject>();
     bool spoolmanEnabled = (cfg.spoolman_on != 0) && (strlen(cfg.spoolman_url) > 0);
     spoolman["enabled"] = spoolmanEnabled;
     spoolman["url"]     = cfg.spoolman_url;
@@ -862,8 +993,8 @@ void WebServerManager::handleApiDiagnostics() {
             if (code == 200) {
                 // Extract version from response
                 String body = http.getString();
-                StaticJsonDocument<256> info;
-                if (!deserializeJson(info, body) && info.containsKey("version")) {
+                JsonDocument info;
+                if (!deserializeJson(info, body) && info["version"].is<JsonVariant>()) {
                     spoolman["version"] = info["version"].as<const char*>();
                 }
             }
@@ -875,14 +1006,14 @@ void WebServerManager::handleApiDiagnostics() {
     }
 
     // NFC reader
-    JsonObject nfc = doc.createNestedObject("nfc");
+    JsonObject nfc = doc["nfc"].to<JsonObject>();
     char readerInfo[32] = {0};
     bool nfcOk = NFCManager::getInstance().getNfcReaderInfo(readerInfo, sizeof(readerInfo));
     nfc["ok"]     = nfcOk;
     nfc["reader"] = readerInfo;
 
     // Memory
-    JsonObject memory = doc.createNestedObject("memory");
+    JsonObject memory = doc["memory"].to<JsonObject>();
     uint32_t freeHeap  = (uint32_t)ESP.getFreeHeap();
     uint32_t totalHeap = (uint32_t)ESP.getHeapSize();
     memory["free_bytes"]      = freeHeap;
@@ -895,7 +1026,7 @@ void WebServerManager::handleApiDiagnostics() {
     memory["internal_largest_block"]  = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     memory["uptime_s"]        = (uint32_t)(millis() / 1000);
 
-    JsonObject stacks = memory.createNestedObject("stack_hwm_bytes");
+    JsonObject stacks = memory["stack_hwm_bytes"].to<JsonObject>();
     MemoryDiagnostics::TaskStackStat stats[MemoryDiagnostics::MAX_TRACKED];
     size_t statCount = MemoryDiagnostics::collect(stats, MemoryDiagnostics::MAX_TRACKED);
     for (size_t i = 0; i < statCount; i++) {
@@ -920,7 +1051,7 @@ void WebServerManager::handleApiGetConfig() {
     ConfigUpdate cfg;
     ConfigurationManager::getInstance().getCurrentConfig(cfg);
 
-    StaticJsonDocument<896> doc;
+    JsonDocument doc;
     doc["wifi_ssid"] = cfg.wifi_ssid;
     doc["wifi_pass_set"] = (cfg.wifi_pass[0] != '\0');
     doc["mqtt_host"] = cfg.mqtt_host;
@@ -981,8 +1112,8 @@ void WebServerManager::handleApiGetConfig() {
 
 void WebServerManager::handleApiPostConfig() {
 
-    StaticJsonDocument<1024> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1098,7 +1229,7 @@ void WebServerManager::handleApiPostConfig() {
 // ---------------------------------------------------------------------------
 
 void WebServerManager::handleApiVersion() {
-    StaticJsonDocument<128> doc;
+    JsonDocument doc;
     doc["version"] = FIRMWARE_VERSION;
     // Matches the PlatformIO env / release-asset naming for each target.
     // XIAO must precede BOARD_ESP32_C6 — its env defines both flags, and the
@@ -1185,8 +1316,8 @@ void WebServerManager::handleApiUpdateFromUrl() {
         return;
     }
 
-    StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1358,7 +1489,7 @@ void WebServerManager::otaDownloadTask(void* param) {
 }
 
 void WebServerManager::handleApiOtaStatus() {
-    StaticJsonDocument<128> doc;
+    JsonDocument doc;
 
     switch (_otaState) {
         case OtaState::IDLE:        doc["state"] = "idle"; break;
@@ -1384,7 +1515,7 @@ void WebServerManager::serializeTigerTagStatus(JsonDocument& doc) {
     TigerTagData tt;
     if (!NFCManager::getInstance().getLastTigerTagData(tt) || !tt.valid) return;
 
-    JsonObject obj = doc.createNestedObject("tigertag");
+    JsonObject obj = doc["tigertag"].to<JsonObject>();
     obj["material_id"] = tt.material_id;
     obj["material_name"] = tt.material_name;
     obj["brand_id"] = tt.brand_id;
@@ -1410,7 +1541,7 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     opentag3d_t ot3d;
     if (!NFCManager::getInstance().getLastOpenTag3DData(ot3d)) return;
 
-    JsonObject obj = doc.createNestedObject("opentag3d");
+    JsonObject obj = doc["opentag3d"].to<JsonObject>();
     obj["tag_version"] = ot3d.tag_version;
     obj["base_material"] = ot3d.base_material;
     if (ot3d.material_modifiers[0]) obj["modifiers"] = ot3d.material_modifiers;
@@ -1464,7 +1595,7 @@ void WebServerManager::serializeOpenSpoolStatus(JsonDocument& doc) {
     OpenSpoolData os;
     if (!NFCManager::getInstance().getLastOpenSpoolData(os) || !os.valid) return;
 
-    JsonObject obj = doc.createNestedObject("openspool");
+    JsonObject obj = doc["openspool"].to<JsonObject>();
     obj["brand"] = os.brand;
     obj["material"] = os.material;
     char colorHex[8];
@@ -1479,7 +1610,7 @@ void WebServerManager::serializeBambuTagStatus(JsonDocument& doc) {
     BambuTagData bt;
     if (!NFCManager::getInstance().getLastBambuTagData(bt) || !bt.valid) return;
 
-    JsonObject obj = doc.createNestedObject("bambu");
+    JsonObject obj = doc["bambu"].to<JsonObject>();
     obj["filament_type"] = bt.filament_type;
     obj["material_variant"] = bt.material_variant;
 
@@ -1565,9 +1696,9 @@ void WebServerManager::serializeOpenPrintTagStatus(JsonDocument& doc, const Curr
 
 void WebServerManager::serializeEnrichment(JsonDocument& doc) {
     SmartTagEnrichment enrichment = ApplicationManager::getInstance().getSmartTagEnrichment();
-    if (!enrichment.valid || doc.containsKey("spoolman")) return;
+    if (!enrichment.valid || doc["spoolman"].is<JsonVariant>()) return;
 
-    JsonObject sp = doc.createNestedObject("spoolman");
+    JsonObject sp = doc["spoolman"].to<JsonObject>();
     sp["spool_id"] = enrichment.spoolman_id;
     sp["remaining_g"] = enrichment.remaining_g;
     if (enrichment.bed_temp > 0) sp["bed_temp"] = enrichment.bed_temp;
@@ -1581,7 +1712,7 @@ void WebServerManager::serializeEnrichment(JsonDocument& doc) {
 void WebServerManager::handleApiStatus() {
 
     CurrentSpoolState state;
-    StaticJsonDocument<1536> doc;
+    JsonDocument doc;
 
     char deviceId[8];
     HomeAssistantManager::getDeviceId(deviceId, sizeof(deviceId));
@@ -1593,7 +1724,7 @@ void WebServerManager::handleApiStatus() {
     {
         U1Manager::StagedState st = U1Manager::getInstance().getStagedState();
         if (st.active) {
-            JsonObject staged = doc.createNestedObject("u1_staged");
+            JsonObject staged = doc["u1_staged"].to<JsonObject>();
             staged["remaining_ms"] = st.remainingMs;
             staged["vendor"] = st.vendor;
             staged["material"] = st.material;
@@ -1643,8 +1774,8 @@ void WebServerManager::handleApiStatus() {
 void WebServerManager::handleApiWriteTag() {
     Serial.println("WebServerManager: POST /api/write-tag received");
 
-    StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1653,7 +1784,7 @@ void WebServerManager::handleApiWriteTag() {
     // Parse color — only when explicitly provided, reject invalid
     uint8_t color[4] = {0};
     bool hasValidColor = false;
-    if (doc.containsKey("color")) {
+    if (doc["color"].is<JsonVariant>()) {
         const char* colorStr = doc["color"] | "";
         if (parseHexColor(colorStr, color)) {
             hasValidColor = true;
@@ -1683,7 +1814,7 @@ void WebServerManager::handleApiWriteTag() {
     AtomicWriteFields fields;
     memset(&fields, 0, sizeof(fields));
 
-    if (doc.containsKey("material_type")) {
+    if (doc["material_type"].is<JsonVariant>()) {
         fields.has_material_type = true;
         fields.material_type = mat_type;
     }
@@ -1693,15 +1824,15 @@ void WebServerManager::handleApiWriteTag() {
         memcpy(fields.color, color, 4);
     }
 
-    if (doc.containsKey("initial_weight_g")) {
+    if (doc["initial_weight_g"].is<JsonVariant>()) {
         fields.has_initial_weight = true;
         fields.initial_weight_g = initial_weight_g;
     }
 
-    if (doc.containsKey("remaining_g")) {
+    if (doc["remaining_g"].is<JsonVariant>()) {
         // Use provided initial_weight_g, or read from existing tag if not specified
         float base_weight = initial_weight_g;
-        if (!doc.containsKey("initial_weight_g")) {
+        if (!doc["initial_weight_g"].is<JsonVariant>()) {
             CurrentSpoolState state;
             if (NFCManager::getInstance().getCurrentSpoolState(state) && state.tag_data_valid) {
                 opt_get_actual_full_weight(&state.tag_data, &base_weight);
@@ -1713,7 +1844,7 @@ void WebServerManager::handleApiWriteTag() {
         fields.consumed_weight = consumed_g;
     }
 
-    if (doc.containsKey("manufacturer") && mfr[0] != '\0') {
+    if (doc["manufacturer"].is<JsonVariant>() && mfr[0] != '\0') {
         fields.has_brand_name = true;
         strncpy(fields.brand_name, mfr, sizeof(fields.brand_name) - 1);
     }
@@ -1786,9 +1917,9 @@ void WebServerManager::handleApiFormatTag() {
     // Body: {"uid": "..."} — required, and the format is bound to that tag so
     // it cannot erase whichever tag happens to be on the scanner (#283).
     char uid[17] = {0};
-    if (_server.hasArg("plain") && _server.arg("plain").length() > 2) {
-        StaticJsonDocument<64> doc;
-        if (deserializeJson(doc, _server.arg("plain")) == DeserializationError::Ok) {
+    if (_jsonBodyLength > 2) {
+        JsonDocument doc;
+        if (deserializeJson(doc, jsonBody()) == DeserializationError::Ok) {
             const char* u = doc["uid"] | "";
             strncpy(uid, u, sizeof(uid) - 1);
         }
@@ -1819,8 +1950,8 @@ void WebServerManager::handleApiFormatTag() {
 void WebServerManager::handleApiWriteTigerTag() {
     Serial.println("WebServerManager: POST /api/write-tigertag received");
 
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -1916,7 +2047,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     Serial.println("WebServerManager: POST /api/write-opentag3d received");
 
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -2108,8 +2239,8 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 void WebServerManager::handleApiWriteOpenSpool() {
     Serial.println("WebServerManager: POST /api/write-openspool received");
 
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, jsonBody());
     if (err) {
         sendError(400, "Invalid JSON");
         return;
@@ -2122,7 +2253,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
     }
 
     // Build the tag payload using ArduinoJson to properly escape all values
-    StaticJsonDocument<256> tagDoc;
+    JsonDocument tagDoc;
     tagDoc["protocol"] = doc["protocol"] | "openspool";
     tagDoc["version"] = doc["version"] | "1.0";
     tagDoc["type"] = doc["type"] | "PLA";
@@ -2191,7 +2322,7 @@ void WebServerManager::handleApiSpoolmanFindVendor() {
         return;
     }
     if (vendorId >= 0) {
-        StaticJsonDocument<128> result;
+        JsonDocument result;
         result["found"] = true;
         result["id"] = vendorId;
         result["name"] = matchedName;
@@ -2257,13 +2388,13 @@ void WebServerManager::handleApiSpoolmanFindFilament() {
     http.end();
     xSemaphoreGive(g_httpMutex);
 
-    DynamicJsonDocument doc(2048);
+    JsonDocument doc;
     if (code != 200 || deserializeJson(doc, resp)) {
         _server.send(503, "application/json", "{\"error\":\"Spoolman lookup failed\"}");
         return;
     }
 
-    StaticJsonDocument<256> result;
+    JsonDocument result;
     result["found"] = true;
     result["id"] = filamentId;
     result["name"] = doc["name"] | "";
@@ -2294,7 +2425,7 @@ int WebServerManager::enrichFindOrCreateVendor(WiFiClient& client, HTTPClient& h
         if (vendorId >= 0) return vendorId;
     }
 
-    StaticJsonDocument<128> vBody;
+    JsonDocument vBody;
     vBody["name"] = manufacturer;
     String vJson;
     serializeJson(vBody, vJson);
@@ -2305,7 +2436,7 @@ int WebServerManager::enrichFindOrCreateVendor(WiFiClient& client, HTTPClient& h
     int code = http.POST(vJson);
     if (code == 200 || code == 201) {
         String response = http.getString();
-        StaticJsonDocument<256> vResp;
+        JsonDocument vResp;
         if (!deserializeJson(vResp, response)) vendorId = vResp["id"] | -1;
     }
     http.end();
@@ -2342,7 +2473,7 @@ int WebServerManager::enrichFindOrCreateFilament(WiFiClient& client, HTTPClient&
     }
 
     // Create new filament
-    StaticJsonDocument<512> fBody;
+    JsonDocument fBody;
     fBody["name"] = material;
     fBody["material"] = material;
     if (vendorId > 0) fBody["vendor_id"] = vendorId;
@@ -2364,7 +2495,7 @@ int WebServerManager::enrichFindOrCreateFilament(WiFiClient& client, HTTPClient&
     int code = http.POST(fJson);
     if (code == 200 || code == 201) {
         String response = http.getString();
-        StaticJsonDocument<256> fResp;
+        JsonDocument fResp;
         if (!deserializeJson(fResp, response)) filamentId = fResp["id"] | -1;
     }
     http.end();
@@ -2403,7 +2534,7 @@ int WebServerManager::enrichFindSpoolByUid(WiFiClient& client, HTTPClient& http,
     String response = http.getString();
     http.end();
 
-    DynamicJsonDocument sDoc(3072);
+    JsonDocument sDoc;
     if (deserializeJson(sDoc, response)) return -2;
     if (sDoc["archived"] | false) return -1;  // search excludes archived, but a race is possible
 
@@ -2423,7 +2554,7 @@ bool WebServerManager::enrichUpdateSpool(WiFiClient& client, HTTPClient& http, c
                                            int spoolId, int filamentId, float remainingG, float existingInitialWeight,
                                            const char* existingExtraJson, const char* tagFormat) {
     char url[256];
-    StaticJsonDocument<512> patch;
+    JsonDocument patch;
     // filamentId < 0 means "leave the spool's filament alone" — the caller
     // determined the resolved filament is semantically the same (#218)
     if (filamentId >= 0) {
@@ -2433,10 +2564,10 @@ bool WebServerManager::enrichUpdateSpool(WiFiClient& client, HTTPClient& http, c
     // Only touch extras when writing tag_format. Spoolman PATCH replaces the
     // entire extra map, so the existing extras (nfc_id, middleware fields like
     // MMU Gate) must be carried over or they get wiped. If the existing extras
-    // fail to parse (or overflow the buffer), skip the extras portion entirely
+    // fail to parse (including an allocation failure), skip the extras portion entirely
     // rather than PATCHing a partial map — losing tag_format is harmless,
     // wiping nfc_id is not.
-    StaticJsonDocument<768> existingExtra;
+    JsonDocument existingExtra;
     if (tagFormat[0] != '\0') {
         DeserializationError extraErr = DeserializationError::Ok;
         if (existingExtraJson[0] != '\0') {
@@ -2474,7 +2605,7 @@ int WebServerManager::enrichCreateSpool(WiFiClient& client, HTTPClient& http, co
                                           int filamentId, float remainingG, const char* quotedUid,
                                           const char* tagFormat) {
     char url[256];
-    StaticJsonDocument<512> sBody;
+    JsonDocument sBody;
     sBody["filament_id"] = filamentId;
     float initialW = 1000.0f;
     sBody["initial_weight"] = initialW;
@@ -2483,7 +2614,7 @@ int WebServerManager::enrichCreateSpool(WiFiClient& client, HTTPClient& http, co
         if (usedW < 0) usedW = 0;
         sBody["used_weight"] = usedW;
     }
-    JsonObject extra = sBody.createNestedObject("extra");
+    JsonObject extra = sBody["extra"].to<JsonObject>();
     extra["nfc_id"] = quotedUid;
     char fmtJson[20];
     if (tagFormat[0] != '\0') {
@@ -2500,7 +2631,7 @@ int WebServerManager::enrichCreateSpool(WiFiClient& client, HTTPClient& http, co
     int spoolId = -1;
     if (code == 200 || code == 201) {
         String response = http.getString();
-        StaticJsonDocument<256> sResp;
+        JsonDocument sResp;
         if (!deserializeJson(sResp, response)) spoolId = sResp["id"] | -1;
     }
     http.end();
@@ -2512,8 +2643,8 @@ int WebServerManager::enrichCreateSpool(WiFiClient& client, HTTPClient& http, co
 void WebServerManager::handleApiSpoolmanSaveEnrichment() {
     if (otaStandDown503()) return;
 
-    StaticJsonDocument<512> doc;
-    if (deserializeJson(doc, _server.arg("plain"))) {
+    JsonDocument doc;
+    if (deserializeJson(doc, jsonBody())) {
         _server.send(400, "application/json", "{\"error\":\"bad JSON\"}");
         return;
     }
@@ -2624,7 +2755,7 @@ void WebServerManager::handleApiSpoolmanSaveEnrichment() {
     if (spoolId > 0) SpoolmanManager::getInstance().requestSpoolCacheRefresh();
 #endif
 
-    StaticJsonDocument<128> result;
+    JsonDocument result;
     result["success"] = spoolId > 0;
     result["spool_id"] = spoolId;
     result["filament_id"] = filamentId;

@@ -94,22 +94,10 @@ curl -sL https://raw.githubusercontent.com/SpoolSense/spoolsense-installer/main/
 
 Configuration is stored in NVS (non-volatile storage) and survives OTA firmware updates.
 
-### Option 2: Build from Source
+### Developing or building from source
 
-1. Install [PlatformIO](https://platformio.org/)
-2. Copy the example config: `cp include/UserConfig.example.h include/UserConfig.h`
-3. Edit `include/UserConfig.h` with your settings (WiFi, MQTT, Spoolman, etc.)
-4. Flash:
-   - **WROOM:** `pio run -e esp32dev -t upload`
-   - **S3-Zero:** `pio run -e esp32s3zero -t upload`
-   - **C6 DevKitC-1:** `pio run -e esp32c6 -t upload`
-   - **Seeed XIAO ESP32-C6:** `pio run -e seeed_xiao_esp32c6 -t upload`
-   - **C5 DevKitC-1:** `pio run -e esp32c5 -t upload`
-5. **Important for OTA updates:** Run the installer in "Config only" mode to write your settings to NVS. Without this, OTA updates will overwrite your compiled-in settings with defaults.
-   ```bash
-   curl -sL https://raw.githubusercontent.com/SpoolSense/spoolsense-installer/main/install.sh -o /tmp/install.sh && bash /tmp/install.sh
-   ```
-   Select **"Config only (source builds)"** when prompted.
+Developer environment setup, compilation, uploading, serial monitoring, and
+testing instructions are in **[Contributing and Development](CONTRIBUTING.md)**.
 
 ## Web UI Access
 
@@ -252,49 +240,6 @@ The XIAO ESP32-C6 profile is intended for compact NFC-only builds with a PN5180 
 > **Note:** D6/D7 are the XIAO's serial pins. RST deliberately sits on D6 (GPIO16 = boot console TX — its boot-time output only pulses the reader's reset, which is harmless), and BUSY on D7 (GPIO17, an input at boot). Do not swap them: the reader drives BUSY, and sharing it with the boot console makes two chips fight over one wire at every power-on.
 
 **Serial:** The S3-Zero and Seeed XIAO ESP32-C6 use USB CDC — just plug in a USB-C cable, no external UART adapter needed.
-
-# Configuration
-
-## UserConfig.h (source builds only)
-1. Copy the example config: `cp include/UserConfig.example.h include/UserConfig.h`
-2. Edit `include/UserConfig.h` and fill in your settings:
-   - WiFi SSID and password
-   - MQTT broker host, port, and credentials
-   - Spoolman URL (optional)
-   - Automation mode (`0` = Self Directed, `1` = Controlled by HA)
-   - Board selection (normally supplied by the selected PlatformIO environment)
-   - Optional hardware: LCD and status LED (see below)
-3. Flash the firmware:
-   - **WROOM:** `pio run -e esp32dev -t upload`
-   - **S3-Zero:** `pio run -e esp32s3zero -t upload`
-   - **C6 DevKitC-1:** `pio run -e esp32c6 -t upload`
-   - **Seeed XIAO ESP32-C6:** `pio run -e seeed_xiao_esp32c6 -t upload`
-   - **C5 DevKitC-1:** `pio run -e esp32c5 -t upload`
-
-> **Note:** If you used the SpoolSense Installer, configuration is stored in NVS and you don't need `UserConfig.h`.
-
-## Optional: LCD (source builds only)
-
-The 16x2 I2C LCD is fully optional. If compiling from source, set in `UserConfig.h`:
-
-```cpp
-#define ENABLE_LCD 0
-```
-
-When disabled, no I2C bus is initialized, no LCD task is started, and no LCD code is compiled into the binary. Set to `1` if you have the LCD connected. The installer disables it by default.
-
-## Optional: Status LED (source builds only)
-
-The status LED is optional. If compiling from source, set in `UserConfig.h`:
-
-```cpp
-#define ENABLE_STATUS_LED 1   // 1 = enabled, 0 = disabled
-```
-
-- **ESP32-S3-Zero:** Uses the onboard WS2812 RGB LED on GPIO 21 — no external wiring needed.
-- **ESP32-WROOM-32:** Requires an external SK6812 RGBW LED wired to GPIO 4 (see wiring table above).
-
-Pin mapping is automatic via `BoardPins.h` — no need to configure the pin manually.
 
 ## Status LED Reference
 
