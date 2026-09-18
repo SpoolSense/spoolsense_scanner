@@ -444,6 +444,10 @@ Many thanks to the original author and contributors for the work that made this 
 * **PN5180 Library** by Andreas Trappmann — ISO15693 and ISO14443A NFC driver for the PN5180 module: https://github.com/ATrappmann/PN5180-Library/
 * **RFID_MFRC522v2** by OSSLibraries — ISO14443A/MIFARE/NTAG driver for RC522 modules: https://github.com/OSSLibraries/Arduino_MFRC522v2/
 
+### Third-Party Licenses
+
+SpoolSense Scanner is Apache-2.0. The firmware also contains LGPL libraries (RFID_MFRC522v2, Keypad, the PN5180 Library, and Adafruit NeoPixel). [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) lists every bundled library with its license and explains how to rebuild the firmware with a modified copy.
+
 ## Specs Referenced
 *   OpenPrintTag: https://openprinttag.org/generator/
 *   TigerTag RFID Guide: https://github.com/TigerTag-Project/TigerTag-RFID-Guide
