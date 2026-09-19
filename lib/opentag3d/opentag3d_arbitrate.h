@@ -11,8 +11,9 @@ extern "C" {
 typedef enum {
     OT3D_TARGET_WRITTEN = 0,    /* readable, canonical OpenTag3D payload */
     OT3D_TARGET_BLANK,          /* no NDEF record at all — a new tag */
-    OT3D_TARGET_UNREADABLE,     /* OpenTag3D record present but unusable */
-    OT3D_TARGET_OTHER_FORMAT    /* a readable record of some other format */
+    OT3D_TARGET_UNREADABLE,     /* the read itself failed, or the tag's size is unknown — nothing may be written */
+    OT3D_TARGET_OTHER_FORMAT,   /* a readable record of some other format */
+    OT3D_TARGET_UNKNOWN_DATA    /* fully read, but not something a merge can keep: another layout, an unparseable record, stray bytes */
 } ot3d_target_state_t;
 
 typedef enum {

@@ -2274,6 +2274,38 @@ uint16_t NFCManager::writablePageLimit() const {
     return maxPages ? maxPages : 64;
 }
 
+void NFCManager::setWriteError(const char* msg) {
+    strncpy(lastWriteErrorReason_, msg, sizeof(lastWriteErrorReason_) - 1);
+    lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0';
+}
+
+NFCManager::BlankScan NFCManager::scanRestOfUserMemory() {
+    // The first window (pages 4-13) reads empty, but a Type 2 tag may legally
+    // hold NULL TLV padding there and its real record later (#316) — blank is
+    // only provable by proving every page a write could touch is empty. An
+    // unmeasured size can't prove that.
+    if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) {
+        Serial.println("NFCManager: OT3D classify - tag size not measured for selected tag, cannot prove blank");
+        return BlankScan::Unreadable;
+    }
+    uint16_t limitPage = writablePageLimit();
+    uint8_t chunk[64];
+    for (uint16_t page = 14; page < limitPage; page += 16) {
+        uint16_t remaining = limitPage - page;
+        uint8_t pagesToRead = remaining < 16 ? (uint8_t)remaining : 16;
+        uint16_t chunkBytes = connection_->readISO14443Pages((uint8_t)page, pagesToRead, chunk, sizeof(chunk), true);
+        if (chunkBytes < (uint16_t)pagesToRead * 4) {
+            Serial.printf("NFCManager: OT3D classify - page read failed at page %u\n", (unsigned)page);
+            return BlankScan::Unreadable;
+        }
+        if (!ot3d_region_is_zero(chunk, chunkBytes)) {
+            Serial.printf("NFCManager: OT3D classify - data found past the first window at page %u; not blank\n", (unsigned)page);
+            return BlankScan::DataFound;
+        }
+    }
+    return BlankScan::Blank;
+}
+
 // Re-read a written region and compare — a tag can ACK a write that lands
 // corrupted at weak coupling, and the 4-bit ACK carries no CRC so a noise
 // byte can even read as success. Read goes straight to hardware (no cache on
@@ -2350,6 +2382,16 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
     uint8_t current[40];
     uint16_t bytesRead = connection_->readISO14443Pages(4, 10, current, sizeof(current), true);
     if (bytesRead < 40) {
+        // A short pre-read says nothing about what is on the tag, so the
+        // blind full write it used to fall back to can erase a foreign
+        // format — keep it for callers that confirmed a replace, refuse
+        // everyone else.
+        if (request.confirm_replace == 0) {
+            setWriteError("tag unreadable");
+            Serial.println("NFCManager: WRITE_TIGERTAG refused - tag unreadable");
+            LogBuffer::getInstance().logPrintf("Write TigerTag: REFUSED (tag unreadable)\n");
+            return false;
+        }
         Serial.printf("NFCManager: WRITE_TIGERTAG pre-read returned %u bytes, falling back to full write\n",
                       bytesRead);
         LogBuffer::getInstance().logPrintf("Write TigerTag: pre-read failed, full write\n");
@@ -2359,6 +2401,26 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
             return false;
         }
         return tigertagVerifyAndFinish(request, "full write");
+    }
+
+    Type2Content content = classifyType2Content(Type2Format::TigerTag, current, bytesRead);
+    if (!type2WriteAllowed(content, request.confirm_replace != 0)) {
+        setWriteError(type2RefusalReason(content));
+        Serial.printf("NFCManager: WRITE_TIGERTAG refused - %s\n", type2RefusalReason(content));
+        LogBuffer::getInstance().logPrintf("Write TigerTag: REFUSED (%s)\n", type2RefusalReason(content));
+        return false;
+    }
+
+    if (content != Type2Content::SameFormat) {
+        // Anything but a TigerTag: the page-diff against current would leave
+        // the other format's bytes in the pages that happen to match, so
+        // replace the whole window in one write.
+        if (!connection_->writeISO14443Pages(4, 10, request.data.tigertag_data, 40)) {
+            Serial.println("NFCManager: WRITE_TIGERTAG failed");
+            LogBuffer::getInstance().logPrintf("Write TigerTag: FAILED\n");
+            return false;
+        }
+        return tigertagVerifyAndFinish(request, "replace write");
     }
 
     // Build contiguous runs of changed pages. 10 pages alternating → at most 5 runs.
@@ -2415,7 +2477,9 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
 // Decodes the merge baseline for a preserve-mode write out of the page window
 // classifyOpenTag3DTarget already read from the tag in session.
 bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRead,
-                                       opentag3d_t& out, uint16_t& payloadLenOut) {
+                                       opentag3d_t& out, uint16_t& payloadLenOut,
+                                       bool* completeReadOut) {
+    if (completeReadOut) *completeReadOut = false;
     if (pageData == nullptr || bytesRead < 4) return false;
 
     NdefRecord rec = findNdefMediaRecord(pageData, bytesRead);
@@ -2453,8 +2517,12 @@ bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRe
     // (v1: 102 or 187; v2: 216..224, where manufacturer tags stop at 216).
     const uint16_t declaredVersion = (payloadBytes >= 2)
         ? (uint16_t)((payload[0] << 8) | payload[1]) : 0;
-    if (payloadBytes < 2 || (uint32_t)payloadBytes != rec.payloadLen ||
-        !opentag3d_is_canonical_len(declaredVersion, payloadBytes)) {
+    // "Complete" = the FULL declared payload was read. A failure past this
+    // point is then known data (a length or content we cannot merge), not a
+    // failed read, and the classifier can offer it as replaceable.
+    const bool complete = (payloadBytes >= 2 && (uint32_t)payloadBytes == rec.payloadLen);
+    if (completeReadOut) *completeReadOut = complete;
+    if (!complete || !opentag3d_is_canonical_len(declaredVersion, payloadBytes)) {
         Serial.printf("NFCManager: OT3D baseline - unusable payload (%u of %lu)\n",
                       payloadBytes, (unsigned long)rec.payloadLen);
         return false;
@@ -2476,8 +2544,11 @@ bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRe
 // The classification never depends on the baseline decode succeeding: blank,
 // foreign-format and unreadable are all established from this read alone, and
 // the baseline is only attempted once an OpenTag3D record has been positively
-// identified. A tag that carries an OpenTag3D record we cannot decode is
-// unreadable, not blank.
+// identified. A tag that carries everything but a record this firmware can
+// merge is UNKNOWN_DATA — fully read, so a confirmed replace may erase it.
+// Only a failed read, or a size that was never measured for the selected tag,
+// is UNREADABLE: nothing is known about what would be destroyed there, so
+// even a confirmation cannot unlock a write (OT3D_TARGET_UNREADABLE).
 ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
     uint8_t pageData[40];
     uint16_t bytesRead = connection_->readISO14443Pages(4, 10, pageData, sizeof(pageData), true);
@@ -2495,33 +2566,16 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
         // TLV declaring a zero-length message carries nothing; nothing else
         // counts as blank.
         if (ot3d_user_memory_is_blank(pageData, bytesRead)) {
-            // The first window (pages 4-13) reads empty, but a Type 2 tag may
-            // legally hold NULL TLV padding there and its real record later
-            // (#316) — blank is only provable by proving every page a write
-            // could touch is empty. An unmeasured size can't prove that.
-            if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) {
-                Serial.println("NFCManager: OT3D classify - tag size not measured for selected tag, cannot prove blank");
-                return OT3D_TARGET_UNREADABLE;
+            switch (scanRestOfUserMemory()) {
+                case BlankScan::Blank:      return OT3D_TARGET_BLANK;
+                case BlankScan::DataFound:  return OT3D_TARGET_UNKNOWN_DATA;
+                case BlankScan::Unreadable: return OT3D_TARGET_UNREADABLE;
             }
-            uint16_t limitPage = writablePageLimit();
-            uint8_t chunk[64];
-            for (uint16_t page = 14; page < limitPage; page += 16) {
-                uint16_t remaining = limitPage - page;
-                uint8_t pagesToRead = remaining < 16 ? (uint8_t)remaining : 16;
-                uint16_t chunkBytes = connection_->readISO14443Pages((uint8_t)page, pagesToRead, chunk, sizeof(chunk), true);
-                if (chunkBytes < (uint16_t)pagesToRead * 4) {
-                    Serial.printf("NFCManager: OT3D classify - page read failed at page %u\n", (unsigned)page);
-                    return OT3D_TARGET_UNREADABLE;
-                }
-                if (!ot3d_region_is_zero(chunk, chunkBytes)) {
-                    Serial.printf("NFCManager: OT3D classify - data found past the first window at page %u; not blank\n", (unsigned)page);
-                    return OT3D_TARGET_UNREADABLE;
-                }
-            }
-            return OT3D_TARGET_BLANK;
         }
         Serial.println("NFCManager: OT3D classify - data present but no readable record");
-        return OT3D_TARGET_UNREADABLE;
+        // The first window WAS read: the bytes in it are known data, not a
+        // failed read, so a confirmed replace may legitimately erase them.
+        return OT3D_TARGET_UNKNOWN_DATA;
     }
     if (rec.mimeLen != strlen(OT3D_MIME_TYPE) ||
         memcmp(rec.mimeType, OT3D_MIME_TYPE, rec.mimeLen) != 0) {
@@ -2529,9 +2583,42 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
     }
 
     uint16_t baseLen = 0;
-    if (!readOpenTag3DBaseline(pageData, bytesRead, out, baseLen)) return OT3D_TARGET_UNREADABLE;
+    bool completeRead = false;
+    if (!readOpenTag3DBaseline(pageData, bytesRead, out, baseLen, &completeRead)) {
+        // A fully read record with a length or content this firmware cannot
+        // merge is known data the user may choose to replace; a short read is
+        // not, because pages past what came back were never seen.
+        return completeRead ? OT3D_TARGET_UNKNOWN_DATA : OT3D_TARGET_UNREADABLE;
+    }
     Serial.printf("NFCManager: OT3D classify - written tag, %u byte baseline\n", baseLen);
     return OT3D_TARGET_WRITTEN;
+}
+
+// Classifies the first user-memory window (pages 4-13) for the writers whose
+// whole write fits in that one window (TigerTag, OpenSpool). Reads no further
+// than the caller already did, except through the blank scan.
+Type2Content NFCManager::classifyType2Content(Type2Format writer,
+                                              const uint8_t* window,
+                                              uint16_t windowLen) {
+    if (window == nullptr || windowLen < 16) return Type2Content::Unreadable;
+
+    if (windowLen >= 14 && tigerTagCheckMagic(window, windowLen)) {
+        return type2ContentForFormat(Type2Format::TigerTag, writer);
+    }
+
+    NdefRecord rec = findNdefMediaRecord(window, windowLen);
+    if (rec.found) {
+        return type2ContentForFormat(
+            type2FormatFromMime(rec.mimeType, rec.mimeLen, OT3D_MIME_TYPE, "application/json"),
+            writer);
+    }
+
+    if (!ot3d_user_memory_is_blank(window, windowLen)) return Type2Content::UnknownData;
+    switch (scanRestOfUserMemory()) {
+        case BlankScan::Blank:     return Type2Content::Blank;
+        case BlankScan::DataFound: return Type2Content::UnknownData;
+        default:                   return Type2Content::Unreadable;
+    }
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
@@ -2623,8 +2710,13 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         if (decision == OT3D_DECIDE_REFUSE) {
             Serial.printf("NFCManager: WRITE_OPENTAG3D - refusing write, target state %d\n", (int)target);
             LogBuffer::getInstance().logPrintf("Write OpenTag3D: REFUSED (target not writable)\n");
-            OT3D_SET_ERR(target == OT3D_TARGET_OTHER_FORMAT ? "not an OT3D tag"
-                                                            : "tag unreadable");
+            if (target == OT3D_TARGET_OTHER_FORMAT) {
+                OT3D_SET_ERR(type2RefusalReason(Type2Content::OtherFormat));
+            } else if (target == OT3D_TARGET_UNKNOWN_DATA) {
+                OT3D_SET_ERR(type2RefusalReason(Type2Content::UnknownData));
+            } else {
+                OT3D_SET_ERR("tag unreadable");
+            }
             return false;
         }
 
@@ -2729,6 +2821,19 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
     RawWriteSlotGuard slotGuard{*this};
 
     if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
+
+    // One replace rule for every Type 2 writer: classify the window this
+    // write will overwrite before building anything. The slot guard already
+    // releases the staging slot on this early return.
+    uint8_t window[40];
+    uint16_t got = connection_->readISO14443Pages(4, 10, window, sizeof(window), true);
+    Type2Content content = classifyType2Content(Type2Format::OpenSpool, window, got);
+    if (!type2WriteAllowed(content, request.confirm_replace != 0)) {
+        setWriteError(type2RefusalReason(content));
+        Serial.printf("NFCManager: WRITE_OPENSPOOL refused - %s\n", type2RefusalReason(content));
+        LogBuffer::getInstance().logPrintf("Write OpenSpool: REFUSED (%s)\n", type2RefusalReason(content));
+        return false;
+    }
 
     uint16_t payloadLen = (uint16_t)localSize;
     uint8_t ndefBuf[256];

@@ -16,6 +16,7 @@
 #include "opentag3d_lib.h"
 #include "opentag3d_patch.h"
 #include "opentag3d_arbitrate.h"
+#include "Type2WriteGuard.h"
 #include "BambuTagParser.h"
 #include "WriteOutcomeRing.h"
 #include <atomic>
@@ -206,13 +207,24 @@ private:
     bool tigertagVerifyAndFinish(const NFCWriteRequest& request, const char* how);
     bool ndefVerifyAndFinish(const char* what, uint8_t pagesNeeded, const uint8_t* ndefBuf, uint16_t ndefLen);
     bool executeOpenTag3DWrite(const NFCWriteRequest& request);
+    // Records the short reason processWriteQueue copies into the outcome ring
+    // on failure, for the writers that have no macro of their own.
+    void setWriteError(const char* msg);
+    enum class BlankScan : uint8_t { Blank, DataFound, Unreadable };
+    // Reads pages 14..writablePageLimit(): the first window (pages 4-13) was
+    // already judged empty by the caller. Unreadable when the tag's size was
+    // not measured for the selected tag or a chunk read comes back short.
+    BlankScan scanRestOfUserMemory();
+    // window = pages 4-13 already read by the caller (keepSession true).
+    Type2Content classifyType2Content(Type2Format writer, const uint8_t* window, uint16_t windowLen);
     // Decodes the merge baseline out of a page window already read from the
     // tag in session. Fails closed (returns false) on any NDEF, MIME, length
     // or decode problem; callers must never fall back to zeroed fields on
     // failure. Takes the window rather than reading it so the classification
     // above it and the baseline below it describe the same read of the tag.
     bool readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRead,
-                               opentag3d_t& out, uint16_t& payloadLenOut);
+                               opentag3d_t& out, uint16_t& payloadLenOut,
+                               bool* completeReadOut = nullptr);
     // What is physically on the tag, which is what decides merge vs replace.
     // Only OT3D_TARGET_WRITTEN fills `out`.
     ot3d_target_state_t classifyOpenTag3DTarget(opentag3d_t& out);

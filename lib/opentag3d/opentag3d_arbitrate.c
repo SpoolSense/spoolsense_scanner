@@ -11,8 +11,13 @@ ot3d_write_decision_t ot3d_decide_write(ot3d_target_state_t target,
         case OT3D_TARGET_WRITTEN:
             return (replace_requested && replace_confirmed) ? OT3D_DECIDE_REPLACE
                                                             : OT3D_DECIDE_MERGE;
-        case OT3D_TARGET_UNREADABLE:
         case OT3D_TARGET_OTHER_FORMAT:
+        case OT3D_TARGET_UNKNOWN_DATA:
+            /* Something is there that a merge cannot keep, so only an
+             * explicit confirmed replace may destroy it. */
+            return (replace_requested && replace_confirmed) ? OT3D_DECIDE_REPLACE
+                                                            : OT3D_DECIDE_REFUSE;
+        case OT3D_TARGET_UNREADABLE:
         default:
             return OT3D_DECIDE_REFUSE;
     }

@@ -9,7 +9,7 @@ OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration test_write_outcome_ring
+all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_type2_write_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration test_write_outcome_ring
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -41,6 +41,9 @@ test_bambutag_parser: test_bambutag_parser.cpp ../../lib/bambutag/BambuTagParser
 test_write_uid_guard: test_write_uid_guard.cpp ../../src/WriteUidGuard.h
 	$(CXX) $(CXXFLAGS) -o $@ test_write_uid_guard.cpp
 
+test_type2_write_guard: test_type2_write_guard.cpp ../../src/Type2WriteGuard.h
+	$(CXX) $(CXXFLAGS) -o $@ test_type2_write_guard.cpp
+
 test_opentag3d_layout: test_opentag3d_layout.cpp ../../src/OpenTag3DLayout.h $(OT3D_OBJS) opentag3d_patch.o
 	$(CXX) $(CXXFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_layout.cpp $(OT3D_OBJS) opentag3d_patch.o
 
@@ -68,7 +71,7 @@ test_write_arbitration: test_write_arbitration.c opentag3d_arbitrate.o
 test_write_outcome_ring: test_write_outcome_ring.cpp ../../src/WriteOutcomeRing.h
 	$(CXX) $(CXXFLAGS) -o $@ test_write_outcome_ring.cpp
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration test_write_outcome_ring test_write_result_gate.js
+test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_type2_write_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_opentag3d_patch test_opentag3d_layout test_write_arbitration test_write_outcome_ring test_write_result_gate.js
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -90,6 +93,9 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo ""
 	@echo "=== Running write UID guard tests ==="
 	@./test_write_uid_guard
+	@echo ""
+	@echo "=== Running type 2 write guard tests ==="
+	@./test_type2_write_guard
 	@echo ""
 	@echo "=== Running CC sizing tests ==="
 	@./test_cc_sizing
@@ -123,6 +129,6 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
-	      test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner \
+	      test_write_uid_guard test_type2_write_guard test_cc_sizing test_spool_cache test_opentag3d_runner \
 	      test_opentag3d_patch test_opentag3d_layout test_write_arbitration \
 	      test_write_outcome_ring *.o

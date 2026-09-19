@@ -2096,6 +2096,8 @@ void WebServerManager::handleApiWriteTigerTag() {
     req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_TIGERTAG;
     req.wants_outcome = 1;
+    req.confirm_replace = doc["confirm_replace"].is<bool>() &&
+                          doc["confirm_replace"].as<bool>() ? 1 : 0;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     memcpy(req.data.tigertag_data, payload, 40);
     if (!NFCManager::getInstance().enqueueWrite(req)) {
@@ -2409,6 +2411,8 @@ void WebServerManager::handleApiWriteOpenSpool() {
     req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_OPENSPOOL;
     req.wants_outcome = 1;
+    req.confirm_replace = doc["confirm_replace"].is<bool>() &&
+                          doc["confirm_replace"].as<bool>() ? 1 : 0;
     // Bind the write to the UID the page detected when Write was pressed,
     // exactly as the TigerTag and OpenTag3D handlers do. Without it
     // validateWriteUid() accepts whatever tag happens to be present, so a tag

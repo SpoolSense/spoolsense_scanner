@@ -47,8 +47,25 @@ int main(void) {
           "D: unreadable tag, preserve -> refuse");
     CHECK(ot3d_decide_write(OT3D_TARGET_UNREADABLE, 1, 1) == OT3D_DECIDE_REFUSE,
           "D: unreadable tag, replace + confirm -> still refuse");
-    CHECK(ot3d_decide_write(OT3D_TARGET_OTHER_FORMAT, 1, 1) == OT3D_DECIDE_REFUSE,
-          "D: another tag format, replace + confirm -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_OTHER_FORMAT, 1, 0) == OT3D_DECIDE_REFUSE,
+          "D: another tag format, replace requested without confirm -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_OTHER_FORMAT, 0, 1) == OT3D_DECIDE_REFUSE,
+          "D: another tag format, confirm without replace request -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_OTHER_FORMAT, 0, 0) == OT3D_DECIDE_REFUSE,
+          "D: another tag format, no replace -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_OTHER_FORMAT, 1, 1) == OT3D_DECIDE_REPLACE,
+          "D: another tag format, replace + confirm -> replace");
+
+    /* D2: fully read data the scanner cannot interpret — only a confirmed
+     * replace may destroy it, same as another format. */
+    CHECK(ot3d_decide_write(OT3D_TARGET_UNKNOWN_DATA, 0, 0) == OT3D_DECIDE_REFUSE,
+          "D2: unknown data, no replace -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_UNKNOWN_DATA, 1, 0) == OT3D_DECIDE_REFUSE,
+          "D2: unknown data, replace requested without confirm -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_UNKNOWN_DATA, 0, 1) == OT3D_DECIDE_REFUSE,
+          "D2: unknown data, confirm without replace request -> refuse");
+    CHECK(ot3d_decide_write(OT3D_TARGET_UNKNOWN_DATA, 1, 1) == OT3D_DECIDE_REPLACE,
+          "D2: unknown data, replace + confirm -> replace");
 
     /* E: blank detection. BLANK is the one classification that permits a
      * wholesale write with no confirmation, so a false positive here is what
