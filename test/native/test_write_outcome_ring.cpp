@@ -101,6 +101,21 @@ int main() {
         CHECK(slot == -1, "zero-length ring returns -1 without crashing");
     }
 
+    // writeOutcomePendingExpired: a Pending slot is answered by age alone, so
+    // a request stuck behind another one in the queue still gets its answer.
+    CHECK(writeOutcomePendingExpired(WriteOutcomeSlotState::Pending, 1000, 11000, 10000),
+          "Pending slot at the limit is expired");
+    CHECK(!writeOutcomePendingExpired(WriteOutcomeSlotState::Pending, 1000, 10999, 10000),
+          "Pending slot below the limit is not expired");
+    CHECK(!writeOutcomePendingExpired(WriteOutcomeSlotState::Done, 1000, 60000, 10000),
+          "a Done slot is never expired as Pending");
+    CHECK(!writeOutcomePendingExpired(WriteOutcomeSlotState::Empty, 1000, 60000, 10000),
+          "an Empty slot is never expired as Pending");
+    CHECK(writeOutcomePendingExpired(WriteOutcomeSlotState::Pending, 0xFFFFF000u, 0x00002000u, 10000),
+          "Pending slot reserved before a millis() wrap still expires");
+    CHECK(!writeOutcomePendingExpired(WriteOutcomeSlotState::Pending, 0xFFFFF000u, 0xFFFFF100u, 10000),
+          "Pending slot reserved just before a millis() wrap is not expired early");
+
     // writeRequestAbandoned: how long a queued request may wait for its tag.
     CHECK(!writeRequestAbandoned(5000, 1000, 10000), "wait below the limit is not abandoned");
     CHECK(writeRequestAbandoned(11000, 1000, 10000), "wait exactly at the limit is abandoned");

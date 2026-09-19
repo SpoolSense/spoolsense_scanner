@@ -51,3 +51,13 @@ inline int writeOutcomeReserveSlot(const WriteOutcomeSlotState* states, const ui
 inline bool writeRequestAbandoned(uint32_t nowMs, uint32_t enqueuedMs, uint32_t abandonMs) {
     return (uint32_t)(nowMs - enqueuedMs) >= abandonMs;
 }
+
+// True for a Pending slot reserved at least abandonMs ago. The answer depends
+// on the slot's age alone, never on where its request sits in the queue: a
+// request behind one that needs no answer cannot be reached there, but its
+// browser still has to be told.
+inline bool writeOutcomePendingExpired(WriteOutcomeSlotState state, uint32_t reservedMs,
+                                       uint32_t nowMs, uint32_t abandonMs) {
+    return state == WriteOutcomeSlotState::Pending &&
+           (uint32_t)(nowMs - reservedMs) >= abandonMs;
+}

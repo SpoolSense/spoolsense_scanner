@@ -105,3 +105,93 @@ inline Type2Content type2ContentForJsonRecord(Type2Format writer, OpenSpoolProbe
         default:                           return Type2Content::Unreadable;
     }
 }
+
+// Whether the NDEF message in a Type 2 user-memory image is ONE media record
+// and nothing else. Every NDEF writer here re-emits a single record followed
+// by a terminator, which erases any other record, TLV or byte on the tag — so
+// "my own format" is only an update when that record is all there is.
+enum class NdefShape : uint8_t {
+    SoleRecord,  // one MB|ME media record fills the NDEF TLV; a terminator follows
+    Companions,  // other records, TLVs or bytes share the tag, or it is malformed
+    TailUnseen,  // well-formed so far; the byte after the TLV is past this image
+    ZeroTail,    // zeros follow the TLV: sole only if the rest of memory is zero
+};
+
+// What the first byte after the NDEF TLV says. A terminator ends the tag's
+// data. The terminator is optional, so zero may be padding — or the NULL TLVs
+// in front of something else.
+inline NdefShape ndefTailShape(uint8_t byteAfterTlv) {
+    if (byteAfterTlv == 0xFE) return NdefShape::SoleRecord;
+    if (byteAfterTlv == 0x00) return NdefShape::ZeroTail;
+    return NdefShape::Companions;
+}
+
+// data = user memory from page 4. *tlvEndOut = offset of the first byte after
+// the NDEF TLV, valid for every result but Companions. Anything this cannot
+// prove is Companions: the caller then asks before it writes.
+inline NdefShape ndefMessageShape(const uint8_t* data, uint16_t len, uint16_t* tlvEndOut) {
+    if (data == nullptr || tlvEndOut == nullptr) return NdefShape::Companions;
+    uint16_t pos = 0;
+    while (pos < len) {
+        uint8_t tlvType = data[pos++];
+        if (tlvType == 0x00) continue;
+        if (tlvType == 0xFE || pos >= len) return NdefShape::Companions;
+
+        uint32_t tlvLen = data[pos++];
+        if (tlvLen == 0xFF) {
+            if (pos + 2 > len) return NdefShape::Companions;
+            tlvLen = ((uint32_t)data[pos] << 8) | data[pos + 1];
+            pos += 2;
+        }
+        // Lock and memory control TLVs are the tag's own housekeeping.
+        if (tlvType == 0x01 || tlvType == 0x02) {
+            if (tlvLen > (uint32_t)(len - pos)) return NdefShape::Companions;
+            pos += (uint16_t)tlvLen;
+            continue;
+        }
+        if (tlvType != 0x03) return NdefShape::Companions;
+
+        uint16_t valueStart = pos;
+        if ((uint32_t)valueStart + 3 > len) return NdefShape::Companions;
+        uint8_t flags = data[valueStart];
+        // MB and ME set, CF and IL clear, TNF = media type.
+        if ((flags & 0xE8) != 0xC0 || (flags & 0x07) != 0x02) return NdefShape::Companions;
+
+        uint8_t typeLen = data[valueStart + 1];
+        uint32_t headerLen;
+        uint32_t payloadLen;
+        if (flags & 0x10) {
+            headerLen = 3;
+            payloadLen = data[valueStart + 2];
+        } else {
+            if ((uint32_t)valueStart + 6 > len) return NdefShape::Companions;
+            headerLen = 6;
+            payloadLen = ((uint32_t)data[valueStart + 2] << 24) |
+                         ((uint32_t)data[valueStart + 3] << 16) |
+                         ((uint32_t)data[valueStart + 4] << 8) |
+                         data[valueStart + 5];
+        }
+        if (payloadLen > 0xFFFF) return NdefShape::Companions;
+        if (headerLen + typeLen + payloadLen != tlvLen) return NdefShape::Companions;
+
+        uint32_t end = (uint32_t)valueStart + tlvLen;
+        if (end > 0xFFFF) return NdefShape::Companions;
+        *tlvEndOut = (uint16_t)end;
+        return (end < len) ? ndefTailShape(data[end]) : NdefShape::TailUnseen;
+    }
+    return NdefShape::Companions;
+}
+
+// The shape, once the pages it could not see have been read.
+enum class NdefExtent : uint8_t { WholeTag, HasCompanions, Unreadable };
+
+// Companions turn an update into a replace; an unread tail makes it unreadable.
+// A content that is not SameFormat already needs what it needs.
+inline Type2Content type2ContentWithExtent(Type2Content content, NdefExtent extent) {
+    if (content != Type2Content::SameFormat) return content;
+    switch (extent) {
+        case NdefExtent::WholeTag:      return Type2Content::SameFormat;
+        case NdefExtent::HasCompanions: return Type2Content::OtherFormat;
+        default:                        return Type2Content::Unreadable;
+    }
+}

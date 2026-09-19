@@ -837,7 +837,7 @@ void NFCManager::scanLoop() {
             // Nothing was present — no debounce needed, keep state cleared
             SCAN_PHASE(7);
             handleTagAbsent();
-            abandonStaleHeadWrite();
+            expireStaleWebWrites();
         } else if (++absentMisses_ >= TAG_ABSENT_MISS_THRESHOLD) {
             SCAN_PHASE(8);
             // Debounce removal: single failed reads happen with stationary tags
@@ -845,7 +845,7 @@ void NFCManager::scanLoop() {
             // several consecutive misses, or present/removed flaps every few
             // seconds and every subscriber (MQTT, HA, displays) flaps with it.
             handleTagAbsent();
-            abandonStaleHeadWrite();
+            expireStaleWebWrites();
             absentMisses_ = 0;
         }
 
@@ -1765,6 +1765,7 @@ bool NFCManager::enqueueWrite(const NFCWriteRequest& req) {
         slot.error[0] = '\0';
         slot.done = false;
         slot.ok = false;
+        slot.completed_ms = millis();   // while Pending: when it was reserved
         slot.state = WriteOutcomeSlotState::Pending;
         xSemaphoreGive(writeOutcomeMutex_);
         reserved = true;
@@ -1812,23 +1813,28 @@ bool NFCManager::enqueueWrite(const NFCWriteRequest& req) {
 
 // Answers a queued web write that will not run: frees the staged payload that
 // belongs to it, records the failure for its poller, marks it completed.
-void NFCManager::refuseQueuedWebWrite(const NFCWriteRequest& request, const char* reason) {
+void NFCManager::releaseStagedPayloadOf(const NFCWriteRequest& request) {
     // Only one raw request can be queued at a time (enqueueRawWrite refuses
     // while Staged/InFlight), so a Staged slot on a raw request belongs to
     // this request and must be freed. An InFlight slot belongs to a running
     // write — leave it alone.
-    if (request.type == NFCWriteType::WRITE_RAW_TAG ||
-        request.type == NFCWriteType::WRITE_OPENTAG3D ||
-        request.type == NFCWriteType::WRITE_OPENSPOOL) {
-        if (stagingMutex != nullptr &&
-            xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            if (rawWriteSlot_ == RawWriteSlot::Staged) {
-                rawWriteSlot_ = RawWriteSlot::Empty;
-                rawWriteBufferSize_ = 0;
-            }
-            xSemaphoreGive(stagingMutex);
-        }
+    if (request.type != NFCWriteType::WRITE_RAW_TAG &&
+        request.type != NFCWriteType::WRITE_OPENTAG3D &&
+        request.type != NFCWriteType::WRITE_OPENSPOOL) {
+        return;
     }
+    if (stagingMutex != nullptr &&
+        xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (rawWriteSlot_ == RawWriteSlot::Staged) {
+            rawWriteSlot_ = RawWriteSlot::Empty;
+            rawWriteBufferSize_ = 0;
+        }
+        xSemaphoreGive(stagingMutex);
+    }
+}
+
+void NFCManager::refuseQueuedWebWrite(const NFCWriteRequest& request, const char* reason) {
+    releaseStagedPayloadOf(request);
 
     if (writeOutcomeMutex_ != nullptr &&
         xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
@@ -1844,18 +1850,46 @@ void NFCManager::refuseQueuedWebWrite(const NFCWriteRequest& request, const char
             (unsigned long)request.request_id, reason);
 }
 
-// A web write whose tag went away before it was dequeued would otherwise hold
-// its outcome slot with no answer, and eight such requests strand every slot.
-// Answer with "tag removed" instead; at most one per call. The scan loop calls
-// this on every cycle that finds no tag — processWriteQueue() only runs when
-// one is detected, so it alone never reaches an empty reader.
-void NFCManager::abandonStaleHeadWrite() {
-    if (writeQueue == nullptr) return;
+// A web write whose tag went away before it ran would otherwise hold its
+// outcome slot with no answer, and eight such requests strand every slot. The
+// scan loop calls this on every cycle that finds no tag — processWriteQueue()
+// only runs when one is detected, so it alone never reaches an empty reader.
+//
+// The answer is given from the outcome ring, by the slot's age, and the request
+// is marked completed. It does not matter where the request sits in the queue:
+// one stuck behind a request that needs no answer cannot be reached there, and
+// the completed mark makes processWriteQueue() drop it unrun when it surfaces.
+void NFCManager::expireStaleWebWrites() {
+    if (writeQueue == nullptr || writeOutcomeMutex_ == nullptr) return;
+
+    uint32_t expired[WRITE_OUTCOME_RING_SIZE];
+    size_t expiredCount = 0;
+    if (xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    uint32_t now = millis();
+    for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+        WriteOutcome& slot = writeOutcomeRing_[i];
+        if (!writeOutcomePendingExpired(slot.state, slot.completed_ms, now, WRITE_ABANDON_MS)) continue;
+        slot.ok = false;
+        strncpy(slot.error, "tag removed", sizeof(slot.error) - 1);
+        slot.error[sizeof(slot.error) - 1] = '\0';
+        slot.completed_ms = now;
+        slot.state = WriteOutcomeSlotState::Done;
+        slot.done = true;
+        writeOutcomeLastIndex_ = i;
+        expired[expiredCount++] = slot.request_id;
+    }
+    xSemaphoreGive(writeOutcomeMutex_);
+
+    for (size_t i = 0; i < expiredCount; i++) {
+        markRequestCompleted(expired[i]);
+        Serial.printf("NFCManager: write %lu not run — tag removed\n", (unsigned long)expired[i]);
+    }
+
+    // Free the queue of answered requests as far as the head allows.
     NFCWriteRequest head;
-    if (xQueuePeek(writeQueue, &head, 0) == pdTRUE && head.wants_outcome &&
-        writeRequestAbandoned(millis(), head.enqueued_ms, WRITE_ABANDON_MS)) {
+    while (xQueuePeek(writeQueue, &head, 0) == pdTRUE && isRequestCompleted(head.request_id)) {
         xQueueReceive(writeQueue, &head, 0);
-        refuseQueuedWebWrite(head, "tag removed");
+        releaseStagedPayloadOf(head);
     }
 }
 
@@ -1865,7 +1899,7 @@ void NFCManager::processWriteQueue() {
     }
 
     if (!currentSpool.present) {
-        abandonStaleHeadWrite();
+        expireStaleWebWrites();
         return;
     }
 
@@ -1877,6 +1911,7 @@ void NFCManager::processWriteQueue() {
         // Check if already completed — skip without counting as our one write
         if (isRequestCompleted(request.request_id)) {
             xQueueReceive(writeQueue, &request, 0);
+            releaseStagedPayloadOf(request);
             // A duplicate id (see enqueueWrite/enqueueRawWrite) can leave a
             // second Pending reservation under the same request_id after the
             // first one already completed and was recorded Done — whoever was
@@ -1899,12 +1934,12 @@ void NFCManager::processWriteQueue() {
         // Dequeue the request
         xQueueReceive(writeQueue, &request, 0);
 
-        // A web write can wait behind a request that needs no answer while the
-        // reader is empty, where abandonStaleHeadWrite() cannot see it. Once
-        // its outcome window has passed the browser has reported a failure, so
-        // running it now would write a tag the user believes was left alone.
+        // A web write must START within WRITE_ABANDON_MS of being accepted.
+        // The browser stops polling at 15 s and reports a failure; a write
+        // that began after that would change a tag the user believes was left
+        // alone. 10 s leaves the write itself time to finish inside the poll.
         if (request.wants_outcome &&
-            writeRequestAbandoned(millis(), request.enqueued_ms, WRITE_OUTCOME_TTL_MS)) {
+            writeRequestAbandoned(millis(), request.enqueued_ms, WRITE_ABANDON_MS)) {
             refuseQueuedWebWrite(request, "timed out");
             continue;
         }
@@ -2315,7 +2350,7 @@ void NFCManager::setWriteError(const char* msg) {
     lastWriteErrorReason_[sizeof(lastWriteErrorReason_) - 1] = '\0';
 }
 
-NFCManager::BlankScan NFCManager::scanRestOfUserMemory() {
+NFCManager::BlankScan NFCManager::scanRestOfUserMemory(uint16_t startPage) {
     // The first window (pages 4-13) reads empty, but a Type 2 tag may legally
     // hold NULL TLV padding there and its real record later (#316) — blank is
     // only provable by proving every page a write could touch is empty. An
@@ -2326,7 +2361,7 @@ NFCManager::BlankScan NFCManager::scanRestOfUserMemory() {
     }
     uint16_t limitPage = writablePageLimit();
     uint8_t chunk[64];
-    for (uint16_t page = 14; page < limitPage; page += 16) {
+    for (uint16_t page = startPage; page < limitPage; page += 16) {
         uint16_t remaining = limitPage - page;
         uint8_t pagesToRead = remaining < 16 ? (uint8_t)remaining : 16;
         uint16_t chunkBytes = connection_->readISO14443Pages((uint8_t)page, pagesToRead, chunk, sizeof(chunk), true);
@@ -2603,6 +2638,14 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
         return OT3D_TARGET_OTHER_FORMAT;
     }
 
+    // A merge re-emits this one record and a terminator, so anything else on
+    // the tag would be erased by it: that is a replace, and it must be asked.
+    switch (ndefRecordExtent(pageData, bytesRead)) {
+        case NdefExtent::WholeTag:      break;
+        case NdefExtent::HasCompanions: return OT3D_TARGET_OTHER_FORMAT;
+        default:                        return OT3D_TARGET_UNREADABLE;
+    }
+
     uint16_t baseLen = 0;
     bool completeRead = false;
     if (!readOpenTag3DBaseline(pageData, bytesRead, out, baseLen, &completeRead)) {
@@ -2618,6 +2661,45 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
 // Classifies the first user-memory window (pages 4-13) for the writers whose
 // whole write fits in that one window (TigerTag, OpenSpool). Reads no further
 // than the caller already did, except through the blank scan.
+// Finishes what ndefMessageShape() could not see from the first window: the
+// byte after the NDEF TLV, and — when no terminator follows it — that the rest
+// of user memory is empty. Reads keep the session so the write can follow.
+NdefExtent NFCManager::ndefRecordExtent(const uint8_t* window, uint16_t windowLen) {
+    uint16_t end = 0;
+    NdefShape shape = ndefMessageShape(window, windowLen, &end);
+    uint16_t scanFrom = 14;
+
+    if (shape == NdefShape::TailUnseen) {
+        if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) return NdefExtent::Unreadable;
+        uint16_t page = 4 + end / 4;
+        // A message that runs to the last writable byte has nothing after it.
+        if (page >= writablePageLimit()) return NdefExtent::WholeTag;
+        uint8_t tail[4];
+        if (connection_->readISO14443Pages((uint8_t)page, 1, tail, sizeof(tail), true) < sizeof(tail)) {
+            return NdefExtent::Unreadable;
+        }
+        uint8_t off = (uint8_t)(end % 4);
+        shape = ndefTailShape(tail[off]);
+        if (shape == NdefShape::ZeroTail && !ot3d_region_is_zero(tail + off, sizeof(tail) - off)) {
+            shape = NdefShape::Companions;
+        }
+        scanFrom = page + 1;
+    } else if (shape == NdefShape::ZeroTail && !ot3d_region_is_zero(window + end, windowLen - end)) {
+        shape = NdefShape::Companions;
+    }
+
+    if (shape == NdefShape::SoleRecord) return NdefExtent::WholeTag;
+    if (shape == NdefShape::Companions) {
+        Serial.println("NFCManager: classify - the tag holds more than this one record");
+        return NdefExtent::HasCompanions;
+    }
+    switch (scanRestOfUserMemory(scanFrom)) {
+        case BlankScan::Blank:     return NdefExtent::WholeTag;
+        case BlankScan::DataFound: return NdefExtent::HasCompanions;
+        default:                   return NdefExtent::Unreadable;
+    }
+}
+
 // Every application writes application/json, so the MIME type cannot say a
 // record is OpenSpool. Read the whole payload and ask the same parser the
 // scanner reads tags with.
@@ -2649,6 +2731,11 @@ Type2Content NFCManager::classifyType2Content(Type2Format writer,
         Type2Format found = type2FormatFromMime(rec.mimeType, rec.mimeLen,
                                                 OT3D_MIME_TYPE, "application/json");
         if (found == Type2Format::JsonRecord && writer == Type2Format::OpenSpool) {
+            // Extent first: its reads keep the session, the payload read may not.
+            NdefExtent extent = ndefRecordExtent(window, windowLen);
+            if (extent != NdefExtent::WholeTag) {
+                return type2ContentWithExtent(Type2Content::SameFormat, extent);
+            }
             return type2ContentForJsonRecord(writer, probeOpenSpoolRecord(rec, window, windowLen));
         }
         return type2ContentForFormat(found, writer);

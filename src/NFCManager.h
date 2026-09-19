@@ -188,8 +188,9 @@ private:
     void sendOpenSpoolMessage(const char* uid, const OpenSpoolData& data);
     void sendTagRemovedMessage();
     void processWriteQueue();
-    void abandonStaleHeadWrite();
+    void expireStaleWebWrites();
     void refuseQueuedWebWrite(const NFCWriteRequest& request, const char* reason);
+    void releaseStagedPayloadOf(const NFCWriteRequest& request);
     // Fills the request's Pending outcome slot with the result. Shared by the
     // normal recording site and the tag-removed abandon path (#316 review).
     // Caller must hold writeOutcomeMutex_.
@@ -216,7 +217,9 @@ private:
     // Reads pages 14..writablePageLimit(): the first window (pages 4-13) was
     // already judged empty by the caller. Unreadable when the tag's size was
     // not measured for the selected tag or a chunk read comes back short.
-    BlankScan scanRestOfUserMemory();
+    BlankScan scanRestOfUserMemory(uint16_t startPage = 14);
+    // Whether the NDEF record found in `window` is everything on the tag.
+    NdefExtent ndefRecordExtent(const uint8_t* window, uint16_t windowLen);
     // window = pages 4-13 already read by the caller (keepSession true).
     Type2Content classifyType2Content(Type2Format writer, const uint8_t* window, uint16_t windowLen);
     // Reads a JSON record's whole payload and asks the OpenSpool parser.

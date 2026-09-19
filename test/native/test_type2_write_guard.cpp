@@ -9,6 +9,38 @@ static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("  FAIL %s\n", msg); failures++; } \
                               else { printf("  PASS %s\n", msg); } } while (0)
 
+// Builds a Type 2 user-memory image: optional leading bytes, one NDEF TLV
+// holding one record, then the bytes that follow the TLV.
+static uint16_t buildImage(uint8_t* out, uint16_t outSize,
+                           const uint8_t* lead, uint16_t leadLen,
+                           uint8_t flags, uint8_t typeLen, uint32_t payloadLen,
+                           int tlvLenDelta,
+                           const uint8_t* after, uint16_t afterLen) {
+    memset(out, 0, outSize);
+    uint16_t i = 0;
+    for (uint16_t k = 0; k < leadLen; k++) out[i++] = lead[k];
+    bool sr = (flags & 0x10) != 0;
+    uint32_t recordLen = 2 + (sr ? 1 : 4) + typeLen + payloadLen;
+    uint32_t tlvLen = recordLen + tlvLenDelta;
+    out[i++] = 0x03;
+    if (tlvLen > 254) { out[i++] = 0xFF; out[i++] = (uint8_t)(tlvLen >> 8); out[i++] = (uint8_t)tlvLen; }
+    else out[i++] = (uint8_t)tlvLen;
+    uint16_t valueStart = i;
+    if (i < outSize) out[i++] = flags;
+    if (i < outSize) out[i++] = typeLen;
+    if (sr) { if (i < outSize) out[i++] = (uint8_t)payloadLen; }
+    else {
+        if (i + 4 <= outSize) {
+            out[i++] = (uint8_t)(payloadLen >> 24); out[i++] = (uint8_t)(payloadLen >> 16);
+            out[i++] = (uint8_t)(payloadLen >> 8);  out[i++] = (uint8_t)payloadLen;
+        }
+    }
+    uint32_t end = valueStart + tlvLen;
+    for (uint32_t k = i; k < end && k < outSize; k++) out[k] = 0x41;  // type + payload bytes
+    for (uint16_t k = 0; k < afterLen; k++) if (end + k < outSize) out[end + k] = after[k];
+    return (uint16_t)end;
+}
+
 int main() {
     printf("=== Type 2 write guard tests ===\n");
 
@@ -128,6 +160,119 @@ int main() {
           "TigerTag writer, OpenSpool on the tag: other format");
     CHECK(type2ContentForJsonRecord(Type2Format::OpenTag3D, OpenSpoolProbe::NotOpenSpool) == Type2Content::OtherFormat,
           "OpenTag3D writer, JSON on the tag: other format");
+
+
+    // ndefMessageShape — a writer that re-emits ONE record erases every other
+    // record, TLV and byte on the tag, so "my format" is only an update when
+    // that record is provably everything there is.
+    {
+        uint8_t img[40]; uint16_t end = 0; uint16_t got = 0;
+        const uint8_t term[] = {0xFE};
+        const uint8_t zero[] = {0x00};
+        const uint8_t tlv2[] = {0x03, 0x05};
+        const uint8_t prop[] = {0xFD, 0x02};
+
+        end = buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
+              "one MB|ME record, terminator right after: sole record");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0x92, 4, 6, 12, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "first record without ME: another record follows");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0x52, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "record without MB is not the first record");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 9, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "MB|ME record shorter than its TLV: bytes share the message");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, -1, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "record longer than its TLV is malformed, never sole");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xDA, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "IL flag set: header has an ID field this parser does not read");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xF2, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "chunked record is never sole");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xD1, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "a well-known-type record is not a media record");
+
+        end = buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 0, zero, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::ZeroTail && got == end,
+              "zero after the TLV: sole only if the rest of memory is zero");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 0, tlv2, 2);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "a second NDEF TLV after the first");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 0, prop, 2);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "a proprietary TLV after the message");
+
+        const uint8_t lockCtl[] = {0x01, 0x03, 0xA0, 0x0C, 0x34};
+        end = buildImage(img, sizeof(img), lockCtl, sizeof(lockCtl), 0xD2, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
+              "a lock control TLV ahead of the message is tag housekeeping");
+
+        const uint8_t nulls[] = {0x00, 0x00, 0x00};
+        end = buildImage(img, sizeof(img), nulls, sizeof(nulls), 0xD2, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
+              "NULL TLVs ahead of the message are padding");
+
+        const uint8_t propLead[] = {0xFD, 0x02, 0xAA, 0xBB};
+        buildImage(img, sizeof(img), propLead, sizeof(propLead), 0xD2, 4, 6, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "a proprietary TLV ahead of the message is someone's data");
+
+        // An OpenTag3D-sized record: 224-byte payload, long TLV, long record.
+        end = buildImage(img, sizeof(img), nullptr, 0, 0xD2, 21, 224, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::TailUnseen && got == end && end == 2 + 3 + 21 + 224,
+              "record runs past the window: the byte after it was not seen");
+
+        end = buildImage(img, sizeof(img), nullptr, 0, 0xC2, 21, 300, 0, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::TailUnseen && got == end,
+              "long-form record whose length fills the TLV");
+
+        buildImage(img, sizeof(img), nullptr, 0, 0xC2, 21, 300, 40, term, 1);
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "long-form record shorter than its TLV");
+
+        memset(img, 0, sizeof(img)); img[0] = 0xFE;
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "no NDEF TLV at all is never a sole record");
+        memset(img, 0, sizeof(img));
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "an empty window is never a sole record");
+        CHECK(ndefMessageShape(nullptr, 40, &got) == NdefShape::Companions,
+              "null data is never a sole record");
+        memset(img, 0, sizeof(img)); img[38] = 0x03; img[39] = 0x0B;
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
+              "a record header cut off by the window end is never sole");
+    }
+
+    CHECK(ndefTailShape(0xFE) == NdefShape::SoleRecord, "terminator after the TLV: sole");
+    CHECK(ndefTailShape(0x00) == NdefShape::ZeroTail, "zero after the TLV: needs the zero scan");
+    CHECK(ndefTailShape(0x03) == NdefShape::Companions, "another TLV after the TLV: companions");
+    CHECK(ndefTailShape(0xFD) == NdefShape::Companions, "proprietary TLV after the TLV: companions");
+
+    // type2ContentWithExtent — companions turn an update into a replace.
+    CHECK(type2ContentWithExtent(Type2Content::SameFormat, NdefExtent::WholeTag) == Type2Content::SameFormat,
+          "own format and nothing else: update");
+    CHECK(type2ContentWithExtent(Type2Content::SameFormat, NdefExtent::HasCompanions) == Type2Content::OtherFormat,
+          "own format plus other data: replace needs confirmation");
+    CHECK(type2ContentWithExtent(Type2Content::SameFormat, NdefExtent::Unreadable) == Type2Content::Unreadable,
+          "own format, rest of tag unread: unreadable");
+    CHECK(type2ContentWithExtent(Type2Content::OtherFormat, NdefExtent::WholeTag) == Type2Content::OtherFormat,
+          "extent never upgrades another format");
+    CHECK(type2ContentWithExtent(Type2Content::Unreadable, NdefExtent::WholeTag) == Type2Content::Unreadable,
+          "extent never upgrades unreadable");
 
     if (failures == 0) printf("All type 2 write guard tests passed\n");
     else printf("%d test(s) FAILED\n", failures);
