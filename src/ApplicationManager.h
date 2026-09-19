@@ -81,6 +81,8 @@ struct SpoolDetectedPayload {
 
 struct SpoolUpdatedPayload {
     char spool_id[17];           // Spool that was updated
+    uint32_t request_id;         // NFC write request id (0 = unowned; deduction
+                                 // settlement in DeductionManager correlates on this)
     uint8_t update_type;         // NFCWriteType enum value
     bool success;                // Whether update succeeded
     uint8_t suppress_sync;       // If 1, don't trigger Spoolman sync (used for batched writes)

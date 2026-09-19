@@ -9,6 +9,7 @@
 #include "BambuTagParser.h"
 #ifndef NATIVE_TEST
   #include "ApplicationManager.h"
+  #include "DeductionManager.h"
   #include "HardwareNFCConnection.h"
   #include "SpoolmanManager.h"
   #include "LogBuffer.h"
@@ -1559,7 +1560,17 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
     memcpy(rawWriteBuffer_, data, dataSize);
     rawWriteBufferSize_ = dataSize;
     rawWritePending_ = true;
-    return enqueueWrite(req);
+    strncpy(rawWriteUid_, req.expected_spool_id, sizeof(rawWriteUid_) - 1);
+    rawWriteUid_[sizeof(rawWriteUid_) - 1] = '\0';
+    if (!enqueueWrite(req)) {
+        // Queue full / not initialized — the request never reached the scan
+        // task, so nothing will consume the sidecar. Release it unconditionally
+        // (this sidecar is by definition ours) or it wedges until reboot (#329
+        // review: queue-full failures used to lock out every later write).
+        releaseRawWriteIf(nullptr);
+        return false;
+    }
+    return true;
 }
 
 uint32_t NFCManager::generateRequestId() {
@@ -1695,7 +1706,7 @@ void NFCManager::processWriteQueue() {
         markRequestCompleted(request.request_id);
 
         // Snapshot spool info under mutex for the notification message
-        char snapshotSpoolId[64];
+        char snapshotSpoolId[64] = {0};
         float snapshotRemainingGrams = 0;
         bool snapshotValid = false;
         if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -1709,8 +1720,9 @@ void NFCManager::processWriteQueue() {
         }
 
         // Build and send the update message with snapshotted data
-        AppMessage msg;
+        AppMessage msg = {};
         msg.type = AppMessageType::SPOOL_UPDATED;
+        msg.payload.spoolUpdated.request_id = request.request_id;
         strncpy(msg.payload.spoolUpdated.spool_id, snapshotSpoolId,
                 sizeof(msg.payload.spoolUpdated.spool_id) - 1);
         msg.payload.spoolUpdated.spool_id[sizeof(msg.payload.spoolUpdated.spool_id) - 1] = '\0';
@@ -1718,7 +1730,26 @@ void NFCManager::processWriteQueue() {
         msg.payload.spoolUpdated.success = success;
         msg.payload.spoolUpdated.suppress_sync = request.suppress_sync;
         msg.payload.spoolUpdated.kg_remaining = snapshotValid ? snapshotRemainingGrams / 1000.0f : 0;
-        ApplicationManager::getInstance().sendMessage(msg);
+        // Definitive write outcome: settlement of any deduction claim keyed on
+        // request_id rides this message, so a lost send would silently strand
+        // the claim (NVS pending vs. completed physical write — a later reboot
+        // would replay the deduction). Retry briefly; if the app queue is
+        // still full, deliver the settlement straight to the claim owner so
+        // the result is never dropped (#329 review).
+        if (!ApplicationManager::getInstance().sendMessage(msg)) {
+            Serial.println("NFCManager: SPOOL_UPDATED send failed — retrying");
+            bool delivered = false;
+            for (int attempt = 0; attempt < 5 && !delivered; attempt++) {
+                vTaskDelay(pdMS_TO_TICKS(20 * (attempt + 1)));
+                delivered = ApplicationManager::getInstance().sendMessage(msg, 50);
+            }
+            if (!delivered) {
+                Serial.println("NFCManager: SPOOL_UPDATED queue saturated — settling deduction directly");
+                LogBuffer::getInstance().logPrintf("WARN: SPOOL_UPDATED %u queue-full, direct settlement\n",
+                                                   request.request_id);
+                DeductionManager::getInstance().handleWriteResult(request.request_id, success);
+            }
+        }
 
         // One write per cycle — break to let scan loop run between writes
         break;
@@ -1760,7 +1791,7 @@ bool NFCManager::writeRawTag() {
     opt_error_t err = opt_write_to_nfc(&localTag, hal);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to write raw tag: %s\n", opt_error_str(err));
-        rawWritePending_ = false;
+        releaseRawWriteIf(nullptr);
         return false;
     }
 
@@ -1776,7 +1807,7 @@ bool NFCManager::writeRawTag() {
             if (err == OPT_OK) {
                 if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
                     Serial.println("NFCManager: Could not acquire tagMutex after raw write verify");
-                    rawWritePending_ = false;
+                    releaseRawWriteIf(nullptr);
                     return false;
                 }
                 currentSpool.tag_data = localTag;
@@ -1788,7 +1819,7 @@ bool NFCManager::writeRawTag() {
                 sendOpenPrintTagMessage();
                 xSemaphoreGive(tagMutex);
 
-                rawWritePending_ = false;
+                releaseRawWriteIf(nullptr);
                 Serial.println("NFCManager: writeRawTag() complete - verified");
                 return true;
             }
@@ -1803,13 +1834,13 @@ bool NFCManager::writeRawTag() {
     err = opt_parse_ndef(&localTag);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to parse in-memory raw data: %s\n", opt_error_str(err));
-        rawWritePending_ = false;
+        releaseRawWriteIf(nullptr);
         return false;
     }
 
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("NFCManager: Could not acquire tagMutex after raw write fallback");
-        rawWritePending_ = false;
+        releaseRawWriteIf(nullptr);
         return false;
     }
     currentSpool.tag_data = localTag;
@@ -1821,7 +1852,7 @@ bool NFCManager::writeRawTag() {
     sendOpenPrintTagMessage();
     xSemaphoreGive(tagMutex);
 
-    rawWritePending_ = false;
+    releaseRawWriteIf(nullptr);
     Serial.println("NFCManager: writeRawTag() complete - unverified");
     return true;
 }
@@ -2107,7 +2138,12 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) return false;
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
+        // Wrong tag: drop this request's sidecar so the next correct-tag scan
+        // can enqueue a fresh write instead of being rejected forever (#329).
+        releaseRawWriteIf(request.expected_spool_id);
+        return false;
+    }
 
     if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
@@ -2116,7 +2152,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 
     opentag3d_t ot3d;
     memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
-    rawWritePending_ = false;
+    releaseRawWriteIf(request.expected_spool_id);
 
     size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
                     : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
@@ -2155,10 +2191,11 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
 
     const uint8_t* jsonPayload = rawWriteBuffer_;
     uint16_t payloadLen = (uint16_t)rawWriteBufferSize_;
-    rawWritePending_ = false;
-
     uint8_t ndefBuf[256];
     uint16_t ndefLen = buildNdefTlv("application/json", jsonPayload, payloadLen, ndefBuf, sizeof(ndefBuf));
+    // Payload is now copied into ndefBuf; release the sidecar on every path
+    // (same rule as WRITE_OPENTAG3D, #329).
+    releaseRawWriteIf(request.expected_spool_id);
     if (ndefLen == 0) {
         Serial.printf("NFCManager: WRITE_OPENSPOOL - NDEF too large\n");
         return false;
@@ -2315,7 +2352,7 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
             return false;
         }
         if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
-            rawWritePending_ = false;
+            releaseRawWriteIf(request.expected_spool_id);
             return false;
         }
         return writeRawTag();
@@ -2480,10 +2517,11 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
 }
 
 void NFCManager::sendSpoolUpdatedMessage(uint32_t request_id, NFCWriteType type, bool success) {
-    (void)request_id;
-
-    AppMessage msg;
+    AppMessage msg = {};
     msg.type = AppMessageType::SPOOL_UPDATED;
+    // request_id is the correlation key for deduction settlement (#329) —
+    // never inferred from the write type.
+    msg.payload.spoolUpdated.request_id = request_id;
 
     strncpy(msg.payload.spoolUpdated.spool_id, currentSpool.spool_id,
             sizeof(msg.payload.spoolUpdated.spool_id) - 1);
