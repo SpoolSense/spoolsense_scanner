@@ -101,6 +101,13 @@ int main() {
         CHECK(slot == -1, "zero-length ring returns -1 without crashing");
     }
 
+    // writeRequestAbandoned: how long a queued request may wait for its tag.
+    CHECK(!writeRequestAbandoned(5000, 1000, 10000), "wait below the limit is not abandoned");
+    CHECK(writeRequestAbandoned(11000, 1000, 10000), "wait exactly at the limit is abandoned");
+    CHECK(writeRequestAbandoned(60000, 1000, 10000), "wait well past the limit is abandoned");
+    CHECK(!writeRequestAbandoned(2000, 0xFFFFF000u, 10000), "just after a millis() wrap, only ~6s passed: not abandoned");
+    CHECK(writeRequestAbandoned(2000, 0xFFFFF000u, 5000), "across a millis() wrap the unsigned delta still expires");
+
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;
 }

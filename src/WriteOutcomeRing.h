@@ -45,3 +45,9 @@ inline int writeOutcomeReserveSlot(const WriteOutcomeSlotState* states, const ui
 
     return oldestIndex;
 }
+
+// True once a queued request has waited at least abandonMs. Unsigned
+// subtraction keeps it right across a millis() wrap.
+inline bool writeRequestAbandoned(uint32_t nowMs, uint32_t enqueuedMs, uint32_t abandonMs) {
+    return (uint32_t)(nowMs - enqueuedMs) >= abandonMs;
+}

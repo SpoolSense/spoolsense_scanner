@@ -18,6 +18,7 @@
 #include "opentag3d_arbitrate.h"
 #include "BambuTagParser.h"
 #include "WriteOutcomeRing.h"
+#include <atomic>
 
 // Sidecar for WRITE_ATOMIC: filled by HTTP handler, consumed by scan task.
 // All fields are optional — only those with has_* = true are applied.
@@ -186,6 +187,10 @@ private:
     void sendOpenSpoolMessage(const char* uid, const OpenSpoolData& data);
     void sendTagRemovedMessage();
     void processWriteQueue();
+    // Fills the request's Pending outcome slot with the result. Shared by the
+    // normal recording site and the tag-removed abandon path (#316 review).
+    // Caller must hold writeOutcomeMutex_.
+    void completeWriteOutcome(const NFCWriteRequest& request, bool success, const char* reason);
     bool executeWrite(const NFCWriteRequest& request);
     // outTimedOut, when given, distinguishes a tagMutex acquisition timeout
     // from a genuine UID mismatch — callers that report a short error string
@@ -306,12 +311,15 @@ private:
     uint32_t completedRequests[COMPLETED_REQUESTS_SIZE];
     size_t completedRequestsIndex = 0;
     SemaphoreHandle_t completedMutex = nullptr;
-    static uint32_t s_write_request_id_counter;
+    static std::atomic<uint32_t> s_write_request_id_counter;
 
     // One slot per write-queue entry (xQueueCreate(8, ...)), and outcomes stay
     // protected for longer than the browser's 15 s polling deadline.
     static constexpr size_t   WRITE_OUTCOME_RING_SIZE = 8;
     static constexpr uint32_t WRITE_OUTCOME_TTL_MS = 20000;
+    // Shorter than the browser's 15 s poll, so the page hears "tag removed"
+    // instead of timing out.
+    static constexpr uint32_t WRITE_ABANDON_MS = 10000;
     WriteOutcome writeOutcomeRing_[WRITE_OUTCOME_RING_SIZE];
     SemaphoreHandle_t writeOutcomeMutex_ = nullptr;
     uint32_t writeOutcomeLastIndex_ = 0;

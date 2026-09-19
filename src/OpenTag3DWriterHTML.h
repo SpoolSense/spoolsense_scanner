@@ -354,6 +354,10 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
   <script>
     var writerForm = document.getElementById('writerForm');
 
+    // Page-level Write veto, kept in sync by applyWritableState so a shared
+    // read-button state change can't re-enable a read-only tag's Write.
+    var ot3dWriteAllowed = true;
+
     // Tracks which tag (if any) the form currently mirrors, so a write can
     // tell the firmware to preserve untouched fields instead of replacing
     // the whole tag. Cleared whenever the form stops being a faithful copy
@@ -421,6 +425,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     function applyWritableState(status) {
       var ok = ot3dWritableVerdict(status);
+      ot3dWriteAllowed = ok;
       var btn = document.getElementById('writeBtn');
       var hint = document.getElementById('readOnlyHint');
       if (btn) btn.disabled = !ok;
@@ -859,6 +864,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     setupReadButton({
       expectedKind: 'OpenTag3D',
       wrongKindMsg: 'wrong format \u2014 expected OpenTag3D',
+      writeAllowed: function () { return ot3dWriteAllowed; },
       showMatchBadge: showMatchBadge,
       // setupReadButton (shared.js) always calls this with just the status
       // object, so the UID it should bind for preserve mode comes off

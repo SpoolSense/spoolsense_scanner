@@ -33,7 +33,7 @@
 #endif
 
 // Static member initialization
-uint32_t NFCManager::s_write_request_id_counter = 1000;
+std::atomic<uint32_t> NFCManager::s_write_request_id_counter{1000};
 
 NFCManager& NFCManager::getInstance() {
     static NFCManager instance;
@@ -1639,7 +1639,13 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
 }
 
 uint32_t NFCManager::generateRequestId() {
-    return ++s_write_request_id_counter;
+    // 0 means "no id" to every consumer (the completed-id table is zero-filled
+    // and the status poll treats 0 as "most recent"), so skip it on wrap.
+    uint32_t id;
+    do {
+        id = ++s_write_request_id_counter;
+    } while (id == 0);
+    return id;
 }
 
 bool NFCManager::writeSpoolmanDataToTag(int32_t spoolman_id, const char* expected_spool_id) {
@@ -1762,7 +1768,11 @@ bool NFCManager::enqueueWrite(const NFCWriteRequest& req) {
         reserved = true;
     }
 
-    bool queued = xQueueSend(writeQueue, &req, pdMS_TO_TICKS(100)) == pdTRUE;
+    // Timestamp the queue entry so processWriteQueue() can abandon a web
+    // write whose tag went away before it could run.
+    NFCWriteRequest copy = req;
+    copy.enqueued_ms = millis();
+    bool queued = xQueueSend(writeQueue, &copy, pdMS_TO_TICKS(100)) == pdTRUE;
 
     if (!queued && reserved) {
         // The request never entered the queue — the reservation must not
@@ -1799,7 +1809,50 @@ bool NFCManager::enqueueWrite(const NFCWriteRequest& req) {
 }
 
 void NFCManager::processWriteQueue() {
-    if (writeQueue == nullptr || !currentSpool.present) {
+    if (writeQueue == nullptr) {
+        return;
+    }
+
+    if (!currentSpool.present) {
+        // A web write whose tag went away before it was dequeued would
+        // otherwise hold its outcome slot until the browser's 15 s poll times
+        // out with no answer, and eight such requests strand every slot.
+        // Answer with "tag removed" instead; at most one per call.
+        NFCWriteRequest head;
+        if (xQueuePeek(writeQueue, &head, 0) == pdTRUE && head.wants_outcome &&
+            writeRequestAbandoned(millis(), head.enqueued_ms, WRITE_ABANDON_MS)) {
+            xQueueReceive(writeQueue, &head, 0);
+
+            // Only one raw request can be queued at a time (enqueueRawWrite
+            // refuses while Staged/InFlight), so a Staged slot on a raw
+            // request belongs to this request and must be freed. An InFlight
+            // slot belongs to a running write — leave it alone.
+            if (head.type == NFCWriteType::WRITE_RAW_TAG ||
+                head.type == NFCWriteType::WRITE_OPENTAG3D ||
+                head.type == NFCWriteType::WRITE_OPENSPOOL) {
+                if (stagingMutex != nullptr &&
+                    xSemaphoreTake(stagingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    if (rawWriteSlot_ == RawWriteSlot::Staged) {
+                        rawWriteSlot_ = RawWriteSlot::Empty;
+                        rawWriteBufferSize_ = 0;
+                    }
+                    xSemaphoreGive(stagingMutex);
+                }
+            }
+
+            if (writeOutcomeMutex_ != nullptr &&
+                xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
+                completeWriteOutcome(head, false, "tag removed");
+                xSemaphoreGive(writeOutcomeMutex_);
+            } else {
+                Serial.printf("NFCManager: write outcome for request %lu LOST — outcome lock timeout\n",
+                        (unsigned long)head.request_id);
+            }
+
+            markRequestCompleted(head.request_id);
+            Serial.printf("NFCManager: write %lu abandoned — tag removed before it could run\n",
+                    (unsigned long)head.request_id);
+        }
         return;
     }
 
@@ -1863,24 +1916,8 @@ void NFCManager::processWriteQueue() {
         if (request.wants_outcome) {
             if (writeOutcomeMutex_ != nullptr &&
                 xSemaphoreTake(writeOutcomeMutex_, pdMS_TO_TICKS(250)) == pdTRUE) {
-                for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
-                    WriteOutcome& slot = writeOutcomeRing_[i];
-                    if (slot.state != WriteOutcomeSlotState::Pending ||
-                        slot.request_id != request.request_id) {
-                        continue;
-                    }
-                    strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
-                    slot.uid[sizeof(slot.uid) - 1] = '\0';
-                    slot.ok = success;
-                    const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
-                    strncpy(slot.error, reason, sizeof(slot.error) - 1);
-                    slot.error[sizeof(slot.error) - 1] = '\0';
-                    slot.completed_ms = millis();
-                    slot.state = WriteOutcomeSlotState::Done;
-                    slot.done = true;
-                    writeOutcomeLastIndex_ = i;
-                    break;
-                }
+                const char* reason = success ? "" : (lastWriteErrorReason_[0] ? lastWriteErrorReason_ : "write failed");
+                completeWriteOutcome(request, success, reason);
                 xSemaphoreGive(writeOutcomeMutex_);
             } else {
                 Serial.printf("NFCManager: write outcome for request %lu LOST — outcome lock timeout\n",
@@ -1921,6 +1958,28 @@ void NFCManager::processWriteQueue() {
                 xSemaphoreGive(tagMutex);
             }
         }
+    }
+}
+
+// Fills the request's Pending slot with its result. Caller must hold
+// writeOutcomeMutex_; an internal write (wants_outcome == 0) holds no slot.
+void NFCManager::completeWriteOutcome(const NFCWriteRequest& request, bool success, const char* reason) {
+    for (size_t i = 0; i < WRITE_OUTCOME_RING_SIZE; i++) {
+        WriteOutcome& slot = writeOutcomeRing_[i];
+        if (slot.state != WriteOutcomeSlotState::Pending ||
+            slot.request_id != request.request_id) {
+            continue;
+        }
+        strncpy(slot.uid, request.expected_spool_id, sizeof(slot.uid) - 1);
+        slot.uid[sizeof(slot.uid) - 1] = '\0';
+        slot.ok = success;
+        strncpy(slot.error, reason, sizeof(slot.error) - 1);
+        slot.error[sizeof(slot.error) - 1] = '\0';
+        slot.completed_ms = millis();
+        slot.state = WriteOutcomeSlotState::Done;
+        slot.done = true;
+        writeOutcomeLastIndex_ = i;
+        break;
     }
 }
 

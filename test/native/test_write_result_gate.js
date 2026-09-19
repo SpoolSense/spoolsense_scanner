@@ -188,5 +188,12 @@ check('a null status keeps writing on', verdictFn(null), true);
 check('read-only hint element exists', writerHtml.indexOf('id="readOnlyHint"') !== -1, true);
 check('transmission distance form limit is 255', /id="transmission_distance"[^>]*max="255"/.test(writerHtml), true);
 
+// Source-shape checks: ending a read must respect the page's Write veto, and
+// the OpenTag3D page must supply that veto.
+check('shared setReadWaiting respects the page writeAllowed veto',
+  sharedJs.indexOf('config.writeAllowed ? !config.writeAllowed() : false') !== -1, true);
+check('OpenTag3D page passes a writeAllowed callback',
+  writerHtml.indexOf('writeAllowed: function () { return ot3dWriteAllowed; }') !== -1, true);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

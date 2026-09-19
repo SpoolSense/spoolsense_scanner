@@ -725,7 +725,9 @@ function setupReadButton(config) {
 
   function setReadWaiting(active) {
     readWaiting = active;
-    writeBtn.disabled = active;
+    // A page may veto Write (the OpenTag3D page does for a read-only tag);
+    // ending a read must not override that.
+    writeBtn.disabled = active || (config.writeAllowed ? !config.writeAllowed() : false);
     if (active) {
       readBtn.textContent = 'Cancel';
       readBtn.onclick = cancelRead;
