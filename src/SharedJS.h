@@ -606,6 +606,18 @@ async function waitForTag(timeoutMs) {
   throw new Error('No tag detected. Place the tag on the scanner and try again.');
 }
 
+// What one status poll means for a write this page started.
+//   'fail'  - the firmware reported THIS request as failed
+//   'wait'  - an id was issued but its result is not in yet
+//   'check' - run the page's own verify
+function writePollVerdict(status, requestId) {
+  var w = status && status.write_result;
+  var mine = !!(w && requestId && w.request_id === requestId);
+  if (mine && w.ok === false) return 'fail';
+  if (requestId && !mine) return 'wait';
+  return 'check';
+}
+
 async function sharedWriteFlow(config) {
   var stepIds = config.stepIds;
   var createView = document.getElementById('createView');
@@ -652,11 +664,30 @@ async function sharedWriteFlow(config) {
       setStepState('step-format', 'active');
       setBanner('statusBanner', 'Formatting tag\u2026');
       setResult('resultBox', 'Preparing blank tag for data.', '');
-      await api(config.formatEndpoint, {
+      var formatResp = await api(config.formatEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid: presentStatus.uid })
       });
+      var formatRequestId = formatResp && formatResp.request_id;
+      if (formatRequestId) {
+        // The format is only queued; a failed format must not be followed by
+        // a write onto an unformatted tag.
+        var formatDeadline = Date.now() + 15000;
+        var formatDone = false;
+        while (Date.now() < formatDeadline) {
+          await sleep(500);
+          var formatStatus = await api('/api/status?request_id=' + formatRequestId);
+          var formatVerdict = writePollVerdict(formatStatus, formatRequestId);
+          if (formatVerdict === 'fail') {
+            throw new Error(formatStatus.write_result.error ? ('Format failed: ' + formatStatus.write_result.error) : 'Format failed.');
+          }
+          if (formatVerdict === 'check') { formatDone = true; break; }
+        }
+        if (!formatDone) {
+          throw new Error('Format timed out. Keep the tag on the scanner and try again.');
+        }
+      }
       setStepState('step-format', 'done');
     }
 
@@ -682,6 +713,13 @@ async function sharedWriteFlow(config) {
     while (Date.now() < verifyDeadline) {
       await sleep(500);
       var status = await api('/api/status' + (requestId ? ('?request_id=' + requestId) : ''));
+      // The firmware's own result outranks the page's field comparison: a
+      // cached tag can still match after a write that failed half way.
+      var verdict = writePollVerdict(status, requestId);
+      if (verdict === 'fail') {
+        throw new Error(status.write_result.error ? ('Write failed: ' + status.write_result.error) : 'Write failed.');
+      }
+      if (verdict === 'wait') continue;
       var mine = status.write_result && status.write_result.request_id === requestId;
       if ((status.present || mine) && config.verify(status, payload, requestId)) {
         setStepState('step-write', 'done');

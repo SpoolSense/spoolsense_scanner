@@ -1969,7 +1969,7 @@ void WebServerManager::handleApiWriteTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteAccepted(req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2006,7 +2006,7 @@ void WebServerManager::handleApiFormatTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteAccepted(req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2103,7 +2103,7 @@ void WebServerManager::handleApiWriteTigerTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteAccepted(req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,7 +2420,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteAccepted(req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2904,6 +2904,14 @@ void WebServerManager::handleApiSpoolmanSaveEnrichment() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// The write is only QUEUED here. The page polls /api/status?request_id=N for
+// the real outcome, so every write route must hand its id back.
+void WebServerManager::sendWriteAccepted(uint32_t requestId) {
+    char ack[64];
+    snprintf(ack, sizeof(ack), "{\"success\":true,\"request_id\":%lu}", (unsigned long)requestId);
+    _server.send(200, "application/json", ack);
+}
 
 void WebServerManager::sendError(int code, const char* msg) {
     // Escape quotes, backslashes, and control chars for valid JSON

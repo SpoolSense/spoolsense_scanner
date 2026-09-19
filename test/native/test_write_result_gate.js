@@ -13,6 +13,7 @@ const SRC_DIR = path.join(__dirname, '..', '..', 'src');
 const sharedJs = fs.readFileSync(path.join(SRC_DIR, 'SharedJS.h'), 'utf8');
 const writerHtml = fs.readFileSync(path.join(SRC_DIR, 'OpenTag3DWriterHTML.h'), 'utf8');
 const nfcManagerH = fs.readFileSync(path.join(SRC_DIR, 'NFCManager.h'), 'utf8');
+const webServerCpp = fs.readFileSync(path.join(SRC_DIR, 'WebServerManager.cpp'), 'utf8');
 
 // ---- Extract the poll-loop gate from SharedJS.h ----------------------------
 // Pulls the exact "var mine = ...;" line and the "if ((status.present ||
@@ -84,6 +85,23 @@ for (; vi < writerHtml.length && verdictDepth > 0; vi++) {
   else if (writerHtml[vi] === '}') verdictDepth--;
 }
 const verdictFn = new Function('status', writerHtml.slice(verdictBodyStart, vi - 1));
+
+// ---- Extract writePollVerdict() from SharedJS.h -----------------------------
+// Same brace-counting strategy as the verify callback above.
+const pollAnchor = 'function writePollVerdict(status, requestId) {';
+const pollStart = sharedJs.indexOf(pollAnchor);
+if (pollStart === -1) {
+  console.error('FAIL: could not locate writePollVerdict in SharedJS.h');
+  process.exit(1);
+}
+const pollBodyStart = pollStart + pollAnchor.length;
+let pollDepth = 1;
+let pi = pollBodyStart;
+for (; pi < sharedJs.length && pollDepth > 0; pi++) {
+  if (sharedJs[pi] === '{') pollDepth++;
+  else if (sharedJs[pi] === '}') pollDepth--;
+}
+const pollVerdictFn = new Function('status', 'requestId', sharedJs.slice(pollBodyStart, pi - 1));
 
 // ---- Assertions -------------------------------------------------------------
 let passed = 0, failed = 0;
@@ -194,6 +212,28 @@ check('shared setReadWaiting respects the page writeAllowed veto',
   sharedJs.indexOf('config.writeAllowed ? !config.writeAllowed() : false') !== -1, true);
 check('OpenTag3D page passes a writeAllowed callback',
   writerHtml.indexOf('writeAllowed: function () { return ot3dWriteAllowed; }') !== -1, true);
+
+// #316 round 2: every write route reports its request_id and the shared flow
+// must trust the firmware's verdict over its own field comparison.
+check('poll verdict: our id, ok false is fail',
+  pollVerdictFn({ write_result: { request_id: 42, ok: false } }, 42), 'fail');
+check('poll verdict: our id, ok true is check',
+  pollVerdictFn({ write_result: { request_id: 42, ok: true } }, 42), 'check');
+check('poll verdict: id issued, no write_result yet is wait',
+  pollVerdictFn({}, 42), 'wait');
+check('poll verdict: id issued, another id result is wait',
+  pollVerdictFn({ write_result: { request_id: 99, ok: true } }, 42), 'wait');
+check('poll verdict: no id, no write_result is check (older firmware)',
+  pollVerdictFn({}, 0), 'check');
+check('poll verdict: no id, unrelated failed write_result is check',
+  pollVerdictFn({ write_result: { request_id: 99, ok: false } }, 0), 'check');
+check('poll verdict: null status with an id is wait',
+  pollVerdictFn(null, 42), 'wait');
+check('shared flow honours the wait verdict',
+  sharedJs.indexOf("if (verdict === 'wait') continue;") !== -1, true);
+const sendAcceptedCount = (webServerCpp.match(/sendWriteAccepted\(/g) || []).length;
+check('four write routes + helper definition reference sendWriteAccepted',
+  sendAcceptedCount >= 5, true);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

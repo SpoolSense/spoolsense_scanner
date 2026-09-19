@@ -178,6 +178,7 @@ private:
                            int filamentId, float remainingG, const char* quotedUid, const char* tagFormat);
 
     void sendError(int code, const char* msg);
+    void sendWriteAccepted(uint32_t requestId);
 #endif
 };
 
