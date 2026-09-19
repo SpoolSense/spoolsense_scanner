@@ -108,22 +108,51 @@ inline Type2Content type2ContentForJsonRecord(Type2Format writer, OpenSpoolProbe
 
 // Whether the NDEF message in a Type 2 user-memory image is ONE media record
 // and nothing else. Every NDEF writer here re-emits a single record followed
-// by a terminator, which erases any other record, TLV or byte on the tag — so
-// "my own format" is only an update when that record is all there is.
+// by a terminator and zero padding, which erases any other record, TLV or byte
+// on the tag — so "my own format" is only an update when every writable byte
+// is either that record or zero.
 enum class NdefShape : uint8_t {
-    SoleRecord,  // one MB|ME media record fills the NDEF TLV; a terminator follows
     Companions,  // other records, TLVs or bytes share the tag, or it is malformed
     TailUnseen,  // well-formed so far; the byte after the TLV is past this image
-    ZeroTail,    // zeros follow the TLV: sole only if the rest of memory is zero
+    ZeroTail,    // well-formed; sole only if everything after it is zero
 };
 
-// What the first byte after the NDEF TLV says. A terminator ends the tag's
-// data. The terminator is optional, so zero may be padding — or the NULL TLVs
-// in front of something else.
+// What the first byte after the NDEF TLV says. A terminator ends the message,
+// but the bytes after it are still bytes a rewrite zeroes, so it earns no
+// shortcut: terminator or zero, the rest of memory must be proven empty.
 inline NdefShape ndefTailShape(uint8_t byteAfterTlv) {
-    if (byteAfterTlv == 0xFE) return NdefShape::SoleRecord;
-    if (byteAfterTlv == 0x00) return NdefShape::ZeroTail;
-    return NdefShape::Companions;
+    return (byteAfterTlv == 0xFE || byteAfterTlv == 0x00) ? NdefShape::ZeroTail
+                                                          : NdefShape::Companions;
+}
+
+// True when the bytes left after the message are all zero. There are none when
+// the message ends on a page's last byte, and none is not data.
+inline bool type2TailIsZero(const uint8_t* data, uint16_t len) {
+    if (len == 0) return true;
+    if (data == nullptr) return false;
+    for (uint16_t i = 0; i < len; i++) {
+        if (data[i] != 0x00) return false;
+    }
+    return true;
+}
+
+// First offset that must read zero: the terminator itself is allowed.
+inline uint16_t ndefZeroStart(uint16_t tlvEnd, uint8_t byteAfterTlv) {
+    return (uint16_t)(tlvEnd + (byteAfterTlv == 0xFE ? 1 : 0));
+}
+
+// Pages of the old image that a shorter new one does not cover. Offsets count
+// from page 4; oldDataEnd is where the old image's zero tail began, 0 when it
+// is not known. The writer zeroes them, or the next update finds data after
+// its own terminator and has to ask for a replace for ever.
+inline bool type2StalePages(uint16_t newImageBytes, uint16_t oldDataEnd,
+                            uint16_t* fromPage, uint16_t* toPage) {
+    uint16_t from = (uint16_t)(4 + (newImageBytes + 3) / 4);
+    uint16_t to = (uint16_t)(4 + (oldDataEnd + 3) / 4);
+    if (to <= from) return false;   // also covers oldDataEnd == 0: `to` is then page 4
+    *fromPage = from;
+    *toPage = to;
+    return true;
 }
 
 // data = user memory from page 4. *tlvEndOut = offset of the first byte after

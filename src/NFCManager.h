@@ -220,6 +220,10 @@ private:
     BlankScan scanRestOfUserMemory(uint16_t startPage = 14);
     // Whether the NDEF record found in `window` is everything on the tag.
     NdefExtent ndefRecordExtent(const uint8_t* window, uint16_t windowLen);
+    void cleanTailAfterNdefWrite(uint16_t newImageBytes, bool replacedForeign);
+    // Byte offset from page 4 where the last classified tag's data ended; 0
+    // when no whole-tag record was proven. Scan task only.
+    uint16_t classifiedDataEnd_ = 0;
     // window = pages 4-13 already read by the caller (keepSession true).
     Type2Content classifyType2Content(Type2Format writer, const uint8_t* window, uint16_t windowLen);
     // Reads a JSON record's whole payload and asks the OpenSpool parser.

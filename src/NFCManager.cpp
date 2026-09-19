@@ -807,6 +807,7 @@ void NFCManager::scanLoop() {
 
         SCAN_PHASE(2);
         if (!prepareRF()) {
+            expireStaleWebWrites();   // a dead radio finds no tag either
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -2602,6 +2603,7 @@ bool NFCManager::readOpenTag3DBaseline(const uint8_t* pageData, uint16_t bytesRe
 // is UNREADABLE: nothing is known about what would be destroyed there, so
 // even a confirmation cannot unlock a write (OT3D_TARGET_UNREADABLE).
 ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
+    classifiedDataEnd_ = 0;
     uint8_t pageData[40];
     uint16_t bytesRead = connection_->readISO14443Pages(4, 10, pageData, sizeof(pageData), true);
     // A reader can return the pages it got before the read failed part-way.
@@ -2662,41 +2664,84 @@ ot3d_target_state_t NFCManager::classifyOpenTag3DTarget(opentag3d_t& out) {
 // whole write fits in that one window (TigerTag, OpenSpool). Reads no further
 // than the caller already did, except through the blank scan.
 // Finishes what ndefMessageShape() could not see from the first window: the
-// byte after the NDEF TLV, and — when no terminator follows it — that the rest
-// of user memory is empty. Reads keep the session so the write can follow.
+// byte after the NDEF TLV, and that every writable byte after the message is
+// zero — with or without a terminator, because the rewrite zeroes them either
+// way. Reads keep the session so the write can follow. On WholeTag,
+// classifiedDataEnd_ holds where the old image's data ended.
 NdefExtent NFCManager::ndefRecordExtent(const uint8_t* window, uint16_t windowLen) {
+    classifiedDataEnd_ = 0;
     uint16_t end = 0;
     NdefShape shape = ndefMessageShape(window, windowLen, &end);
+    uint16_t zeroStart = end;
     uint16_t scanFrom = 14;
 
     if (shape == NdefShape::TailUnseen) {
         if (!capacityBoundToSelected(capacityUidHex_, selectedUidHex_)) return NdefExtent::Unreadable;
         uint16_t page = 4 + end / 4;
         // A message that runs to the last writable byte has nothing after it.
-        if (page >= writablePageLimit()) return NdefExtent::WholeTag;
+        if (page >= writablePageLimit()) {
+            classifiedDataEnd_ = end;
+            return NdefExtent::WholeTag;
+        }
         uint8_t tail[4];
         if (connection_->readISO14443Pages((uint8_t)page, 1, tail, sizeof(tail), true) < sizeof(tail)) {
             return NdefExtent::Unreadable;
         }
         uint8_t off = (uint8_t)(end % 4);
         shape = ndefTailShape(tail[off]);
-        if (shape == NdefShape::ZeroTail && !ot3d_region_is_zero(tail + off, sizeof(tail) - off)) {
+        zeroStart = ndefZeroStart(end, tail[off]);
+        uint8_t zeroOff = (uint8_t)(off + (zeroStart - end));
+        if (shape == NdefShape::ZeroTail && !type2TailIsZero(tail + zeroOff, (uint16_t)(sizeof(tail) - zeroOff))) {
             shape = NdefShape::Companions;
         }
         scanFrom = page + 1;
-    } else if (shape == NdefShape::ZeroTail && !ot3d_region_is_zero(window + end, windowLen - end)) {
-        shape = NdefShape::Companions;
+    } else if (shape == NdefShape::ZeroTail) {
+        zeroStart = ndefZeroStart(end, window[end]);
+        if (!type2TailIsZero(window + zeroStart, (uint16_t)(windowLen - zeroStart))) {
+            shape = NdefShape::Companions;
+        }
     }
 
-    if (shape == NdefShape::SoleRecord) return NdefExtent::WholeTag;
     if (shape == NdefShape::Companions) {
         Serial.println("NFCManager: classify - the tag holds more than this one record");
         return NdefExtent::HasCompanions;
     }
     switch (scanRestOfUserMemory(scanFrom)) {
-        case BlankScan::Blank:     return NdefExtent::WholeTag;
+        case BlankScan::Blank:
+            classifiedDataEnd_ = zeroStart;
+            return NdefExtent::WholeTag;
         case BlankScan::DataFound: return NdefExtent::HasCompanions;
         default:                   return NdefExtent::Unreadable;
+    }
+}
+
+// Zeroes what the new image left of the old tag content, so every tag this
+// firmware writes ends in empty memory and its next update is an update. A
+// confirmed replace of foreign content clears to the end of writable memory;
+// a shorter image over the writer's own clears the old image's leftover pages.
+// Only pages that hold data are written. Best effort: the record is already
+// on the tag, and a tail that stays only costs the next write a confirmation.
+void NFCManager::cleanTailAfterNdefWrite(uint16_t newImageBytes, bool replacedForeign) {
+    uint16_t limit = writablePageLimit();
+    uint16_t from = (uint16_t)(4 + (newImageBytes + 3) / 4);
+    uint16_t to = limit;
+    if (!replacedForeign && !type2StalePages(newImageBytes, classifiedDataEnd_, &from, &to)) return;
+    if (to > limit) to = limit;
+
+    static const uint8_t zeros[64] = {0};
+    uint8_t chunk[64];
+    for (uint16_t page = from; page < to; page += 16) {
+        uint8_t pages = (uint8_t)((to - page) < 16 ? (to - page) : 16);
+        uint16_t bytes = (uint16_t)pages * 4;
+        if (connection_->readISO14443Pages((uint8_t)page, pages, chunk, sizeof(chunk), true) < bytes) {
+            Serial.printf("NFCManager: tail clean stopped - read failed at page %u\n", (unsigned)page);
+            return;
+        }
+        if (ot3d_region_is_zero(chunk, bytes)) continue;
+        if (!connection_->writeISO14443Pages((uint8_t)page, pages, zeros, bytes)) {
+            Serial.printf("NFCManager: tail clean stopped - write failed at page %u\n", (unsigned)page);
+            return;
+        }
     }
 }
 
@@ -2717,6 +2762,7 @@ OpenSpoolProbe NFCManager::probeOpenSpoolRecord(const NdefRecord& rec,
 Type2Content NFCManager::classifyType2Content(Type2Format writer,
                                               const uint8_t* window,
                                               uint16_t windowLen) {
+    classifiedDataEnd_ = 0;
     if (window == nullptr || !type2WindowComplete(windowLen)) return Type2Content::Unreadable;
 
     // Strict identity, not tigerTagCheckMagic(): its layout-only match is right
@@ -2796,6 +2842,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
     }
 
     opentag3d_t ot3d;
+    ot3d_target_state_t writtenOver = OT3D_TARGET_WRITTEN;
     if (patch.op == OT3D_OP_DEDUCT) {
         // A deduction only ever adjusts the weight field of a tag already
         // written — never creates or replaces one — and always against a
@@ -2830,6 +2877,7 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         // and anything we cannot read is refused rather than overwritten.
         opentag3d_t baseline;
         ot3d_target_state_t target = classifyOpenTag3DTarget(baseline);
+        writtenOver = target;
         ot3d_write_decision_t decision = ot3d_decide_write(
             target,
             patch.mode == OT3D_MODE_REPLACE,
@@ -2930,6 +2978,8 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
         OT3D_SET_ERR("write failed");
         return false;
     }
+    cleanTailAfterNdefWrite(ndefLen, writtenOver == OT3D_TARGET_OTHER_FORMAT ||
+                                     writtenOver == OT3D_TARGET_UNKNOWN_DATA);
     bool verified = ndefVerifyAndFinish("OpenTag3D", pagesNeeded, ndefBuf, ndefLen);
     if (!verified) OT3D_SET_ERR("verify failed");
     return verified;
@@ -2979,6 +3029,8 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
         LogBuffer::getInstance().logPrintf("Write OpenSpool: FAILED\n");
         return false;
     }
+    cleanTailAfterNdefWrite(ndefLen, content == Type2Content::OtherFormat ||
+                                     content == Type2Content::UnknownData);
     return ndefVerifyAndFinish("OpenSpool", pagesNeeded, ndefBuf, ndefLen);
 }
 

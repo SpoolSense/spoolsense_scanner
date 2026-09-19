@@ -173,8 +173,8 @@ int main() {
         const uint8_t prop[] = {0xFD, 0x02};
 
         end = buildImage(img, sizeof(img), nullptr, 0, 0xD2, 4, 6, 0, term, 1);
-        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
-              "one MB|ME record, terminator right after: sole record");
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::ZeroTail && got == end,
+              "one MB|ME record, terminator right after: sole if everything after it is zero");
 
         buildImage(img, sizeof(img), nullptr, 0, 0x92, 4, 6, 12, term, 1);
         CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::Companions,
@@ -218,12 +218,12 @@ int main() {
 
         const uint8_t lockCtl[] = {0x01, 0x03, 0xA0, 0x0C, 0x34};
         end = buildImage(img, sizeof(img), lockCtl, sizeof(lockCtl), 0xD2, 4, 6, 0, term, 1);
-        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::ZeroTail && got == end,
               "a lock control TLV ahead of the message is tag housekeeping");
 
         const uint8_t nulls[] = {0x00, 0x00, 0x00};
         end = buildImage(img, sizeof(img), nulls, sizeof(nulls), 0xD2, 4, 6, 0, term, 1);
-        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::SoleRecord && got == end,
+        CHECK(ndefMessageShape(img, sizeof(img), &got) == NdefShape::ZeroTail && got == end,
               "NULL TLVs ahead of the message are padding");
 
         const uint8_t propLead[] = {0xFD, 0x02, 0xAA, 0xBB};
@@ -257,8 +257,38 @@ int main() {
               "a record header cut off by the window end is never sole");
     }
 
-    CHECK(ndefTailShape(0xFE) == NdefShape::SoleRecord, "terminator after the TLV: sole");
+    // A terminator ends the message, but the bytes after it are still bytes a
+    // rewrite can zero: they get the same zero proof as a tail with no terminator.
+    CHECK(ndefTailShape(0xFE) == NdefShape::ZeroTail, "terminator after the TLV: needs the zero scan");
     CHECK(ndefTailShape(0x00) == NdefShape::ZeroTail, "zero after the TLV: needs the zero scan");
+    CHECK(ndefZeroStart(100, 0xFE) == 101, "the terminator itself is not part of the zero proof");
+    CHECK(ndefZeroStart(100, 0x00) == 100, "with no terminator the zero proof starts at the TLV end");
+
+    // type2TailIsZero — the bytes left in a page after the message. When the
+    // terminator is the page's last byte there are none, and none is not data.
+    {
+        const uint8_t z[4] = {0, 0, 0, 0};
+        const uint8_t d[4] = {0, 0, 0xA5, 0};
+        CHECK(type2TailIsZero(z, 4), "all zero is zero");
+        CHECK(!type2TailIsZero(d, 4), "one non-zero byte is data");
+        CHECK(type2TailIsZero(d, 2), "only the counted bytes are judged");
+        CHECK(type2TailIsZero(z, 0), "no bytes left in the page is not data");
+        CHECK(!type2TailIsZero(nullptr, 4), "a missing buffer proves nothing");
+    }
+
+    // type2StalePages — the pages of the old image a shorter new one leaves
+    // behind. They are zeroed after the write, or the next update would find
+    // data after its terminator and ask for a replace for ever.
+    {
+        uint16_t from = 0, to = 0;
+        CHECK(type2StalePages(40, 250, &from, &to) && from == 14 && to == 67,
+              "a 40-byte image over a 250-byte one leaves pages 14..66");
+        CHECK(!type2StalePages(252, 250, &from, &to), "a new image that covers the old one leaves nothing");
+        CHECK(!type2StalePages(252, 252, &from, &to), "same size leaves nothing");
+        CHECK(type2StalePages(40, 41, &from, &to) && from == 14 && to == 15,
+              "one old byte past the new image is one stale page");
+        CHECK(!type2StalePages(40, 0, &from, &to), "no known old image leaves nothing to compute");
+    }
     CHECK(ndefTailShape(0x03) == NdefShape::Companions, "another TLV after the TLV: companions");
     CHECK(ndefTailShape(0xFD) == NdefShape::Companions, "proprietary TLV after the TLV: companions");
 
