@@ -56,8 +56,8 @@ int main() {
     const char* JSON = "application/json";
     CHECK(type2FormatFromMime("application/opentag3d", 21, OT3D, JSON) == Type2Format::OpenTag3D,
           "exact OpenTag3D MIME is OpenTag3D");
-    CHECK(type2FormatFromMime("application/json", 16, OT3D, JSON) == Type2Format::OpenSpool,
-          "exact OpenSpool MIME is OpenSpool");
+    CHECK(type2FormatFromMime("application/json", 16, OT3D, JSON) == Type2Format::JsonRecord,
+          "the JSON MIME names a JSON record, not OpenSpool: any application writes JSON");
     CHECK(type2FormatFromMime("text/plain", 10, OT3D, JSON) == Type2Format::OtherNdef,
           "a MIME of a different length is another format, not OpenSpool");
     CHECK(type2FormatFromMime("application/jsox", 16, OT3D, JSON) == Type2Format::OtherNdef,
@@ -84,6 +84,50 @@ int main() {
           "an unknown record is never the writer's own format");
     CHECK(type2ContentForFormat(Type2Format::OtherNdef, Type2Format::OtherNdef) == Type2Content::OtherFormat,
           "OtherNdef never counts as a match, even against itself");
+    CHECK(type2ContentForFormat(Type2Format::JsonRecord, Type2Format::OpenSpool) == Type2Content::OtherFormat,
+          "a JSON record nobody parsed is not the OpenSpool writer's own format");
+    CHECK(type2ContentForFormat(Type2Format::JsonRecord, Type2Format::JsonRecord) == Type2Content::OtherFormat,
+          "JsonRecord never counts as a match, even against itself");
+
+    // type2WindowComplete — a reader can return the pages it got before a read
+    // failed part-way. The blank scan starts after the window, so a short
+    // window leaves pages nobody looked at and proves nothing.
+    CHECK(type2WindowComplete(40), "the full 10-page window is complete");
+    CHECK(!type2WindowComplete(39), "one byte short is not complete");
+    CHECK(!type2WindowComplete(16), "a 4-page prefix is not complete");
+    CHECK(!type2WindowComplete(4), "a 1-page prefix is not complete");
+    CHECK(!type2WindowComplete(0), "a failed read is not complete");
+
+    // openSpoolProbeResult — OpenSpool is proven by the whole payload parsing
+    // as OpenSpool, never by the MIME type.
+    CHECK(openSpoolProbeResult(120, 120, 256, true) == OpenSpoolProbe::IsOpenSpool,
+          "whole payload read and parsed as OpenSpool");
+    CHECK(openSpoolProbeResult(120, 120, 256, false) == OpenSpoolProbe::NotOpenSpool,
+          "whole payload read, not OpenSpool JSON");
+    CHECK(openSpoolProbeResult(120, 80, 256, false) == OpenSpoolProbe::ShortRead,
+          "part of the payload came back: nothing is known");
+    CHECK(openSpoolProbeResult(120, 80, 256, true) == OpenSpoolProbe::ShortRead,
+          "a parse of a short read is not trusted");
+    CHECK(openSpoolProbeResult(120, 0, 256, false) == OpenSpoolProbe::ShortRead,
+          "no payload bytes came back");
+    CHECK(openSpoolProbeResult(0, 0, 256, false) == OpenSpoolProbe::NotOpenSpool,
+          "an empty JSON record is not OpenSpool");
+    CHECK(openSpoolProbeResult(400, 256, 256, false) == OpenSpoolProbe::NotOpenSpool,
+          "a payload larger than the reader's buffer is not an OpenSpool this firmware reads");
+    CHECK(openSpoolProbeResult(400, 256, 256, true) == OpenSpoolProbe::NotOpenSpool,
+          "a parse of a clipped payload is not trusted");
+
+    // type2ContentForJsonRecord — only the OpenSpool writer can own a JSON record.
+    CHECK(type2ContentForJsonRecord(Type2Format::OpenSpool, OpenSpoolProbe::IsOpenSpool) == Type2Content::SameFormat,
+          "OpenSpool writer, proven OpenSpool: same format");
+    CHECK(type2ContentForJsonRecord(Type2Format::OpenSpool, OpenSpoolProbe::NotOpenSpool) == Type2Content::OtherFormat,
+          "OpenSpool writer, another application's JSON: other format");
+    CHECK(type2ContentForJsonRecord(Type2Format::OpenSpool, OpenSpoolProbe::ShortRead) == Type2Content::Unreadable,
+          "OpenSpool writer, payload not fully read: unreadable");
+    CHECK(type2ContentForJsonRecord(Type2Format::TigerTag, OpenSpoolProbe::IsOpenSpool) == Type2Content::OtherFormat,
+          "TigerTag writer, OpenSpool on the tag: other format");
+    CHECK(type2ContentForJsonRecord(Type2Format::OpenTag3D, OpenSpoolProbe::NotOpenSpool) == Type2Content::OtherFormat,
+          "OpenTag3D writer, JSON on the tag: other format");
 
     if (failures == 0) printf("All type 2 write guard tests passed\n");
     else printf("%d test(s) FAILED\n", failures);

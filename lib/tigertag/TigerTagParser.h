@@ -50,6 +50,12 @@ struct TigerTagData {
 // data must be at least 4 bytes.
 bool tigerTagCheckMagic(const uint8_t* data, uint16_t dataLen);
 
+// Strict identity: the first four bytes are a published TigerTag version ID.
+// tigerTagCheckMagic also accepts a layout-only match, which is right for
+// reading but lets another format's raw bytes pass — a writer that must not
+// overwrite a foreign tag unasked uses this one.
+bool tigerTagHasKnownVersion(const uint8_t* data, uint16_t dataLen);
+
 // Parse TigerTag data from raw page bytes (pages 4-23, 80 bytes).
 // Returns a TigerTagData struct with resolved lookup names.
 TigerTagData tigerTagParse(const uint8_t* data, uint16_t dataLen);

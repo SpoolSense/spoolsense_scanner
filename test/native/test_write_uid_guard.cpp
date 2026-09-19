@@ -86,6 +86,15 @@ int main() {
     CHECK(!capacityBoundToSelected("04A651B2C3D480", nullptr),
           "capacity not bound when the selected UID is null");
 
+    // uidHexIsIso15693 — OpenPrintTag lives on ISO15693 tags only. Their UID is
+    // 8 bytes; a Type 2 tag's is 4 or 7. The OpenPrintTag writers go through a
+    // HAL that addresses a Type 2 tag from page 0, so they must never run on one.
+    CHECK(uidHexIsIso15693("E004015012345678"), "8-byte UID is ISO15693");
+    CHECK(!uidHexIsIso15693("04A651B2C3D480"), "7-byte UID is a Type 2 tag");
+    CHECK(!uidHexIsIso15693("04A651B2"), "4-byte UID is a Type 2 tag");
+    CHECK(!uidHexIsIso15693(""), "no selected tag is not ISO15693");
+    CHECK(!uidHexIsIso15693(nullptr), "null UID is not ISO15693");
+
     if (failures == 0) printf("All write UID guard tests passed\n");
     else printf("%d test(s) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

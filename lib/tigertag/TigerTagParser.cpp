@@ -152,18 +152,20 @@ const char* tigerTagUnitName(uint8_t id) {
 
 // ─── Magic check ─────────────────────────────────────────────────────────────
 
+bool tigerTagHasKnownVersion(const uint8_t* data, uint16_t dataLen) {
+    if (data == nullptr || dataLen < 4) return false;
+    uint32_t versionId = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+                         ((uint32_t)data[2] << 8) | data[3];
+    return versionId == TIGERTAG_V10 ||
+           versionId == TIGERTAG_V10_MAKER ||
+           versionId == TIGERTAG_INIT_V10 ||
+           versionId == TIGERTAG_PLUS_V10;
+}
+
 bool tigerTagCheckMagic(const uint8_t* data, uint16_t dataLen) {
     if (dataLen < 14) return false;  // Need at least through Type field
 
-    // Check known version IDs first (allowlist)
-    uint32_t versionId = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
-                         ((uint32_t)data[2] << 8) | data[3];
-    if (versionId == TIGERTAG_V10 ||
-        versionId == TIGERTAG_V10_MAKER ||
-        versionId == TIGERTAG_INIT_V10 ||
-        versionId == TIGERTAG_PLUS_V10) {
-        return true;
-    }
+    if (tigerTagHasKnownVersion(data, dataLen)) return true;
 
     // Permissive mode: unknown version ID but layout looks like TigerTag.
     // Check Type field (byte 12) = Filament or Resin, and Material (bytes 8-9) is non-zero.

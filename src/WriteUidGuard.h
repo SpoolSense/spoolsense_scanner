@@ -60,3 +60,11 @@ inline bool fieldUpdateWriteAllowed(const char* expectedUid,
     }
     return currentSpoolUid != nullptr && strcmp(currentSpoolUid, expectedUid) == 0;
 }
+
+// OpenPrintTag lives on ISO15693 tags only, and their UID is always 8 bytes
+// (a Type 2 tag's is 4 or 7). The OpenPrintTag writers reach the tag through a
+// HAL that addresses a Type 2 tag from page 0 — its UID, lock and CC pages —
+// so they must never run against one (#316).
+inline bool uidHexIsIso15693(const char* uidHex) {
+    return uidHex != nullptr && strlen(uidHex) == 16;
+}

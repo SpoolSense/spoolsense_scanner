@@ -55,6 +55,25 @@ int main() {
     makeTag(buf, 0x00ABCDEF, 8345, 0x42, 56);
     CHECK(!tigerTagCheckMagic(buf, sizeof(buf)), "unknown type byte rejected");
 
+    // tigerTagHasKnownVersion — the strict identity a WRITER needs. The
+    // permissive layout match above is right for reading, but it also accepts
+    // another format's raw bytes, and a writer that takes those for a TigerTag
+    // updates them without asking.
+    makeTag(buf, TIGERTAG_V10, 8345, TIGERTAG_TYPE_FILAMENT, 56);
+    CHECK(tigerTagHasKnownVersion(buf, sizeof(buf)), "strict: TIGERTAG_V10 is known");
+    makeTag(buf, TIGERTAG_V10_MAKER, 0, 0, 0);
+    CHECK(tigerTagHasKnownVersion(buf, sizeof(buf)), "strict: TIGERTAG_V10_MAKER is known");
+    makeTag(buf, TIGERTAG_INIT_V10, 0, 0, 0);
+    CHECK(tigerTagHasKnownVersion(buf, sizeof(buf)), "strict: TIGERTAG_INIT_V10 is known");
+    makeTag(buf, TIGERTAG_PLUS_V10, 0, 0, 0);
+    CHECK(tigerTagHasKnownVersion(buf, sizeof(buf)), "strict: TIGERTAG_PLUS_V10 is known");
+    makeTag(buf, 0x00ABCDEF, 8345, TIGERTAG_TYPE_FILAMENT, 56);
+    CHECK(tigerTagCheckMagic(buf, sizeof(buf)) && !tigerTagHasKnownVersion(buf, sizeof(buf)),
+          "strict: a layout-only match reads as TigerTag but is not a known version");
+    makeTag(buf, TIGERTAG_V10, 8345, TIGERTAG_TYPE_FILAMENT, 56);
+    CHECK(!tigerTagHasKnownVersion(buf, 3), "strict: fewer than 4 bytes is not known");
+    CHECK(!tigerTagHasKnownVersion(nullptr, 32), "strict: null data is not known");
+
     // Parsed fields keep their documented offsets.
     makeTag(buf, TIGERTAG_V10, 8345, TIGERTAG_TYPE_FILAMENT, 221);
     TigerTagData d = tigerTagParse(buf, sizeof(buf));
