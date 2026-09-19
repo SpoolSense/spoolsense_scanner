@@ -103,6 +103,23 @@ for (; pi < sharedJs.length && pollDepth > 0; pi++) {
 }
 const pollVerdictFn = new Function('status', 'requestId', sharedJs.slice(pollBodyStart, pi - 1));
 
+// ---- Extract writeNeedsReplaceConfirm() from SharedJS.h ---------------------
+// Same brace-counting strategy as the verify callback above.
+const replaceAnchor = 'function writeNeedsReplaceConfirm(errorText) {';
+const replaceStart = sharedJs.indexOf(replaceAnchor);
+if (replaceStart === -1) {
+  console.error('FAIL: could not locate writeNeedsReplaceConfirm in SharedJS.h');
+  process.exit(1);
+}
+const replaceBodyStart = replaceStart + replaceAnchor.length;
+let replaceDepth = 1;
+let ri = replaceBodyStart;
+for (; ri < sharedJs.length && replaceDepth > 0; ri++) {
+  if (sharedJs[ri] === '{') replaceDepth++;
+  else if (sharedJs[ri] === '}') replaceDepth--;
+}
+const replaceConfirmFn = new Function('errorText', sharedJs.slice(replaceBodyStart, ri - 1));
+
 // ---- Assertions -------------------------------------------------------------
 let passed = 0, failed = 0;
 function check(name, actual, expected) {
@@ -234,6 +251,33 @@ check('shared flow honours the wait verdict',
 const sendAcceptedCount = (webServerCpp.match(/sendWriteAccepted\(/g) || []).length;
 check('four write routes + helper definition reference sendWriteAccepted',
   sendAcceptedCount >= 5, true);
+
+// #316 round 2: the replace-confirmation refuse is recognised only by its
+// prefix at the very start; everything else is a real error.
+check('replace confirm: other format', replaceConfirmFn('replace needed: other format'), true);
+check('replace confirm: unknown data', replaceConfirmFn('replace needed: unknown data'), true);
+check('replace confirm: unreadable tag is not a refusal', replaceConfirmFn('tag unreadable'), false);
+check('replace confirm: generic failure is not a refusal', replaceConfirmFn('write failed'), false);
+check('replace confirm: prefix must be at the start', replaceConfirmFn('please replace needed'), false);
+check('replace confirm: empty string', replaceConfirmFn(''), false);
+check('replace confirm: undefined', replaceConfirmFn(undefined), false);
+check('replace confirm: null', replaceConfirmFn(null), false);
+
+// Source-shape checks: the flow resends with the flag only for opted-in pages.
+check('shared flow resends with confirm_replace',
+  sharedJs.indexOf('payload.confirm_replace = true;') !== -1, true);
+check('shared flow gates the ask on config.allowReplace',
+  sharedJs.indexOf('config.allowReplace') !== -1, true);
+const tigerWriterHtml = fs.readFileSync(path.join(SRC_DIR, 'TigerTagWriterHTML.h'), 'utf8');
+const openSpoolWriterHtml = fs.readFileSync(path.join(SRC_DIR, 'OpenSpoolWriterHTML.h'), 'utf8');
+check('TigerTag writer opts into replace',
+  tigerWriterHtml.indexOf('allowReplace: true') !== -1, true);
+check('OpenSpool writer opts into replace',
+  openSpoolWriterHtml.indexOf('allowReplace: true') !== -1, true);
+check('OpenTag3D hint points at Replace tag contents',
+  writerHtml.indexOf('use Replace tag contents.') !== -1, true);
+check('OpenTag3D hint no longer says format it first',
+  writerHtml.indexOf('format it first') !== -1, false);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

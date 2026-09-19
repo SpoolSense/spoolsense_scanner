@@ -560,6 +560,7 @@ const char TIGERTAG_WRITER_HTML[] PROGMEM = R"rawliteral(
         stepIds: ['step-wait', 'step-detect', 'step-write', 'step-verify'],
         endpoint: '/api/write-tigertag',
         formatName: 'TigerTag',
+        allowReplace: true,
         buildPayload: buildPayload,
         verify: function(status, payload) {
           if (status.tag_kind !== 'TigerTag' || !status.tigertag) return false;

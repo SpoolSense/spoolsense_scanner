@@ -618,6 +618,12 @@ function writePollVerdict(status, requestId) {
   return 'check';
 }
 
+// The firmware refuses to erase another format unasked and says so with this
+// prefix; every other failure is a real error.
+function writeNeedsReplaceConfirm(errorText) {
+  return typeof errorText === 'string' && errorText.indexOf('replace needed') === 0;
+}
+
 async function sharedWriteFlow(config) {
   var stepIds = config.stepIds;
   var createView = document.getElementById('createView');
@@ -710,6 +716,7 @@ async function sharedWriteFlow(config) {
     setResult('resultBox', 'Reading tag back to confirm \u2014 keep the tag on the scanner.', '');
 
     var verifyDeadline = Date.now() + 15000;
+    var replaceAsked = false;
     while (Date.now() < verifyDeadline) {
       await sleep(500);
       var status = await api('/api/status' + (requestId ? ('?request_id=' + requestId) : ''));
@@ -717,7 +724,31 @@ async function sharedWriteFlow(config) {
       // cached tag can still match after a write that failed half way.
       var verdict = writePollVerdict(status, requestId);
       if (verdict === 'fail') {
-        throw new Error(status.write_result.error ? ('Write failed: ' + status.write_result.error) : 'Write failed.');
+        var failText = status.write_result.error || '';
+        if (writeNeedsReplaceConfirm(failText) && config.allowReplace && !replaceAsked) {
+          // Ask once per flow; a confirmed write carries the flag so the
+          // firmware stops refusing and overwrites the tag.
+          replaceAsked = true;
+          var confirmed = window.confirm('Tag ' + presentStatus.uid + ' already holds other data (' + (failText.indexOf('other format') !== -1 ? 'another tag format' : 'data the scanner cannot read') + ').\n\nReplace everything on it with this ' + config.formatName + ' data? This cannot be undone.');
+          if (!confirmed) {
+            throw new Error('Nothing was written. The tag still holds its old data.');
+          }
+          payload.confirm_replace = true;
+          writeResp = await api(config.endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          requestId = writeResp && writeResp.request_id;
+          verifyDeadline = Date.now() + 15000;
+          setBanner('statusBanner', 'Replacing tag contents\u2026');
+          continue;
+        }
+        if (writeNeedsReplaceConfirm(failText)) {
+          // Page did not opt in; it offers the confirm through its own button.
+          throw new Error('This tag already holds other data. Use "Replace tag contents" to overwrite it.');
+        }
+        throw new Error(failText ? ('Write failed: ' + failText) : 'Write failed.');
       }
       if (verdict === 'wait') continue;
       var mine = status.write_result && status.write_result.request_id === requestId;

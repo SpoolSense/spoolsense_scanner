@@ -285,6 +285,7 @@ const char OPENSPOOL_WRITER_HTML[] PROGMEM = R"rawliteral(
         stepIds: ['step-wait', 'step-detect', 'step-write', 'step-verify'],
         endpoint: '/api/write-openspool',
         formatName: 'OpenSpool',
+        allowReplace: true,
         buildPayload: buildPayload,
         verify: function(status, payload) {
           if (status.tag_kind !== 'OpenSpoolTag' || !status.openspool) return false;

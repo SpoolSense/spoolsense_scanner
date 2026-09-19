@@ -277,7 +277,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
           <div class="hint" style="margin-top:12px">Writes OpenTag3D v2.003 &mdash; requires NTAG215 or larger.</div>
 
-          <div class="hint" id="readOnlyHint" style="display:none;margin-top:12px;color:#d97706">This tag can be read, but its record has a length this firmware cannot rewrite without losing data, so writing is turned off. To reuse the tag, format it first.</div>
+          <div class="hint" id="readOnlyHint" style="display:none;margin-top:12px;color:#d97706">This tag can be read, but its record has a length this firmware cannot rewrite without losing data, so writing is turned off. To overwrite it anyway, use Replace tag contents.</div>
 
           <div class="actions">
             <button type="submit" class="btn-primary" id="writeBtn">Write Tag</button>
