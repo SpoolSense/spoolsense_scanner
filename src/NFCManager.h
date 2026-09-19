@@ -102,7 +102,11 @@ public:
     // Dependency injection for testing
     void setConnection(NFCConnectionI* conn) { connection_ = conn; }
     void resetWriteState() {
-        rawWritePending_ = false;
+        // Reboot path: if a raw sidecar was still in flight, the physical
+        // write never happened (the scan task is gone), so release it the same
+        // way every terminal execution path does — the deduction stays pending
+        // in NVS and retries on the next scan (#329).
+        releaseRawWriteIf(nullptr);
         // Drain write queue
         if (writeQueue) {
             NFCWriteRequest dummy;
@@ -219,7 +223,28 @@ private:
     static constexpr size_t RAW_WRITE_BUFFER_SIZE = 320;
     uint8_t rawWriteBuffer_[RAW_WRITE_BUFFER_SIZE];
     size_t rawWriteBufferSize_ = 0;
+    // Sidecar in flight = enqueued but not yet consumed/abandoned. The scan
+    // task consumes it inside executeWrite(); it is released (and the buffer
+    // zeroed) on every terminal path — failed enqueue, UID mismatch, encode/
+    // capacity/write failure, success — so a refused or failed write can never
+    // wedge the sidecar forever (#329 review: wrong-tag retries were locked
+    // out because the sidecar stayed set).
     bool rawWritePending_ = false;
+    // UID the in-flight sidecar belongs to (set by enqueueRawWrite, cleared on
+    // release). A failed enqueue release must NOT wipe an older request's
+    // sidecar that is still queued, so release is UID-guarded.
+    char rawWriteUid_[17] = {0};
+
+    // Release the raw sidecar if it belongs to `uid` (empty uid = release
+    // unconditionally). Scan-task context only. Zeroes the buffer so a stale
+    // payload can never be written to a later tag.
+    void releaseRawWriteIf(const char* uid) {
+        if (uid && uid[0] != '\0' && strcmp(rawWriteUid_, uid) != 0) return;
+        rawWritePending_ = false;
+        rawWriteBufferSize_ = 0;
+        rawWriteUid_[0] = '\0';
+        memset(rawWriteBuffer_, 0, sizeof(rawWriteBuffer_));
+    }
     bool writeRawTag();
     opt_tag_t writeScratchTag_;   // Reused by scan task write path to avoid large stack frames
     AtomicWriteFields atomicWriteFields_;  // Sidecar for WRITE_ATOMIC (filled by HTTP, consumed by scan task)

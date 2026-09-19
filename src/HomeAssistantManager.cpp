@@ -880,13 +880,12 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
         if (NFCManager::getInstance().getCurrentSpoolState(deductSpool) &&
             deductSpool.present && strcasecmp(deductSpool.spool_id, uidFromTopic) == 0) {
             DeductionManager::getInstance().applyIfPending(deductSpool.spool_id, deductSpool.kind);
-        } else if (SpoolmanManager::getInstance().isConfigured()) {
-            // Tag not on scanner — try Spoolman direct (Bambu AMS use case)
-            bool spOk = false;
-            SpoolmanManager::getInstance().deductFromSpoolman(uidFromTopic, deductG, &spOk);
-            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
-                DeductionManager::getInstance().clearPending(uidFromTopic);
-            }
+        } else {
+            // Tag not on scanner — Spoolman direct (Bambu AMS use case), routed
+            // through the same claim/settlement rules (#329). If Spoolman is
+            // unconfigured or fails, the pending amount stays durable for a
+            // later tag scan.
+            DeductionManager::getInstance().applyViaSpoolmanIfPending(uidFromTopic);
         }
 
         publishCommandResponse(command, true, nullptr);
@@ -1007,14 +1006,10 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
         DeductionManager::getInstance().storePending(resolvedUid, deductG);
 
-        // Try Spoolman direct deduction (spool not on scanner)
-        if (SpoolmanManager::getInstance().isConfigured()) {
-            bool spOk = false;
-            SpoolmanManager::getInstance().deductFromSpoolman(resolvedUid, deductG, &spOk);
-            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
-                DeductionManager::getInstance().clearPending(resolvedUid);
-            }
-        }
+        // Spoolman direct deduction (spool not on scanner), routed through the
+        // claim/settlement rules (#329) — no blind clearPending. Pending
+        // survives if Spoolman is unconfigured or the call fails.
+        DeductionManager::getInstance().applyViaSpoolmanIfPending(resolvedUid);
 
         // Update dashboard tray weight
         ApplicationManager& app = ApplicationManager::getInstance();

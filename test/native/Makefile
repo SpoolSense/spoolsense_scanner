@@ -9,7 +9,7 @@ OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test
 
-all: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
+all: test_deduction_tracker test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -38,6 +38,12 @@ test_tigertag_parser: test_tigertag_parser.cpp ../../lib/tigertag/TigerTagParser
 test_bambutag_parser: test_bambutag_parser.cpp ../../lib/bambutag/BambuTagParser.cpp ../../lib/bambutag/BambuTagParser.h
 	$(CXX) $(CXXFLAGS) -o $@ test_bambutag_parser.cpp ../../lib/bambutag/BambuTagParser.cpp
 
+test_deduction_tracker: test_deduction_tracker.cpp ../../src/DeductionTracker.h ../../src/DeductionPolicy.h
+	$(CXX) $(CXXFLAGS) -o $@ test_deduction_tracker.cpp
+
+test_raw_write_sidecar: test_raw_write_sidecar.cpp ../../include/platform/NativePlatform.h ../../src/NFCWriteTypes.h
+	$(CXX) $(CXXFLAGS) -o $@ test_raw_write_sidecar.cpp
+
 test_write_uid_guard: test_write_uid_guard.cpp ../../src/WriteUidGuard.h
 	$(CXX) $(CXXFLAGS) -o $@ test_write_uid_guard.cpp
 
@@ -50,7 +56,7 @@ test_spool_cache: test_spool_cache.cpp ../../src/SpoolCacheJson.h
 test_opentag3d_runner: test_opentag3d_runner.c $(OT3D_OBJS)
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_runner.c $(OT3D_OBJS)
 
-test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
+test: test_deduction_tracker test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -70,6 +76,12 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 	@echo "=== Running Bambu parser tests ==="
 	@./test_bambutag_parser
 	@echo ""
+	@echo "=== Running deduction tracker tests ==="
+	@./test_deduction_tracker
+	@echo ""
+	@echo "=== Running raw write sidecar tests ==="
+	@./test_raw_write_sidecar
+	@echo ""
 	@echo "=== Running write UID guard tests ==="
 	@./test_write_uid_guard
 	@echo ""
@@ -86,4 +98,4 @@ test: test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landsc
 clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
-	      test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner *.o
+	      test_deduction_tracker test_raw_write_sidecar test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner *.o
