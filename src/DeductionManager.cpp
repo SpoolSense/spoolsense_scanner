@@ -254,18 +254,12 @@ float DeductionManager::applyOpenTag3D(const char* uid, float pending,
         return 0.0f;
     }
 
-    // Cases where the tag itself must not be written: a newer minor format
-    // (re-encoding would zero fields it defines), or a v2 tag without a
-    // measured weight — v2 defines the weight field as the NOMINAL spool size,
+    // A v2 tag without a measured weight must not be written: v2 defines the
+    // target weight field as the NOMINAL spool size,
     // and deducting from it would corrupt the tag's identity. The claim has
     // already been converted to Immediate by the caller; the Spoolman/terminal
     // settle runs OUTSIDE the manager mutex in applyInternal.
-    if (!opentag3d_can_encode(ot3d.tag_version)) {
-        Serial.printf("DeductionManager: OpenTag3D %s (v%u) — newer minor format; tag left untouched\n",
-                      uid, ot3d.tag_version);
-        tracker_.releaseToImmediate(uid);  // caller settles outside the lock
-        return -1.0f;  // synchronous settle required (caller runs it unlocked)
-    }
+
     if (opentag3d_major(ot3d.tag_version) >= 2 && ot3d.measured_filament_weight_g == 0) {
         Serial.printf("DeductionManager: OpenTag3D %s (v%u) — v2 tag has no measured weight (target weight is nominal); tag left untouched\n",
                       uid, ot3d.tag_version);
@@ -281,14 +275,17 @@ float DeductionManager::applyOpenTag3D(const char* uid, float pending,
     float deduction = (pending > remaining) ? remaining : pending;
 
     // Subtract from the weight field the tag uses (round to avoid truncation loss)
+    opentag3d_patch_t patch = {};
     if (ot3d.measured_filament_weight_g > 0) {
         int newMeasured = (int)lroundf(ot3d.measured_filament_weight_g - deduction);
         // Floor at 1 g: measured==0 reads as "never measured" (nominal) on the
         // next scan, which would freeze the Spoolman weight sync for this tag.
-        ot3d.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 1;
+        patch.present = OT3D_PATCH_MEASURED_WEIGHT;
+        patch.values.measured_filament_weight_g = (newMeasured > 0) ? (uint16_t)newMeasured : 1;
     } else {
         int newTarget = (int)lroundf(ot3d.target_weight_g - deduction);
-        ot3d.target_weight_g = (newTarget > 0) ? (uint16_t)newTarget : 0;
+        patch.present = OT3D_PATCH_TARGET_WEIGHT;
+        patch.values.target_weight_g = (newTarget > 0) ? (uint16_t)newTarget : 0;
     }
 
     NFCWriteRequest req;
@@ -298,7 +295,7 @@ float DeductionManager::applyOpenTag3D(const char* uid, float pending,
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
 
     tracker_.bind(uid, req.request_id);
-    if (!NFCManager::getInstance().enqueueRawWrite(req, (const uint8_t*)&ot3d, sizeof(ot3d))) {
+    if (!NFCManager::getInstance().enqueueOpenTag3DPatch(req, patch)) {
         tracker_.abort(req.request_id);
         Serial.printf("DeductionManager: Write queue full — deduction kept in NVS for retry\n");
         return 0.0f;

@@ -2,14 +2,14 @@ CXX = g++
 CC = gcc
 CXXFLAGS = -std=c++17 -Wall -Wextra -DNATIVE_TEST -I../../src -I../../include -I. \
            -I../../lib/openprinttag -I../../lib/opentag3d -I../../lib/tigertag -I../../lib/bambutag
-CFLAGS = -std=c11 -DNATIVE_TEST -I../../lib/openprinttag
+CFLAGS = -std=c11 -DNATIVE_TEST -I../../lib/openprinttag -I../../lib/opentag3d
 
 OPT_OBJS = openprinttag_lib.o cbor_native.o
 OT3D_OBJS = opentag3d_lib.o
 
 .PHONY: all clean test test_deduction_manager_compile
 
-all: test_deduction_tracker test_deduction_manager_compile test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
+all: test_deduction_tracker test_deduction_manager_compile test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_ndef_mime_builder
 
 openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -17,8 +17,8 @@ openprinttag_lib.o: ../../lib/openprinttag/openprinttag_lib.c
 cbor_native.o: ../../lib/openprinttag/cbor_native.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v2_map.h
-	$(CC) $(CFLAGS) -I../../lib/opentag3d -c -o $@ $<
+opentag3d_lib.o: ../../lib/opentag3d/opentag3d_lib.c ../../lib/opentag3d/opentag3d_lib.h ../../lib/opentag3d/opentag3d_v1_map.h ../../lib/opentag3d/opentag3d_v2_map.h
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 test_printer_manager: test_printer_manager.cpp native_stubs.cpp MockPrinterStrategy.h test_helpers.h ../../src/IPrinterStrategy.h ../../src/PrinterManager.cpp $(OPT_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ test_printer_manager.cpp native_stubs.cpp $(OPT_OBJS)
@@ -59,7 +59,10 @@ test_spool_cache: test_spool_cache.cpp ../../src/SpoolCacheJson.h
 test_opentag3d_runner: test_opentag3d_runner.c $(OT3D_OBJS)
 	$(CC) $(CFLAGS) -I../../lib/opentag3d -o $@ test_opentag3d_runner.c $(OT3D_OBJS)
 
-test: test_deduction_tracker test_deduction_manager_compile test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner
+test_ndef_mime_builder: test_ndef_mime_builder.cpp ../../src/NdefMimeBuilder.h
+	$(CXX) $(CXXFLAGS) -o $@ test_ndef_mime_builder.cpp
+
+test: test_deduction_tracker test_deduction_manager_compile test_raw_write_sidecar test_printer_manager test_opt_ndef_bounds test_diagnostics test_tft_landscape_layout test_tigertag_parser test_bambutag_parser test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_ndef_mime_builder
 	@echo ""
 	@echo "=== Running PrinterManager tests ==="
 	@./test_printer_manager
@@ -97,8 +100,11 @@ test: test_deduction_tracker test_deduction_manager_compile test_raw_write_sidec
 	@echo "=== Running OpenTag3D parser tests ==="
 	@./test_opentag3d_runner
 	@echo ""
+	@echo "=== Running NDEF MIME builder tests ==="
+	@./test_ndef_mime_builder
+	@echo ""
 
 clean:
 	rm -f test_printer_manager test_opt_ndef_bounds test_diagnostics \
 	      test_tft_landscape_layout test_tigertag_parser test_bambutag_parser \
-	      test_deduction_tracker test_raw_write_sidecar test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner *.o
+	      test_deduction_tracker test_raw_write_sidecar test_write_uid_guard test_cc_sizing test_spool_cache test_opentag3d_runner test_ndef_mime_builder *.o

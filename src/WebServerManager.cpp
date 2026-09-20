@@ -2065,23 +2065,25 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         return;
     }
 
-    opentag3d_t ot3d;
-    memset(&ot3d, 0, sizeof(ot3d));
+    opentag3d_patch_t patch;
+    memset(&patch, 0, sizeof(patch));
+    opentag3d_t& ot3d = patch.values;
 
+    const bool versionSupplied = !doc["tag_version"].isNull();
     ot3d.tag_version = doc["tag_version"] | (uint16_t)OT3D_SUPPORTED_VERSION;
 
-    if (!opentag3d_can_encode(ot3d.tag_version)) {
-        sendError(400, "Unsupported tag_version — this firmware writes v1/v2 tags");
-        return;
+    // A missing version means "preserve" for an existing record. Use the
+    // scanned version for request validation/capacity preflight, while blank
+    // tags still default to the current supported version at execution time.
+    uint16_t effectiveVersion = ot3d.tag_version;
+    if (!versionSupplied) {
+        opentag3d_t onReader;
+        if (NFCManager::getInstance().getLastOpenTag3DData(onReader)) {
+            effectiveVersion = onReader.tag_version;
+        }
     }
-
-    // Never re-mint a newer-minor tag: the queued struct carries OUR version
-    // stamp, so the encoder's write-time guard cannot see the conflict — the
-    // tag on the reader is the only evidence. (The cache clears on removal.)
-    opentag3d_t onReader;
-    if (NFCManager::getInstance().getLastOpenTag3DData(onReader) &&
-        !opentag3d_can_encode(onReader.tag_version)) {
-        sendError(409, "Tag carries a newer OpenTag3D revision — rewriting would lose its data");
+    if (opentag3d_major(effectiveVersion) >= 3) {
+        sendError(400, "Unsupported OpenTag3D major version");
         return;
     }
 
@@ -2090,7 +2092,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     // known too small or cannot be identified — otherwise the queue accepts it,
     // the capacity check rejects it later on the NFC task, and the browser only
     // sees a verify timeout.
-    if (opentag3d_major(ot3d.tag_version) >= 2) {
+    if (opentag3d_major(effectiveVersion) >= 2) {
         CurrentSpoolState cur;
         if (NFCManager::getInstance().getCurrentSpoolState(cur) && cur.present) {
             uint16_t endPage = effectiveUserMemoryEnd(cur.variant, cur.cc_user_end);
@@ -2211,6 +2213,50 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     ot3d.max_volumetric_speed = doc["max_volumetric_speed"] | (uint8_t)0;
     ot3d.target_volumetric_speed = doc["target_volumetric_speed"] | (uint8_t)0;
 
+    auto mark = [&](const char* key, uint64_t bit) {
+        if (doc.containsKey(key)) patch.present |= bit;
+    };
+    mark("tag_version", OT3D_PATCH_TAG_VERSION);
+    mark("base_material", OT3D_PATCH_BASE_MATERIAL);
+    mark("material_modifiers", OT3D_PATCH_MATERIAL_MODIFIERS);
+    mark("manufacturer", OT3D_PATCH_MANUFACTURER);
+    mark("color_name", OT3D_PATCH_COLOR_NAME);
+    if (doc.containsKey("color_r") || doc.containsKey("color_g") ||
+        doc.containsKey("color_b") || doc.containsKey("color_a")) {
+        patch.present |= OT3D_PATCH_COLOR_1;
+    }
+    mark("diameter_um", OT3D_PATCH_DIAMETER);
+    mark("target_weight_g", OT3D_PATCH_TARGET_WEIGHT);
+    mark("print_temp_c", OT3D_PATCH_PRINT_TEMP);
+    mark("bed_temp_c", OT3D_PATCH_BED_TEMP);
+    mark("density_ugcm3", OT3D_PATCH_DENSITY);
+    mark("transmission_distance", OT3D_PATCH_TRANSMISSION);
+    mark("online_url", OT3D_PATCH_ONLINE_URL);
+    mark("serial_number", OT3D_PATCH_SERIAL);
+    mark("manufacture_year", OT3D_PATCH_MFG_YEAR);
+    mark("manufacture_month", OT3D_PATCH_MFG_MONTH);
+    mark("manufacture_day", OT3D_PATCH_MFG_DAY);
+    mark("empty_spool_weight_g", OT3D_PATCH_EMPTY_SPOOL_WEIGHT);
+    mark("measured_filament_weight_g", OT3D_PATCH_MEASURED_WEIGHT);
+    mark("measured_filament_length_m", OT3D_PATCH_MEASURED_LENGTH);
+    mark("max_dry_temp_c", OT3D_PATCH_MAX_DRY_TEMP);
+    mark("dry_time_hours", OT3D_PATCH_DRY_TIME);
+    mark("min_print_temp_c", OT3D_PATCH_MIN_PRINT_TEMP);
+    mark("max_print_temp_c", OT3D_PATCH_MAX_PRINT_TEMP);
+    mark("min_bed_temp_c", OT3D_PATCH_MIN_BED_TEMP);
+    mark("max_bed_temp_c", OT3D_PATCH_MAX_BED_TEMP);
+    mark("min_volumetric_speed", OT3D_PATCH_MIN_VSO);
+    mark("max_volumetric_speed", OT3D_PATCH_MAX_VSO);
+    mark("target_volumetric_speed", OT3D_PATCH_TARGET_VSO);
+    // These fields do not exist in the v1 map. Ignore any v2-only values sent
+    // by non-browser clients while editing a v1 tag.
+    if (opentag3d_major(effectiveVersion) >= 2) {
+        mark("barcode", OT3D_PATCH_BARCODE);
+        mark("sku", OT3D_PATCH_SKU);
+        mark("chamber_temp_c", OT3D_PATCH_CHAMBER_TEMP);
+        mark("min_nozzle_diameter", OT3D_PATCH_MIN_NOZZLE);
+    }
+
     // has_extended only sizes v1 encodes (v2 always writes the full map).
     // Derive it from the parsed data, not key probes — an explicit v1 post
     // carrying only a URL or dry profile must still get the extended layout.
@@ -2226,11 +2272,11 @@ void WebServerManager::handleApiWriteOpenTag3D() {
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_OPENTAG3D;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
 
-    if (!NFCManager::getInstance().enqueueRawWrite(req, (const uint8_t*)&ot3d, sizeof(ot3d))) {
+    if (!NFCManager::getInstance().enqueueOpenTag3DPatch(req, patch)) {
         sendError(503, "Write queue full or busy");
         return;
     }

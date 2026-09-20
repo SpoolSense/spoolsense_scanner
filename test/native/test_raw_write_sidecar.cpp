@@ -1,10 +1,9 @@
-// NFC raw-write sidecar lifecycle tests — issue #329.
+// NFC write-sidecar lifecycle tests — issues #328 and #329.
 //
-// The single raw-write sidecar (rawWriteBuffer_/rawWritePending_/rawWriteUid_)
-// must be released on EVERY terminal path: failed enqueue (queue full), UID
-// validation failure (wrong tag), encode/capacity/write failures, and success.
-// If any failure path leaves it set, the next correct-tag scan is rejected
-// forever ("Raw write already pending") and the deduction can never retry.
+// OpenSpool uses the raw-write sidecar (rawWriteBuffer_/rawWritePending_/
+// rawWriteUid_); OpenTag3D uses its request-bound patch sidecar. Each owner
+// must release its state on every terminal path so the next correct-tag scan
+// can retry instead of being rejected forever.
 //
 // The pure release rule lives in NFCManager::releaseRawWriteIf(); the enqueue
 // ordering rule it relies on (xQueueSend fails when the queue holds maxItems
@@ -105,6 +104,20 @@ static bool branchReleasesBeforeReturn(const std::string& body, const char* bran
     return releasePos != std::string::npos && releasePos < returnPos;
 }
 
+static bool patchSidecarClearsAfterExecution(const std::string& body) {
+    size_t inFlight = body.find(
+        "openTag3DPatchState_ = OpenTag3DPatchState::InFlight;");
+    size_t requestGuard = body.find(
+        "openTag3DPatchRequestId_ == request.request_id", inFlight);
+    size_t clear = body.find(
+        "openTag3DPatchState_ = OpenTag3DPatchState::Empty;", requestGuard);
+    size_t returnResult = body.find("return result;", clear);
+    return inFlight != std::string::npos &&
+           requestGuard != std::string::npos &&
+           clear != std::string::npos &&
+           returnResult != std::string::npos;
+}
+
 int main(int argc, char** argv) {
     printf("=== NFC raw-write sidecar tests (#329 review) ===\n");
 
@@ -120,9 +133,8 @@ int main(int argc, char** argv) {
         std::string source = readFile(sourcePath);
         std::string ot3d = functionBody(source, "bool NFCManager::executeOpenTag3DWrite");
         std::string openSpool = functionBody(source, "bool NFCManager::executeOpenSpoolWrite");
-        CHECK(!ot3d.empty() && branchReleasesBeforeReturn(
-                  ot3d, "rawWriteBufferSize_ < sizeof(opentag3d_t)"),
-              "production undersized OpenTag3D path releases its sidecar");
+        CHECK(!ot3d.empty() && patchSidecarClearsAfterExecution(ot3d),
+              "production OpenTag3D execution clears its request-bound patch sidecar");
         CHECK(!openSpool.empty() && branchReleasesBeforeReturn(
                   openSpool, "!validateWriteUid(request.expected_spool_id"),
               "production OpenSpool UID mismatch releases its sidecar");
