@@ -16,7 +16,7 @@ public:
     LEDManager();
 
     void begin(uint8_t pin);
-    void startTask();  // Call once at end of setup()
+    bool startTask();  // Call once at end of setup(); true only if the LED task is live
 
     // Synchronous — safe to call before startTask() (setup phase)
     void showBooting();

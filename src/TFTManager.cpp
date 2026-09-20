@@ -105,12 +105,12 @@ void TFTManager::begin() {
     _began = true;
 }
 
-void TFTManager::startTask() {
+bool TFTManager::startTask() {
     if (!_began) {
         // begin() bailed (e.g. shared-SPI bus setup failed) — do not spin up a
         // render task that would drive an uninitialized panel.
         Serial.println("TFTManager: not initialized; render task not started");
-        return;
+        return false;
     }
     // 8192 bytes: TFT drawing operations + sprite manipulation use more stack than simple
     // I2C LCD operations; sprite creation/pushSprite are stack-heavy due to local buffers
@@ -123,12 +123,13 @@ void TFTManager::startTask() {
         &_taskHandle,
         0       // core 0: FreeRTOS main task and LCD also run here
     );
-    if (result == pdPASS) {
+    if (taskCreationSucceeded(result, &_taskHandle)) {
         Serial.println("TFTManager: Task started on core 0");
-    } else {
-        Serial.println("TFTManager: WARNING — task creation failed");
-        _taskHandle = nullptr;
+        return true;
     }
+    Serial.println("TFTManager: WARNING — task creation failed");
+    _taskHandle = nullptr;
+    return false;
 }
 
 // ---------------------------------------------------------------------------

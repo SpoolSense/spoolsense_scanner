@@ -212,14 +212,14 @@ bool HomeAssistantManager::enqueuePublish(const HAPublishRequest& req) {
 
 #ifndef NATIVE_TEST
 
-void HomeAssistantManager::startTask() {
+bool HomeAssistantManager::startTask() {
     if (taskControlMutex == nullptr) {
         Serial.println("HomeAssistantManager: task control mutex not initialized");
-        return;
+        return false;
     }
     if (xSemaphoreTake(taskControlMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Serial.println("HomeAssistantManager: startTask mutex timeout");
-        return;
+        return false;
     }
 
     auto& config = ConfigurationManager::getInstance();
@@ -239,13 +239,13 @@ void HomeAssistantManager::startTask() {
                       enabled ? "true" : "false",
                       static_cast<unsigned>(hostLen));
         xSemaphoreGive(taskControlMutex);
-        return;
+        return false;  // normal skip — no task exists
     }
 
     if (taskHandle != nullptr) {
         Serial.println("HomeAssistantManager: Task already running");
         xSemaphoreGive(taskControlMutex);
-        return;
+        return true;
     }
 
     // Reset task state for clean (re)start — exponential backoff timer and last reconnect attempt
@@ -265,20 +265,21 @@ void HomeAssistantManager::startTask() {
         &taskHandle,
         1
     );
-    if (rc != pdPASS || taskHandle == nullptr) {
+    if (!taskCreationSucceeded(rc, &taskHandle)) {
         size_t free8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
         Serial.printf("HomeAssistantManager: Failed to start task (rc=%ld, free_heap=%u)\n",
                       static_cast<long>(rc),
                       static_cast<unsigned>(free8bit));
         taskHandle = nullptr;
         xSemaphoreGive(taskControlMutex);
-        return;
+        return false;
     }
 
     Serial.printf("HomeAssistantManager: Task started (stack=%u, free_heap=%u)\n",
                   static_cast<unsigned>(TASK_STACK_SIZE),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
     xSemaphoreGive(taskControlMutex);
+    return true;
 }
 
 void HomeAssistantManager::taskFunc(void* param) {
@@ -320,16 +321,12 @@ void HomeAssistantManager::stopTask() {
 
 bool HomeAssistantManager::restartAndTestConnection(uint32_t timeoutMs, int* mqttStateOut) {
     stopTask();
-    startTask();
+    bool started = startTask();
 
-    if (taskControlMutex != nullptr &&
-        xSemaphoreTake(taskControlMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        bool started = (taskHandle != nullptr);
-        xSemaphoreGive(taskControlMutex);
-        if (!started) {
-            if (mqttStateOut != nullptr) *mqttStateOut = getLastMqttState();
-            return false;
-        }
+    // No task means no point waiting for a connection (issue #264).
+    if (!started) {
+        if (mqttStateOut != nullptr) *mqttStateOut = getLastMqttState();
+        return false;
     }
 
     uint32_t startMs = millis();

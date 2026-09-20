@@ -24,6 +24,7 @@
   #include "StubApplicationManager.h"
 #endif
 #include <cstring>
+#include <new>
 #include <time.h>
 
 
@@ -42,10 +43,29 @@ NFCManager& NFCManager::getInstance() {
 }
 
 bool NFCManager::begin() {
+    // Reverse-order unwind for every allocation made below (issue #264):
+    // a failed begin() must leave no leaked internal RAM and no stale
+    // non-null members, so a second begin() is safe. An injected
+    // connection is never deleted — ownership is ownsConnection_ only.
+    auto cleanupBeginAllocations = [this]() {
+        if (completedMutex != nullptr) { vSemaphoreDelete(completedMutex); completedMutex = nullptr; }
+        if (tagMutex != nullptr) { vSemaphoreDelete(tagMutex); tagMutex = nullptr; }
+        if (writeQueue != nullptr) { vQueueDelete(writeQueue); writeQueue = nullptr; }
+        if (ownsConnection_) {
+            delete connection_;
+            connection_ = nullptr;
+            ownsConnection_ = false;
+        }
+    };
+
     // Create hardware connection if none was injected
     if (connection_ == nullptr) {
 #ifndef NATIVE_TEST
-        connection_ = new HardwareNFCConnection();
+        connection_ = new (std::nothrow) HardwareNFCConnection();
+        if (connection_ == nullptr) {
+            Serial.println("NFCManager: Failed to allocate connection");
+            return false;
+        }
         ownsConnection_ = true;
 #else
         // In native tests, connection must be injected via setConnection()
@@ -56,6 +76,7 @@ bool NFCManager::begin() {
 
     if (!connection_->begin()) {
         Serial.println("NFCManager: Failed to initialize connection");
+        cleanupBeginAllocations();
         return false;
     }
 
@@ -63,18 +84,21 @@ bool NFCManager::begin() {
     writeQueue = xQueueCreate(8, sizeof(NFCWriteRequest));
     if (writeQueue == nullptr) {
         Serial.println("NFCManager: Failed to create write queue");
+        cleanupBeginAllocations();
         return false;
     }
 
     tagMutex = xSemaphoreCreateMutex();
     if (tagMutex == nullptr) {
         Serial.println("NFCManager: Failed to create tag mutex");
+        cleanupBeginAllocations();
         return false;
     }
 
     completedMutex = xSemaphoreCreateMutex();
     if (completedMutex == nullptr) {
         Serial.println("NFCManager: Failed to create completed mutex");
+        cleanupBeginAllocations();
         return false;
     }
 
@@ -217,7 +241,7 @@ bool NFCManager::waitForScanPaused(uint32_t timeoutMs) {
 #endif
 }
 
-void NFCManager::startScanTask() {
+bool NFCManager::startScanTask() {
     BaseType_t created = createTaskWithAffinity(
         scanTaskFunc,
         "NFCScanTask",
@@ -227,13 +251,14 @@ void NFCManager::startScanTask() {
         &scanTaskHandle,
         1  // Run on core 1
     );
-    if (created != pdPASS) {
+    if (!taskCreationSucceeded(created, &scanTaskHandle)) {
         scanTaskHandle = nullptr;
         Serial.println("NFCManager: ERROR — scan task creation failed");
-        return;
+        return false;
     }
     Serial.println("NFCManager: Scan task started");
     reportWdtPhaseIfCrashed();
+    return true;
 }
 
 void NFCManager::scanTaskFunc(void* param) {

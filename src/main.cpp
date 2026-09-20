@@ -272,6 +272,9 @@ void setup() {
     ledManager.showBooting();
   }
 
+  bool tftTaskStarted = false;  // set only after the render task is live (#264)
+  bool lcdTaskStarted = false;
+
   if (config.isTftEnabled()) {
     // TFT display: runtime driver selection from NVS
     TFTDriver tftDriver = TFTDriver::ST7789;
@@ -286,18 +289,27 @@ void setup() {
     }
     tftManagerPtr = new TFTManager(tftDriver);
     tftManagerPtr->begin();
-    tftManagerPtr->startTask();
-    tftManagerPtr->showBoot(FIRMWARE_VERSION);
-    Serial.println("TFT initialized");
+    // Boot screen and "initialized" only after the render task is live (#264)
+    tftTaskStarted = tftManagerPtr->startTask();
+    if (tftTaskStarted) {
+      tftManagerPtr->showBoot(FIRMWARE_VERSION);
+      Serial.println("TFT initialized");
+    } else {
+      Serial.println("Setup: TFT render task failed to start - display unavailable this boot");
+    }
   } else if (config.isLcdEnabled()) {
     // I2C LCD: custom pins to avoid conflicts with NFC/TFT SPI buses
     Wire.begin(PIN_LCD_SDA, PIN_LCD_SCL);
     Serial.println("I2C initialized");
 
     lcdManager.begin();
-    lcdManager.startTask();
-    lcdManager.updateScreen("Initializing...", "");
-    Serial.println("LCD initialized");
+    lcdTaskStarted = lcdManager.startTask();
+    if (lcdTaskStarted) {
+      lcdManager.updateScreen("Initializing...", "");
+      Serial.println("LCD initialized");
+    } else {
+      Serial.println("Setup: LCD render task failed to start - display unavailable this boot");
+    }
 
     lcdManager.setScreenTimeoutMs(config.getLcdTimeoutMs());
   }
@@ -306,11 +318,13 @@ void setup() {
     InputManager::getInstance().begin();
   }
 
-  // ApplicationManager: message queue dispatcher with optional display backing
+  // ApplicationManager: message queue dispatcher with optional display backing.
+  // A display whose render task failed to start is not exposed as active —
+  // a dead queue would swallow every screen update (issue #264).
   DisplayI* activeDisplay = nullptr;
-  if (config.isTftEnabled()) {
+  if (tftTaskStarted) {
     activeDisplay = tftManagerPtr;
-  } else if (config.isLcdEnabled()) {
+  } else if (lcdTaskStarted) {
     activeDisplay = &lcdManager;
   }
   if (!ApplicationManager::getInstance().begin(activeDisplay)) {
@@ -336,9 +350,11 @@ void setup() {
   }
 
   // Skip network-dependent managers in AP mode (config-only)
+  bool spoolmanReady = false;
   if (!g_apModeActive) {
     // Initialize SpoolmanManager
-    if (!SpoolmanManager::getInstance().begin(g_httpMutex)) {
+    spoolmanReady = SpoolmanManager::getInstance().begin(g_httpMutex);
+    if (!spoolmanReady) {
       Serial.println("SpoolmanManager init failed - continuing without Spoolman");
     }
 
@@ -370,22 +386,30 @@ void setup() {
     Serial.printf("NFC reader: %s (default)\n", nfcReader);
   }
 
-  // Initialize NFCManager
-  if (!NFCManager::getInstance().begin()) {
+  // Initialize NFCManager — a failed begin OR a failed scan-task start must
+  // show the same NFC FAILED indication (issue #264): either way the scanner
+  // will never read a tag.
+  bool nfcReady = NFCManager::getInstance().begin();
+  if (nfcReady) {
+    nfcReady = NFCManager::getInstance().startScanTask();
+  }
+  if (!nfcReady) {
     Serial.println("NFCManager init failed - continuing without NFC");
-    if (config.isTftEnabled() && tftManagerPtr) {
+    // Same indication for begin() or scan-task failure, on a started display only
+    if (tftTaskStarted && tftManagerPtr) {
       tftManagerPtr->showError("NFC FAILED");
-    } else if (config.isLcdEnabled()) {
+    } else if (lcdTaskStarted) {
       lcdManager.updateScreen("NFC FAILED", "");
     }
-  } else {
-    // Start NFC scan task
-    NFCManager::getInstance().startScanTask();
   }
 
   if (!g_apModeActive) {
-    // Start network task managers
-    SpoolmanManager::getInstance().startTask();
+    // Start network task managers; every result is consumed (issue #264).
+    // Failures are logged and never block boot.
+    bool spoolmanStarted = spoolmanReady && SpoolmanManager::getInstance().startTask();
+    if (!spoolmanStarted) {
+      Serial.println("Setup: Spoolman sync task not running - Spoolman disabled this boot");
+    }
 
     Serial.printf("Setup: HA config before startTask: enabled=%s host='%s' host_len=%u port=%u user_set=%s\n",
                   config.getHAEnabled() ? "true" : "false",
@@ -393,7 +417,11 @@ void setup() {
                   static_cast<unsigned>(strlen(config.getHAMqttHost())),
                   static_cast<unsigned>(config.getHAMqttPort()),
                   strlen(config.getHAMqttUser()) > 0 ? "true" : "false");
-    HomeAssistantManager::getInstance().startTask();
+    bool haConfigured = HomeAssistantManager::getInstance().isConfigured();
+    bool haStarted = HomeAssistantManager::getInstance().startTask();
+    if (haConfigured && !haStarted) {
+      Serial.println("Setup: Home Assistant MQTT task not running this boot");
+    }
 
     // PrusaLink printer polling: detects print start/end for spool deduction
     if (config.isPrusaLinkEnabled()) {
@@ -407,7 +435,7 @@ void setup() {
     }
   }
 
-  if (config.isTftEnabled()) {
+  if (tftTaskStarted) {
     if (tftManagerPtr && !config.isBambuDashboardEnabled()) {
       tftManagerPtr->showReady();
     } else if (tftManagerPtr && config.isBambuDashboardEnabled()) {
@@ -419,13 +447,17 @@ void setup() {
         tftManagerPtr->showText("SpoolSense", "AMS Ready");
       }
     }
-  } else if (config.isLcdEnabled()) {
+  } else if (lcdTaskStarted) {
     ApplicationManager::getInstance().showStatusScreen();
   }
 
   if (config.isLedEnabled()) {
     ledManager.showReady();
-    ledManager.startTask();  // Async LED task — non-blocking calls from here
+    // Async LED task — non-blocking calls from here. Failure is logged only;
+    // the LED manager still has its synchronous fallbacks (issue #264).
+    if (!ledManager.startTask()) {
+      Serial.println("Setup: LED task not running this boot (sync LED fallbacks only)");
+    }
   }
 
   // HTTP server: available in both STA and AP modes (tag reader/writer web UI)

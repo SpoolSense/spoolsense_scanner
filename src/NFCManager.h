@@ -65,7 +65,7 @@ class NFCManager {
 public:
     static NFCManager& getInstance();
     bool begin();                                    // Init hardware + queues
-    void startScanTask();                            // Start FreeRTOS scan task
+    bool startScanTask();                            // Start FreeRTOS scan task; true only if the task is live
     bool enqueueWrite(const NFCWriteRequest& req);   // Queue a write request
     bool enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize);
     bool enqueueOpenTag3DPatch(const NFCWriteRequest& req, const opentag3d_patch_t& patch);
