@@ -8,6 +8,7 @@
 #include "ApplicationManager.h"
 #include "NFCManager.h"
 #include "SpoolmanManager.h"
+#include "DeductionManager.h"
 #include "HomeAssistantManager.h"
 #include "MemoryDiagnostics.h"
 #include "DisplayI.h"
@@ -319,6 +320,13 @@ void setup() {
 
   // Connect to WiFi
   initWiFi();
+
+  // Deduction tracker mutex + claim table must exist before NFC/HA tasks
+  // start (issue #329). Failure disables deduction apply (fail closed) —
+  // pending amounts stay durable in NVS.
+  if (!DeductionManager::getInstance().begin()) {
+    Serial.println("DeductionManager init failed (static mutex) - deductions disabled");
+  }
 
   // Global mutex: guards all HTTP clients (SpoolmanManager, ApplicationManager ASSIGN_SPOOL, PrinterManager)
   g_httpMutex = xSemaphoreCreateMutex();
