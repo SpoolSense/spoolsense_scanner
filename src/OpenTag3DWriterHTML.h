@@ -487,24 +487,28 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         density_ugcm3: densityUgcm3
       };
 
-      body.serial_number = strVal('serial_number');
-      body.online_url = strVal('online_url');
-      body.measured_filament_weight_g = intVal('measured_filament_weight_g', 0);
-      body.empty_spool_weight_g = intVal('empty_spool_weight_g', 0);
-      body.min_print_temp_c = intVal('min_print_temp_c', 0);
-      body.max_print_temp_c = intVal('max_print_temp_c', 0);
-      body.min_bed_temp_c = intVal('min_bed_temp_c', 0);
-      body.max_bed_temp_c = intVal('max_bed_temp_c', 0);
-      body.max_dry_temp_c = intVal('max_dry_temp_c', 0);
-      body.dry_time_hours = intVal('dry_time_hours', 0);
-      body.target_volumetric_speed = intVal('target_volumetric_speed', 0);
-      body.transmission_distance = intVal('transmission_distance', 0);
+      var optionalStrings = ['serial_number', 'online_url', 'sku', 'barcode'];
+      optionalStrings.forEach(function(id) {
+        var value = strVal(id);
+        if (value !== '') body[id] = value;
+      });
+      var optionalInts = [
+        'measured_filament_weight_g', 'empty_spool_weight_g',
+        'min_print_temp_c', 'max_print_temp_c',
+        'min_bed_temp_c', 'max_bed_temp_c',
+        'max_dry_temp_c', 'dry_time_hours',
+        'target_volumetric_speed', 'transmission_distance'
+      ];
+      optionalInts.forEach(function(id) {
+        if (strVal(id) !== '') body[id] = intVal(id, 0);
+      });
 
-      body.sku = strVal('sku');
-      body.barcode = strVal('barcode');
-      body.chamber_temp_c = intVal('chamber_temp_c', 0);
-      var minNozzleMm = floatVal('min_nozzle_diameter_mm', 0);
-      body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
+      if (strVal('chamber_temp_c') !== '') {
+        body.chamber_temp_c = intVal('chamber_temp_c', 0);
+      }
+      if (strVal('min_nozzle_diameter_mm') !== '') {
+        body.min_nozzle_diameter = Math.round(floatVal('min_nozzle_diameter_mm', 0) * 10);
+      }
 
       return body;
     }
@@ -613,9 +617,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        // Present-key guard: a v2 read carries chamber_temp even at 0 (so 0 is
-        // applied), while a v1 read omits it and leaves a typed value alone.
-        if (ot.chamber_temp !== undefined) setVal('chamber_temp_c', ot.chamber_temp);
+        // A v2 read carries chamber_temp even at 0. A v1 read omits it, so keep
+        // the field blank and avoid creating a v2-only patch intent.
+        setVal('chamber_temp_c', ot.chamber_temp !== undefined ? ot.chamber_temp : '');
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);

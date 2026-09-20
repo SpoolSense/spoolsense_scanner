@@ -714,7 +714,9 @@ int main(void) {
         memcpy(snapshot, raw, OT3D_MAX_PAYLOAD_SIZE);
         memset(&p, 0, sizeof(p));
         p.present = OT3D_PATCH_ONLINE_URL;
-        strcpy(p.values.online_url, "http://a-very-long-growth-request.example");
+        strncpy(p.values.online_url, "growth-request.example",
+                sizeof(p.values.online_url) - 1);
+        p.values.online_url[sizeof(p.values.online_url) - 1] = '\0';
         r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
         CHECK(r == OT3D_PARSE_ERROR, "X: 501-byte baseline rejected");
         CHECK(len == OT3D_MAX_PAYLOAD_SIZE + 1 &&

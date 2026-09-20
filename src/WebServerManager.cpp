@@ -2248,10 +2248,14 @@ void WebServerManager::handleApiWriteOpenTag3D() {
     mark("min_volumetric_speed", OT3D_PATCH_MIN_VSO);
     mark("max_volumetric_speed", OT3D_PATCH_MAX_VSO);
     mark("target_volumetric_speed", OT3D_PATCH_TARGET_VSO);
-    mark("barcode", OT3D_PATCH_BARCODE);
-    mark("sku", OT3D_PATCH_SKU);
-    mark("chamber_temp_c", OT3D_PATCH_CHAMBER_TEMP);
-    mark("min_nozzle_diameter", OT3D_PATCH_MIN_NOZZLE);
+    // These fields do not exist in the v1 map. Ignore any v2-only values sent
+    // by non-browser clients while editing a v1 tag.
+    if (opentag3d_major(effectiveVersion) >= 2) {
+        mark("barcode", OT3D_PATCH_BARCODE);
+        mark("sku", OT3D_PATCH_SKU);
+        mark("chamber_temp_c", OT3D_PATCH_CHAMBER_TEMP);
+        mark("min_nozzle_diameter", OT3D_PATCH_MIN_NOZZLE);
+    }
 
     // has_extended only sizes v1 encodes (v2 always writes the full map).
     // Derive it from the parsed data, not key probes — an explicit v1 post
