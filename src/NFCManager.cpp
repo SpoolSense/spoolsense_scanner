@@ -2147,6 +2147,10 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 
     if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
         Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
+        // Defensive terminal path: the sidecar may still be owned by this
+        // request (e.g. a truncated payload). Release it — returning while
+        // rawWritePending_ stays set wedges every later raw write (#329).
+        releaseRawWriteIf(request.expected_spool_id);
         return false;
     }
 
@@ -2182,10 +2186,18 @@ bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
 }
 
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) return false;
+    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENSPOOL")) {
+        // Tag presented changed between enqueue (e.g. WebServerManager's
+        // UID-bound OpenSpool request) and execution. The sidecar belongs to
+        // this request and nothing else will consume it: release it here or
+        // every later raw write is rejected until reboot (#329).
+        releaseRawWriteIf(request.expected_spool_id);
+        return false;
+    }
 
     if (!rawWritePending_ || rawWriteBufferSize_ == 0) {
         Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data available");
+        releaseRawWriteIf(request.expected_spool_id);
         return false;
     }
 

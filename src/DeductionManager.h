@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef NATIVE_TEST
+  #include "platform/NativePlatform.h"
+#endif
+
 #include "NFCTypes.h"
 #include "DeductionTracker.h"
 #include "DeductionPolicy.h"

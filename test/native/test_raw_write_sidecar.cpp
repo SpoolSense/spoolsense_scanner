@@ -17,6 +17,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 SerialStub Serial;
 
@@ -73,11 +76,57 @@ static NFCWriteRequest makeReq(uint32_t id, const char* uid) {
     return r;
 }
 
-int main() {
+static std::string readFile(const char* path) {
+    std::ifstream input(path);
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    return contents.str();
+}
+
+static std::string functionBody(const std::string& source, const char* signature) {
+    size_t start = source.find(signature);
+    if (start == std::string::npos) return {};
+    size_t open = source.find('{', start);
+    if (open == std::string::npos) return {};
+    int depth = 0;
+    for (size_t i = open; i < source.size(); ++i) {
+        if (source[i] == '{') ++depth;
+        if (source[i] == '}' && --depth == 0) return source.substr(open, i - open + 1);
+    }
+    return {};
+}
+
+static bool branchReleasesBeforeReturn(const std::string& body, const char* branchStart) {
+    size_t start = body.find(branchStart);
+    if (start == std::string::npos) return false;
+    size_t returnPos = body.find("return false;", start);
+    if (returnPos == std::string::npos) return false;
+    size_t releasePos = body.find("releaseRawWriteIf(request.expected_spool_id);", start);
+    return releasePos != std::string::npos && releasePos < returnPos;
+}
+
+int main(int argc, char** argv) {
     printf("=== NFC raw-write sidecar tests (#329 review) ===\n");
 
     static const char* UID_A = "AABBCCDDEEFF0011";
     static const char* UID_B = "1122334455667788";
+
+    // NFCManager.cpp is too hardware-coupled for the native harness. Guard
+    // the two production terminal branches directly so this suite fails if
+    // either release call is removed while the state-machine mirrors below
+    // continue to pass.
+    {
+        const char* sourcePath = argc > 1 ? argv[1] : "../../src/NFCManager.cpp";
+        std::string source = readFile(sourcePath);
+        std::string ot3d = functionBody(source, "bool NFCManager::executeOpenTag3DWrite");
+        std::string openSpool = functionBody(source, "bool NFCManager::executeOpenSpoolWrite");
+        CHECK(!ot3d.empty() && branchReleasesBeforeReturn(
+                  ot3d, "rawWriteBufferSize_ < sizeof(opentag3d_t)"),
+              "production undersized OpenTag3D path releases its sidecar");
+        CHECK(!openSpool.empty() && branchReleasesBeforeReturn(
+                  openSpool, "!validateWriteUid(request.expected_spool_id"),
+              "production OpenSpool UID mismatch releases its sidecar");
+    }
 
     // ── Failed enqueue (queue full) must NOT leave the sidecar stuck ──
     {
