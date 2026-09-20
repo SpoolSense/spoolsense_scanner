@@ -438,12 +438,6 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       });
     });
 
-    var EXTENDED_IDS = [
-      'serial_number', 'online_url', 'measured_filament_weight_g',
-      'empty_spool_weight_g', 'min_print_temp_c', 'max_print_temp_c',
-      'min_bed_temp_c', 'max_bed_temp_c', 'max_dry_temp_c',
-      'dry_time_hours', 'target_volumetric_speed', 'transmission_distance'
-    ];
 
     function intVal(id, fallback) {
       var raw = document.getElementById(id).value.trim();
@@ -464,13 +458,6 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       return el ? el.value.trim() : '';
     }
 
-    function hasExtended() {
-      for (var i = 0; i < EXTENDED_IDS.length; i++) {
-        var el = document.getElementById(EXTENDED_IDS[i]);
-        if (el && el.value.trim() !== '') return true;
-      }
-      return false;
-    }
 
     function buildPayload(uid) {
       var color = normalizeHex(document.getElementById('colorHex').value);
@@ -500,29 +487,24 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         density_ugcm3: densityUgcm3
       };
 
-      if (hasExtended()) {
-        var sn = strVal('serial_number');
-        if (sn) body.serial_number = sn;
-        var url = strVal('online_url');
-        if (url) body.online_url = url;
-        if (strVal('measured_filament_weight_g')) body.measured_filament_weight_g = intVal('measured_filament_weight_g', 0);
-        if (strVal('empty_spool_weight_g')) body.empty_spool_weight_g = intVal('empty_spool_weight_g', 0);
-        if (strVal('min_print_temp_c')) body.min_print_temp_c = intVal('min_print_temp_c', 0);
-        if (strVal('max_print_temp_c')) body.max_print_temp_c = intVal('max_print_temp_c', 0);
-        if (strVal('min_bed_temp_c')) body.min_bed_temp_c = intVal('min_bed_temp_c', 0);
-        if (strVal('max_bed_temp_c')) body.max_bed_temp_c = intVal('max_bed_temp_c', 0);
-        if (strVal('max_dry_temp_c')) body.max_dry_temp_c = intVal('max_dry_temp_c', 0);
-        if (strVal('dry_time_hours')) body.dry_time_hours = intVal('dry_time_hours', 0);
-        if (strVal('target_volumetric_speed')) body.target_volumetric_speed = intVal('target_volumetric_speed', 0);
-        if (strVal('transmission_distance')) body.transmission_distance = intVal('transmission_distance', 0);
-      }
+      body.serial_number = strVal('serial_number');
+      body.online_url = strVal('online_url');
+      body.measured_filament_weight_g = intVal('measured_filament_weight_g', 0);
+      body.empty_spool_weight_g = intVal('empty_spool_weight_g', 0);
+      body.min_print_temp_c = intVal('min_print_temp_c', 0);
+      body.max_print_temp_c = intVal('max_print_temp_c', 0);
+      body.min_bed_temp_c = intVal('min_bed_temp_c', 0);
+      body.max_bed_temp_c = intVal('max_bed_temp_c', 0);
+      body.max_dry_temp_c = intVal('max_dry_temp_c', 0);
+      body.dry_time_hours = intVal('dry_time_hours', 0);
+      body.target_volumetric_speed = intVal('target_volumetric_speed', 0);
+      body.transmission_distance = intVal('transmission_distance', 0);
 
       body.sku = strVal('sku');
-      var barcodeDigits = strVal('barcode');
-      if (barcodeDigits) body.barcode = barcodeDigits;
+      body.barcode = strVal('barcode');
       body.chamber_temp_c = intVal('chamber_temp_c', 0);
-      var minNozzleMm = floatVal('min_nozzle_diameter_mm', -1);
-      if (minNozzleMm >= 0) body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
+      var minNozzleMm = floatVal('min_nozzle_diameter_mm', 0);
+      body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
 
       return body;
     }

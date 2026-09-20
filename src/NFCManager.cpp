@@ -5,6 +5,7 @@
 #include "WriteUidGuard.h"
 #include "TigerTagParser.h"
 #include "OpenSpoolParser.h"
+#include "NdefMimeBuilder.h"
 #include "BambuKeyDeriver.h"
 #include "BambuTagParser.h"
 #ifndef NATIVE_TEST
@@ -337,29 +338,29 @@ uint16_t NFCManager::readNdefPayload(const NdefRecord& rec, const uint8_t* pageD
 
     // Extended read — payload spans beyond the initial 40-byte read
     uint8_t startPage = 4 + (rec.payloadOffset / 4);
-    uint16_t pagesNeeded = (uint16_t)((rec.payloadLen + 3) / 4) + 1;
-    if (pagesNeeded > 64) pagesNeeded = 64;  /* extBuf holds 256 B = 64 pages */
+    uint16_t offsetInPage = rec.payloadOffset % 4;
+    uint16_t pagesNeeded = (uint16_t)((offsetInPage + rec.payloadLen + 3) / 4);
     // Never request past the tag's last usable page: NTAG READ rolls over to
     // page 0 beyond the end, which would silently corrupt the tail of an
     // over-asked payload (garbage payloadLen on a malformed tag)
     if (maxPages == 0) maxPages = 68;  // unknown variant: a v2 payload spans pages 4..66,
                                        // so 64 (the historical ceiling) truncated every v2
                                        // read after a failed GET_VERSION; 68 covers v2 and
-                                       // extBuf still bounds one read at 64 pages
+                                       // the declared payload still bounds the read
     if (startPage >= maxPages) return 0;
     if ((uint16_t)startPage + pagesNeeded > maxPages) {
         pagesNeeded = maxPages - startPage;
     }
 
-    uint8_t extBuf[256] = {0};
-    uint16_t extRead = connection_->readISO14443Pages(startPage, (uint8_t)pagesNeeded, extBuf, sizeof(extBuf));
-    uint16_t offsetInPage = rec.payloadOffset % 4;
+    if (pagesNeeded > UINT8_MAX || pagesNeeded * 4 > sizeof(ndefScratch_)) return 0;
+    uint16_t extRead = connection_->readISO14443Pages(startPage, (uint8_t)pagesNeeded,
+                                                       ndefScratch_, sizeof(ndefScratch_));
     if (extRead <= offsetInPage) return 0;
 
     uint16_t payloadBytes = extRead - offsetInPage;
     if (payloadBytes > rec.payloadLen) payloadBytes = (uint16_t)rec.payloadLen;
     if (payloadBytes > outBufSize) payloadBytes = outBufSize;
-    memcpy(outBuf, extBuf + offsetInPage, payloadBytes);
+    memcpy(outBuf, ndefScratch_ + offsetInPage, payloadBytes);
     return payloadBytes;
 }
 
@@ -371,6 +372,8 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
     bool isTigerTag = false;
     bool isOpenTag3D = false;
     bool isOpenSpool = false;
+    bool sawOpenTag3DMime = false;
+    size_t openTag3DBaselineLen = 0;
     TigerTagData tigerData;
     OpenSpoolData openSpoolData;
     opentag3d_t ot3dData;
@@ -398,21 +401,23 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
         if (rec.found) {
             const char* ot3dMime = OT3D_MIME_TYPE;
             if (rec.mimeLen == strlen(ot3dMime) && memcmp(rec.mimeType, ot3dMime, rec.mimeLen) == 0) {
-                uint8_t payload[OT3D_V2_MAP_SIZE];
+                sawOpenTag3DMime = true;
                 SCAN_PHASE(22);
-                uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
+                uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead,
+                                                        openTag3DPayloadScratch_, sizeof(openTag3DPayloadScratch_),
                                                         effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
                 // readNdefPayload returns what it actually got, which is short
                 // after a failed page read (PN5180 hands back partial reads) or
                 // a record declared past the end of the tag, and is capped at
                 // this buffer. Decode only a complete record that fits the
                 // map: anything else re-encodes with bytes missing.
-                const bool complete = rec.payloadLen <= sizeof(payload) &&
+                const bool complete = rec.payloadLen <= sizeof(openTag3DPayloadScratch_) &&
                                       payloadBytes > 0 && payloadBytes == rec.payloadLen;
                 if (complete) {
-                    opentag3d_result_t res = opentag3d_decode(payload, payloadBytes, &ot3dData);
+                    opentag3d_result_t res = opentag3d_decode(openTag3DPayloadScratch_, payloadBytes, &ot3dData);
                     if (res == OT3D_OK || res == OT3D_VERSION_WARNING) {
                         isOpenTag3D = true;
+                        openTag3DBaselineLen = payloadBytes;
                         if (res == OT3D_VERSION_WARNING) {
                             uint16_t known = (opentag3d_major(ot3dData.tag_version) >= 2)
                                              ? OT3D_SUPPORTED_V2 : OT3D_SUPPORTED_V1;
@@ -469,6 +474,8 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             lastTigerTag_ = tigerData;
             lastTigerTagValid_ = true;
             lastOpenTag3DValid_ = false;
+            openTag3DMimeSeen_ = false;
+            clearOpenTag3DRawBaselineLocked();
             Serial.printf("NFCManager: TigerTag detected — %s %s %s\n",
                           tigerData.brand_name, tigerData.material_name, tigerData.aspect1_name);
             LogBuffer::getInstance().logPrintf("TigerTag: %s %s %s\n",
@@ -478,6 +485,12 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             currentSpool.tag_data_valid = false;
             lastOpenTag3D_ = ot3dData;
             lastOpenTag3DValid_ = true;
+            openTag3DMimeSeen_ = true;
+            memcpy(openTag3DRawBaseline_, openTag3DPayloadScratch_, openTag3DBaselineLen);
+            openTag3DRawBaselineLen_ = openTag3DBaselineLen;
+            strncpy(openTag3DRawBaselineUid_, scan.uid_hex, sizeof(openTag3DRawBaselineUid_) - 1);
+            openTag3DRawBaselineUid_[sizeof(openTag3DRawBaselineUid_) - 1] = '\0';
+            openTag3DRawBaselineValid_ = true;
             lastTigerTagValid_ = false;
             lastOpenSpoolValid_ = false;
             Serial.printf("NFCManager: OpenTag3D detected — %s %s %.2fmm %ug\n",
@@ -493,6 +506,8 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             lastOpenSpoolValid_ = true;
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
+            openTag3DMimeSeen_ = false;
+            clearOpenTag3DRawBaselineLocked();
             Serial.printf("NFCManager: OpenSpool detected — %s %s #%s\n",
                           openSpoolData.brand, openSpoolData.material, openSpoolData.color_hex);
             LogBuffer::getInstance().logPrintf("OpenSpool: %s %s #%s\n",
@@ -503,6 +518,8 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
             lastOpenSpoolValid_ = false;
+            openTag3DMimeSeen_ = sawOpenTag3DMime;
+            clearOpenTag3DRawBaselineLocked();
         }
         xSemaphoreGive(tagMutex);
     } else {
@@ -609,6 +626,8 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
             lastTigerTagValid_ = false;
             lastOpenTag3DValid_ = false;
             lastOpenSpoolValid_ = false;
+            openTag3DMimeSeen_ = false;
+            clearOpenTag3DRawBaselineLocked();
             memcpy(lastSeenUid, uid, uidLength);
             lastSeenUidLength = uidLength;
             lastSeenValid = true;
@@ -636,6 +655,13 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
         SCAN_PHASE(12);
         readAndProcessISO14443Tag(uid, uidLength, scan);
         return;
+    }
+
+    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        lastOpenTag3DValid_ = false;
+        openTag3DMimeSeen_ = false;
+        clearOpenTag3DRawBaselineLocked();
+        xSemaphoreGive(tagMutex);
     }
 
     // ISO15693 (ICODE SLIX2): OpenPrintTag with retries — RF can be flaky at range
@@ -669,6 +695,9 @@ void NFCManager::handleNewTag(uint8_t* uid, uint8_t uidLength) {
         currentSpool.tag_data_valid = false;
         currentSpool.blank_tag_present = true;
         currentSpool.kind = TagKind::BlankTag;
+        lastOpenTag3DValid_ = false;
+        openTag3DMimeSeen_ = false;
+        clearOpenTag3DRawBaselineLocked();
         memcpy(lastSeenUid, uid, uidLength);
         lastSeenUidLength = uidLength;
         lastSeenValid = true;
@@ -694,6 +723,8 @@ void NFCManager::handleTagAbsent() {
     lastSeenValid = false;
     lastTigerTagValid_ = false;
     lastOpenTag3DValid_ = false;
+    openTag3DMimeSeen_ = false;
+    clearOpenTag3DRawBaselineLocked();
     suppressReDetection_ = false;       // allow fresh detection on next tag
     suppressReDetectionUid_[0] = '\0';
     clearSelectedUid();                 // no tag selected — bound writes fail closed
@@ -1573,6 +1604,36 @@ bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data
     return true;
 }
 
+bool NFCManager::enqueueOpenTag3DPatch(const NFCWriteRequest& req,
+                                       const opentag3d_patch_t& patch) {
+    if (req.type != NFCWriteType::WRITE_OPENTAG3D || req.request_id == 0 || tagMutex == nullptr) {
+        return false;
+    }
+    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    if (openTag3DPatchState_ != OpenTag3DPatchState::Empty) {
+        xSemaphoreGive(tagMutex);
+        Serial.println("NFCManager: OpenTag3D patch already pending");
+        return false;
+    }
+    openTag3DPatch_ = patch;
+    openTag3DPatchRequestId_ = req.request_id;
+    openTag3DPatchState_ = OpenTag3DPatchState::Staged;
+    xSemaphoreGive(tagMutex);
+
+    if (enqueueWrite(req)) return true;
+
+    if (xSemaphoreTake(tagMutex, portMAX_DELAY) == pdTRUE) {
+        if (openTag3DPatchState_ == OpenTag3DPatchState::Staged &&
+            openTag3DPatchRequestId_ == req.request_id) {
+            memset(&openTag3DPatch_, 0, sizeof(openTag3DPatch_));
+            openTag3DPatchRequestId_ = 0;
+            openTag3DPatchState_ = OpenTag3DPatchState::Empty;
+        }
+        xSemaphoreGive(tagMutex);
+    }
+    return false;
+}
+
 uint32_t NFCManager::generateRequestId() {
     return ++s_write_request_id_counter;
 }
@@ -1902,54 +1963,6 @@ static opt_error_t applyWriteUpdate(opt_tag_t& tag, const NFCWriteRequest& reque
 
 // ── Write helpers ────────────────────────────────────────────
 
-// Build an NDEF TLV wrapper around a MIME-typed payload.
-// Used by OpenTag3D and OpenSpool write paths. Pads to 4-byte page boundary.
-// Returns total bytes written to outBuf, or 0 if buffer too small.
-static uint16_t buildNdefTlv(const char* mimeType, const uint8_t* payload, uint16_t payloadLen,
-                              uint8_t* outBuf, uint16_t outBufSize) {
-    uint8_t mimeLen = (uint8_t)strlen(mimeType);
-    bool sr = (payloadLen <= 255);                   // Short Record: 1-byte payload length
-    uint8_t ndefHeaderSize = 2 + (sr ? 1 : 4);      // flags + typeLen + payloadLen(1 or 4)
-    uint16_t ndefRecordLen = ndefHeaderSize + mimeLen + payloadLen;
-
-    bool longTlv = (ndefRecordLen > 254);            // 3-byte TLV length if record > 254
-    uint16_t tlvHeaderSize = 1 + (longTlv ? 3 : 1);
-    uint16_t totalSize = tlvHeaderSize + ndefRecordLen + 1;  // +1 for 0xFE terminator
-    uint16_t paddedSize = totalSize + ((4 - (totalSize % 4)) % 4);  // NTAG pages are 4 bytes
-
-    if (paddedSize > outBufSize) return 0;
-
-    uint16_t idx = 0;
-    outBuf[idx++] = 0x03;
-    if (longTlv) {
-        outBuf[idx++] = 0xFF;
-        outBuf[idx++] = (uint8_t)(ndefRecordLen >> 8);
-        outBuf[idx++] = (uint8_t)(ndefRecordLen & 0xFF);
-    } else {
-        outBuf[idx++] = (uint8_t)ndefRecordLen;
-    }
-
-    uint8_t ndefFlags = 0xC0 | 0x02;  // MB + ME + TNF=media-type
-    if (sr) ndefFlags |= 0x10;       // Short Record flag
-    outBuf[idx++] = ndefFlags;
-    outBuf[idx++] = mimeLen;
-    if (sr) {
-        outBuf[idx++] = (uint8_t)payloadLen;
-    } else {
-        outBuf[idx++] = (uint8_t)((payloadLen >> 24) & 0xFF);
-        outBuf[idx++] = (uint8_t)((payloadLen >> 16) & 0xFF);
-        outBuf[idx++] = (uint8_t)((payloadLen >> 8) & 0xFF);
-        outBuf[idx++] = (uint8_t)(payloadLen & 0xFF);
-    }
-
-    memcpy(outBuf + idx, mimeType, mimeLen);
-    idx += mimeLen;
-    memcpy(outBuf + idx, payload, payloadLen);
-    idx += payloadLen;
-    outBuf[idx++] = 0xFE;
-    while (idx < paddedSize) outBuf[idx++] = 0x00;
-    return paddedSize;
-}
 
 bool NFCManager::validateWriteUid(const char* expectedUid, const char* writeType) {
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
@@ -2005,14 +2018,22 @@ bool NFCManager::checkWriteCapacity(uint8_t startPage, uint8_t pageCount, const 
 // the ISO14443 path). (#167)
 bool NFCManager::verifyISO14443Readback(uint8_t startPage, uint8_t pageCount, const uint8_t* expected) {
     uint8_t readback[256];
-    uint16_t totalBytes = (uint16_t)pageCount * 4;
-    if (totalBytes > sizeof(readback)) return false;
-    uint16_t n = connection_->readISO14443Pages(startPage, pageCount, readback, sizeof(readback), false);
-    if (n < totalBytes) {
-        Serial.printf("NFCManager: verify read returned %u of %u bytes\n", n, totalBytes);
-        return false;
+    uint8_t pagesDone = 0;
+    while (pagesDone < pageCount) {
+        uint8_t chunkPages = pageCount - pagesDone;
+        if (chunkPages > sizeof(readback) / 4) chunkPages = sizeof(readback) / 4;
+        uint16_t chunkBytes = (uint16_t)chunkPages * 4;
+        uint16_t n = connection_->readISO14443Pages(startPage + pagesDone, chunkPages,
+                                                     readback, sizeof(readback), false);
+        if (n < chunkBytes) {
+            Serial.printf("NFCManager: verify read returned %u of %u bytes at page %u\n",
+                          n, chunkBytes, startPage + pagesDone);
+            return false;
+        }
+        if (memcmp(readback, expected + ((size_t)pagesDone * 4), chunkBytes) != 0) return false;
+        pagesDone += chunkPages;
     }
-    return memcmp(readback, expected, totalBytes) == 0;
+    return true;
 }
 
 // Shared verify + one-recovery tail for the NDEF writers (OpenTag3D, OpenSpool).
@@ -2138,47 +2159,99 @@ bool NFCManager::executeTigerTagWrite(const NFCWriteRequest& request) {
 }
 
 bool NFCManager::executeOpenTag3DWrite(const NFCWriteRequest& request) {
-    if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) {
-        // Wrong tag: drop this request's sidecar so the next correct-tag scan
-        // can enqueue a fresh write instead of being rejected forever (#329).
-        releaseRawWriteIf(request.expected_spool_id);
+    bool hasBaseline = false;
+    bool mimeSeen = false;
+    size_t payloadLen = 0;
+    if (xSemaphoreTake(tagMutex, portMAX_DELAY) != pdTRUE) return false;
+    if (openTag3DPatchState_ != OpenTag3DPatchState::Staged ||
+        openTag3DPatchRequestId_ != request.request_id) {
+        xSemaphoreGive(tagMutex);
+        Serial.println("NFCManager: WRITE_OPENTAG3D - patch sidecar mismatch");
         return false;
     }
-
-    if (!rawWritePending_ || rawWriteBufferSize_ < sizeof(opentag3d_t)) {
-        Serial.println("NFCManager: WRITE_OPENTAG3D - no raw data available");
-        return false;
+    openTag3DPatchState_ = OpenTag3DPatchState::InFlight;
+    mimeSeen = openTag3DMimeSeen_;
+    hasBaseline = openTag3DRawBaselineValid_ &&
+                  strcmp(openTag3DRawBaselineUid_, request.expected_spool_id) == 0;
+    if (hasBaseline) {
+        payloadLen = openTag3DRawBaselineLen_;
+        memcpy(openTag3DPayloadScratch_, openTag3DRawBaseline_, payloadLen);
     }
+    xSemaphoreGive(tagMutex);
 
-    opentag3d_t ot3d;
-    memcpy(&ot3d, rawWriteBuffer_, sizeof(opentag3d_t));
-    releaseRawWriteIf(request.expected_spool_id);
+    bool result = [&]() -> bool {
+        if (!validateWriteUid(request.expected_spool_id, "WRITE_OPENTAG3D")) return false;
+        if (mimeSeen && !hasBaseline) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D - existing MIME baseline is unusable");
+            return false;
+        }
 
-    size_t encodeSize = (opentag3d_major(ot3d.tag_version) >= 2) ? OT3D_V2_MAP_SIZE
-                    : (ot3d.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
-    uint8_t payloadBuf[OT3D_V2_MAP_SIZE];
-    int payloadLen = opentag3d_encode(&ot3d, payloadBuf, encodeSize);
-    if (payloadLen <= 0) {
-        Serial.println("NFCManager: WRITE_OPENTAG3D - encode failed");
-        return false;
+        if (hasBaseline) {
+            opentag3d_result_t patchResult = opentag3d_patch_payload(
+                openTag3DPayloadScratch_, &payloadLen, sizeof(openTag3DPayloadScratch_),
+                &openTag3DPatch_);
+            if (patchResult != OT3D_OK) {
+                Serial.printf("NFCManager: WRITE_OPENTAG3D - raw patch failed (%d)\n",
+                              static_cast<int>(patchResult));
+                return false;
+            }
+        } else {
+            opentag3d_t fresh = openTag3DPatch_.values;
+            if ((openTag3DPatch_.present & OT3D_PATCH_TAG_VERSION) == 0) {
+                fresh.tag_version = OT3D_SUPPORTED_VERSION;
+            }
+            if (!opentag3d_can_encode(fresh.tag_version)) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - fresh version unsupported");
+                return false;
+            }
+            size_t encodeSize = opentag3d_major(fresh.tag_version) == 2
+                              ? OT3D_V2_MAP_SIZE
+                              : (fresh.has_extended ? OT3D_EXTENDED_MIN : OT3D_CORE_SIZE);
+            int encoded = opentag3d_encode(&fresh, openTag3DPayloadScratch_, encodeSize);
+            if (encoded <= 0) {
+                Serial.println("NFCManager: WRITE_OPENTAG3D - fresh encode failed");
+                return false;
+            }
+            payloadLen = (size_t)encoded;
+        }
+
+        uint16_t ndefLen = buildNdefMimeTlv(OT3D_MIME_TYPE, openTag3DPayloadScratch_,
+                                        (uint16_t)payloadLen, ndefScratch_, sizeof(ndefScratch_));
+        if (ndefLen == 0) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D - NDEF too large");
+            return false;
+        }
+
+        uint8_t pagesNeeded = (uint8_t)(ndefLen / 4);
+        Serial.printf("NFCManager: WRITE_OPENTAG3D - writing %u bytes (%u pages)\n",
+                      ndefLen, pagesNeeded);
+        if (!checkWriteCapacity(4, pagesNeeded, "WRITE_OPENTAG3D")) return false;
+
+        // Once the first physical write is attempted, the tag may differ from
+        // the cached image even on failure. Only a full rescan may re-arm it.
+        if (xSemaphoreTake(tagMutex, portMAX_DELAY) == pdTRUE) {
+            clearOpenTag3DRawBaselineLocked();
+            lastOpenTag3DValid_ = false;
+            xSemaphoreGive(tagMutex);
+        }
+        if (!connection_->writeISO14443Pages(4, pagesNeeded, ndefScratch_, ndefLen)) {
+            Serial.println("NFCManager: WRITE_OPENTAG3D failed");
+            LogBuffer::getInstance().logPrintf("Write OpenTag3D: FAILED\n");
+            return false;
+        }
+        return ndefVerifyAndFinish("OpenTag3D", pagesNeeded, ndefScratch_, ndefLen);
+    }();
+
+    if (xSemaphoreTake(tagMutex, portMAX_DELAY) == pdTRUE) {
+        if (openTag3DPatchState_ == OpenTag3DPatchState::InFlight &&
+            openTag3DPatchRequestId_ == request.request_id) {
+            memset(&openTag3DPatch_, 0, sizeof(openTag3DPatch_));
+            openTag3DPatchRequestId_ = 0;
+            openTag3DPatchState_ = OpenTag3DPatchState::Empty;
+        }
+        xSemaphoreGive(tagMutex);
     }
-
-    uint8_t ndefBuf[256];
-    uint16_t ndefLen = buildNdefTlv(OT3D_MIME_TYPE, payloadBuf, (uint16_t)payloadLen, ndefBuf, sizeof(ndefBuf));
-    if (ndefLen == 0) {
-        Serial.printf("NFCManager: WRITE_OPENTAG3D - NDEF too large\n");
-        return false;
-    }
-
-    uint8_t pagesNeeded = (uint8_t)(ndefLen / 4);
-    Serial.printf("NFCManager: WRITE_OPENTAG3D - writing %u bytes (%u pages)\n", ndefLen, pagesNeeded);
-    if (!checkWriteCapacity(4, pagesNeeded, "WRITE_OPENTAG3D")) return false;
-    if (!connection_->writeISO14443Pages(4, pagesNeeded, ndefBuf, ndefLen)) {
-        Serial.println("NFCManager: WRITE_OPENTAG3D failed");
-        LogBuffer::getInstance().logPrintf("Write OpenTag3D: FAILED\n");
-        return false;
-    }
-    return ndefVerifyAndFinish("OpenTag3D", pagesNeeded, ndefBuf, ndefLen);
+    return result;
 }
 
 bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
@@ -2192,7 +2265,7 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
     const uint8_t* jsonPayload = rawWriteBuffer_;
     uint16_t payloadLen = (uint16_t)rawWriteBufferSize_;
     uint8_t ndefBuf[256];
-    uint16_t ndefLen = buildNdefTlv("application/json", jsonPayload, payloadLen, ndefBuf, sizeof(ndefBuf));
+    uint16_t ndefLen = buildNdefMimeTlv("application/json", jsonPayload, payloadLen, ndefBuf, sizeof(ndefBuf));
     // Payload is now copied into ndefBuf; release the sidecar on every path
     // (same rule as WRITE_OPENTAG3D, #329).
     releaseRawWriteIf(request.expected_spool_id);

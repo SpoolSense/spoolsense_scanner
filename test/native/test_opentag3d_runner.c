@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "opentag3d_lib.h"
+#include "opentag3d_v1_map.h"
 #include "opentag3d_v2_map.h"
 
 static int failures = 0;
@@ -26,6 +27,7 @@ static int failures = 0;
 /* ---- payload-building helpers (big-endian, mirror the decoder) ---- */
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)(v & 0xFF); }
 static void put_u48(uint8_t *p, uint64_t v) { for (int i = 5; i >= 0; i--) { p[i] = (uint8_t)(v & 0xFF); v >>= 8; } }
+static uint16_t read_be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static void put_str(uint8_t *p, const char *s, size_t field_len) {
     size_t n = strlen(s);
     if (n > field_len) n = field_len;
@@ -178,14 +180,24 @@ int main(void) {
     CHECK(r == OT3D_VERSION_WARNING, "B: result OT3D_VERSION_WARNING");
     CHECK(out.barcode == 12345543210ULL && out.has_extended == 1, "B: fields still parsed at 2050");
 
-    /* C: v2 truncated — a record shorter than its last defined field is a
-     * partial read. Decoding it would hand zeros to the full-map re-encode. */
-    printf("[C] v2 truncated (100B, 215B)\n");
+    /* C: short v2 records. #328 relaxed the OT3D_V2_MIN_SIZE completeness
+     * gate: with raw patching in place a known-v2 record decodes every
+     * complete field it contains via the bounded readers instead of being
+     * rejected as a lossy-rebuild risk. Only a version-only stub (no field
+     * byte beyond the version) stays a parse error. */
+    printf("[C] short v2 records (2B/100B, bounded decode)\n");
     build_v2_nominal(buf);
     r = opentag3d_decode(buf, 100, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "C: 100-byte v2 payload rejected");
+    CHECK(r == OT3D_OK && out.has_extended == 1, "C: 100-byte v2 payload decodes bounded");
+    CHECK(strcmp(out.base_material, "PLA") == 0 &&
+          strcmp(out.manufacturer, "Example Brand") == 0 &&
+          strcmp(out.color_name, "Orange") == 0, "C: v2 core strings survive short decode");
+    CHECK(out.color_rgba[1][0] == 1 && out.color_rgba[1][3] == 4, "C: color_2 inside 100B parses");
+    CHECK(out.color_rgba[3][0] == 9, "C: color_4 inside 100B parses (ends 0x4C)");
+    CHECK(out.diameter_um == 0 && out.barcode == 0, "C: fields past the cut read zero");
     r = opentag3d_decode(buf, OT3D_V2_MIN_SIZE - 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "C: v2 payload one byte short of the last field rejected");
+    CHECK(r == OT3D_OK && strcmp(out.online_url, "pfil.us?i=8078-RQSR") == 0,
+          "C: 215-byte v2 keeps the url prefix before the cut");
     r = opentag3d_decode(buf, 2, &out);
     CHECK(r == OT3D_PARSE_ERROR && out.tag_version == 2000,
           "C: version-only v2 payload rejected, version still reported");
@@ -244,25 +256,26 @@ int main(void) {
     CHECK(r == OT3D_VERSION_WARNING, "G: result OT3D_VERSION_WARNING");
 
     /* H: runt — 1 byte */
-    /* F2: v1 lengths. Core-only runs to the start of the extended block; a
-     * length that cuts through the extended block is rejected, because it
-     * would re-encode as core-only and drop the extended bytes on the tag. */
+    /* F2: v1 lengths. #328 relaxed the extended-block completeness gate:
+     * every complete field the record contains decodes, and has_extended
+     * flips on as soon as an extended field byte is present. */
     printf("[F2] v1 length boundaries (101/112/113/186/187B)\n");
     memset(buf, 0, OT3D_V2_MAP_SIZE);
     put_u16(buf + 0x00, 1000);
     put_u16(buf + 0x5E, 1000);
     memcpy(buf + 0x90, "SERIAL-IN-EXT", 13);
     r = opentag3d_decode(buf, OT3D_CORE_SIZE - 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "F2: 101-byte v1 payload rejected");
+    CHECK(r == OT3D_OK && out.has_extended == 0, "F2: 101-byte v1 decodes the diameter prefix it contains");
     r = opentag3d_decode(buf, OT3D_EXTENDED_START, &out);
     CHECK(r == OT3D_OK && out.has_extended == 0 && out.target_weight_g == 1000,
           "F2: 112-byte v1 payload is core-only");
     r = opentag3d_decode(buf, OT3D_EXTENDED_START + 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "F2: 113-byte v1 payload (1 extended byte) rejected");
-    r = opentag3d_decode(buf, 150, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "F2: 150-byte v1 payload (partial extended) rejected");
+    CHECK(r == OT3D_OK && out.has_extended == 1 && out.online_url[0] == '\0',
+          "F2: 113-byte v1 decodes with has_extended set, url incomplete");
     r = opentag3d_decode(buf, OT3D_EXTENDED_MIN - 1, &out);
-    CHECK(r == OT3D_PARSE_ERROR, "F2: 186-byte v1 payload rejected");
+    CHECK(r == OT3D_OK && out.has_extended == 1 &&
+          strcmp(out.serial_number, "SERIAL-IN-EXT") == 0,
+          "F2: 186-byte v1 still holds the full 16B serial ending at 0xA0");
     r = opentag3d_decode(buf, OT3D_EXTENDED_MIN, &out);
     CHECK(r == OT3D_OK && out.has_extended == 1 &&
           strcmp(out.serial_number, "SERIAL-IN-EXT") == 0,
@@ -520,6 +533,324 @@ int main(void) {
     CHECK(OT3D_V2_OFF_MFI_VALUE == 0xAA && OT3D_V2_LEN_MFI_VALUE == 1, "R: mfi_value @0xAA/1");
     CHECK(OT3D_V2_OFF_DATA_URL == 0xB8 && OT3D_V2_LEN_DATA_URL == 32, "R: data_url @0xB8/32");
     CHECK(OT3D_V2_MAP_SIZE == 0xE0 && OT3D_V2_VERSION == 2000, "R: map size + version constants");
+
+    /* ── Raw-payload patch engine (#328) ─────────────────────────────── */
+
+    /* S: 500-byte v2 baseline with sentinel tail + reserved sentinels —
+     * patching the measured weight must alter EXACTLY its two bytes. */
+    printf("[S] v2 500-byte sentinel tail + reserved survive a one-field patch\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len;
+        opentag3d_patch_t p;
+        for (size_t i = 0; i < sizeof(raw); i++) raw[i] = (uint8_t)(i ^ 0x5A);
+        len = OT3D_MAX_PAYLOAD_SIZE;
+        /* Valid v2 record embedded in the sentinel noise (version first so
+         * the patcher can select the map, then the fields we assert on). */
+        memset(raw, 0, OT3D_V2_MAP_SIZE);
+        put_u16(raw + OT3D_V2_OFF_TAG_VERSION, 2000);
+        put_u16(raw + OT3D_V2_OFF_MEASURED_WEIGHT, 1002);
+        put_u16(raw + OT3D_V2_OFF_WEIGHT, 1000);
+        /* Sentinel bytes where the encoder would memset: reserved gaps and
+         * the whole tail past the canonical 224-byte map. */
+        memset(raw + OT3D_V2_OFF_MFI_VALUE + 1, 0xEE, OT3D_V2_OFF_DATA_URL - (OT3D_V2_OFF_MFI_VALUE + 1)); /* 0xAB..0xB7 reserved run */
+        memset(raw + OT3D_V2_MIN_SIZE, 0xEE, OT3D_MAX_PAYLOAD_SIZE - OT3D_V2_MIN_SIZE);
+
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MEASURED_WEIGHT;
+        p.values.measured_filament_weight_g = 834;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK, "S: patch result OK");
+        CHECK(len == OT3D_MAX_PAYLOAD_SIZE, "S: length preserved (no shrink)");
+        CHECK(read_be16(raw + OT3D_V2_OFF_MEASURED_WEIGHT) == 834, "S: measured weight patched to 834");
+        opentag3d_t chk;
+        r = opentag3d_decode(raw, len, &chk);
+        CHECK(r == OT3D_OK && chk.measured_filament_weight_g == 834 && chk.target_weight_g == 1000,
+              "S: decode sees new weight, target weight untouched");
+        int tail_ok = 1, res_ok = 1;
+        for (size_t i = OT3D_V2_MIN_SIZE; i < OT3D_MAX_PAYLOAD_SIZE; i++) if (raw[i] != 0xEE) tail_ok = 0;
+        for (size_t i = 0xAB; i < OT3D_V2_OFF_DATA_URL; i++) if (raw[i] != 0xEE) res_ok = 0;
+        CHECK(tail_ok, "S: all 284 sentinel bytes past 224 survive verbatim");
+        CHECK(res_ok, "S: reserved 0xAB..0xB7 sentinel run survives verbatim");
+    }
+
+    /* T: v1 187-byte record with reserved-gap and trailing sentinels — a
+     * manufacturer patch rewrites only 0x1B..0x2A. */
+    printf("[T] v1 reserved gaps + trailing unknown bytes survive\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_EXTENDED_MIN;
+        build_v1_nominal(raw, 1000);
+        memset(raw + 0x0C, 0xEE, 0x0F);           /* reserved gap 0x0C..0x1A */
+        memset(raw + OT3D_CORE_SIZE, 0xEE, 0x0A); /* reserved 0x66..0x6F */
+        memset(raw + OT3D_EXTENDED_MIN, 0xEE, 40); /* trailing unknown bytes past the canonical record */
+
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MANUFACTURER;
+        strcpy(p.values.manufacturer, "Prusament");
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && len == OT3D_EXTENDED_MIN, "T: patch OK, length unchanged");
+        opentag3d_t chk;
+        opentag3d_decode(raw, len, &chk);
+        CHECK(strcmp(chk.manufacturer, "Prusament") == 0, "T: manufacturer patched");
+        CHECK(memcmp(raw + 0x0C, "\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE"
+                       "\xEE\xEE\xEE\xEE\xEE", 15) == 0, "T: reserved gap 0x0C..0x1A intact");
+        CHECK(memcmp(raw + OT3D_CORE_SIZE, "\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE\xEE", 10) == 0,
+              "T: reserved 0x66..0x6F intact");
+        int tail_ok = 1;
+        for (size_t i = OT3D_EXTENDED_MIN; i < OT3D_EXTENDED_MIN + 40; i++) if (raw[i] != 0xEE) tail_ok = 0;
+        CHECK(tail_ok, "T: 40 trailing unknown bytes intact");
+    }
+
+    /* U: short 102-byte v1 record — patching measured_weight grows it to
+     * exactly 0xB0 with the 0x66..0xAD gap zero-filled. */
+    printf("[U] short v1 extended-field patch grows to exact field end\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_CORE_SIZE;
+        memset(raw, 0, sizeof(raw));
+        put_u16(raw + 0x00, 1000);
+        put_u16(raw + 0x5C, 1750);
+
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MEASURED_WEIGHT;
+        p.values.measured_filament_weight_g = 500;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK, "U: patch OK");
+        CHECK(len == 0xB0, "U: grew exactly through field end 0xAF (len 176)");
+        int gap_zero = 1;
+        for (size_t i = OT3D_CORE_SIZE; i < 0xAE; i++) if (raw[i] != 0x00) gap_zero = 0;
+        CHECK(gap_zero, "U: gap 0x66..0xAD zero-filled");
+        CHECK(read_be16(raw + 0xAE) == 500, "U: measured weight = 500 at 0xAE");
+    }
+
+    /* V: no-op present fields must not rewrite padding or grow the record. */
+    printf("[V] equal present field and absent default are no-ops\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_EXTENDED_MIN;
+        build_v1_nominal(raw, 1000);
+        /* manufacturer "3D" is space-padded on-tag; equal value arrives padded too */
+        uint8_t before[OT3D_MAX_PAYLOAD_SIZE];
+        memcpy(before, raw, len);
+
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MANUFACTURER;
+        strcpy(p.values.manufacturer, "3D   ");  /* trailing spaces = same semantic value */
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && len == OT3D_EXTENDED_MIN && memcmp(raw, before, len) == 0,
+              "V: equal padded string rewrote nothing");
+
+        /* Absent field whose on-tag default is 0: present + zero == no change.
+         * Use a 102-byte core-only record so growth would be observable. */
+        len = OT3D_CORE_SIZE;
+        memset(raw, 0, OT3D_CORE_SIZE);
+        put_u16(raw + 0x00, 1000);
+        memcpy(before, raw, len);
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MEASURED_WEIGHT;  /* values zeroed = clear intent */
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && len == OT3D_CORE_SIZE && memcmp(raw, before, len) == 0,
+              "V: present-but-already-zero field did not grow the record");
+    }
+
+    /* W: omitted vs explicit clear. */
+    printf("[W] omitted preserves, present empty/zero clears\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_V2_MAP_SIZE;
+        build_v2_nominal(raw);
+
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TARGET_WEIGHT;  /* only weight arrives */
+        p.values.target_weight_g = 750;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        opentag3d_t chk;
+        opentag3d_decode(raw, len, &chk);
+        CHECK(r == OT3D_OK && chk.target_weight_g == 750, "W: supplied weight applied");
+        CHECK(strcmp(chk.serial_number, V2_SERIAL) == 0 && strcmp(chk.online_url, "pfil.us?i=8078-RQSR") == 0,
+              "W: omitted serial/url preserved");
+        CHECK(chk.measured_filament_weight_g == 1002, "W: omitted measured weight preserved");
+
+        /* Explicit empty string clears the whole fixed-width range. */
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_SKU;
+        p.values.sku[0] = '\0';
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        opentag3d_decode(raw, len, &chk);
+        int cleared = 1;
+        for (size_t i = OT3D_V2_OFF_SKU; i < OT3D_V2_OFF_SKU + 16; i++) if (raw[i] != ' ') cleared = 0;
+        CHECK(r == OT3D_OK && chk.sku[0] == '\0' && cleared, "W: present empty sku cleared to spaces");
+    }
+
+    /* X: capacity atomicity — a 500-byte baseline is accepted, a 501-byte
+     * baseline is rejected, and growth one byte past capacity is atomic. */
+    printf("[X] capacity: 500 ok, >500 rejected atomically\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len;
+        memset(raw, 0x5C, sizeof(raw));
+        put_u16(raw + 0x00, 1000);
+        len = OT3D_MAX_PAYLOAD_SIZE;
+        uint8_t snapshot[OT3D_MAX_PAYLOAD_SIZE];
+        memcpy(snapshot, raw, OT3D_MAX_PAYLOAD_SIZE);
+
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TARGET_VSO;
+        p.values.target_volumetric_speed = 7;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && len == OT3D_MAX_PAYLOAD_SIZE,
+              "X: 500-byte baseline patches without shrinking");
+
+        /* A 501-byte declared baseline is outside the supported ceiling. */
+        memset(raw, 0x5C, sizeof(raw));
+        put_u16(raw + 0x00, 2000);
+        len = OT3D_MAX_PAYLOAD_SIZE + 1;
+        memcpy(snapshot, raw, OT3D_MAX_PAYLOAD_SIZE);
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_ONLINE_URL;
+        strcpy(p.values.online_url, "http://a-very-long-growth-request.example");
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_PARSE_ERROR, "X: 501-byte baseline rejected");
+        CHECK(len == OT3D_MAX_PAYLOAD_SIZE + 1 &&
+              memcmp(raw, snapshot, OT3D_MAX_PAYLOAD_SIZE) == 0,
+              "X: oversized baseline rejection is atomic");
+
+        /* A changed field ending at 0xB0 cannot grow through capacity 0xAF. */
+        memset(raw, 0, sizeof(raw));
+        put_u16(raw + 0x00, 1000);
+        len = OT3D_CORE_SIZE;
+        memcpy(snapshot, raw, OT3D_MAX_PAYLOAD_SIZE);
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_MEASURED_WEIGHT;
+        p.values.measured_filament_weight_g = 1;
+        r = opentag3d_patch_payload(raw, &len, OT3D_V1_OFF_MEASURED_WEIGHT + 1, &p);
+        CHECK(r == OT3D_PARSE_ERROR && len == OT3D_CORE_SIZE &&
+              memcmp(raw, snapshot, OT3D_MAX_PAYLOAD_SIZE) == 0,
+              "X: one-byte-short growth rejection is atomic");
+    }
+
+    /* Y: version semantics on an existing record. */
+    printf("[Y] version relabel rules\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_V2_MAP_SIZE;
+        build_v2_nominal(raw);
+        uint8_t snapshot[OT3D_MAX_PAYLOAD_SIZE];
+
+        /* Same-major newer minor: preserved raw, patch applies. */
+        put_u16(raw + OT3D_V2_OFF_TAG_VERSION, 2050);
+        memcpy(snapshot, raw, len);
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TARGET_WEIGHT;
+        p.values.target_weight_g = 900;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && read_be16(raw + OT3D_V2_OFF_TAG_VERSION) == 2050,
+              "Y: same-major newer minor kept while patching");
+        memcpy(snapshot, raw, len);
+
+        /* Present version equal to baseline: harmless no-op. */
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TAG_VERSION;
+        p.values.tag_version = 2050;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && memcmp(raw, snapshot, len) == 0, "Y: equal present version is a no-op");
+
+        /* Differing same-major relabel rejected. */
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TAG_VERSION;
+        p.values.tag_version = 2000;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_VERSION_ERROR && memcmp(raw, snapshot, len) == 0,
+              "Y: same-major relabel rejected without mutation");
+
+        /* Cross-major rejected. */
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TAG_VERSION | OT3D_PATCH_TARGET_WEIGHT;
+        p.values.tag_version = 1003;
+        p.values.target_weight_g = 500;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_VERSION_ERROR && memcmp(raw, snapshot, len) == 0,
+              "Y: cross-major relabel rejected without mutation");
+
+        /* Future major: whole baseline is read-only. */
+        put_u16(raw + OT3D_V2_OFF_TAG_VERSION, 3000);
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TARGET_WEIGHT;
+        p.values.target_weight_g = 1;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_VERSION_ERROR && read_be16(raw + 0x00) == 3000,
+              "Y: future major is unpatchable");
+    }
+
+    /* Z: v2-only presence bits on a v1 baseline are a caller error. */
+    printf("[Z] v2-only fields rejected on v1 baseline\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_EXTENDED_MIN;
+        build_v1_nominal(raw, 1000);
+        uint8_t snapshot[OT3D_MAX_PAYLOAD_SIZE];
+        memcpy(snapshot, raw, len);
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_CHAMBER_TEMP;
+        p.values.chamber_temp_encoded = 12;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_PARSE_ERROR && len == OT3D_EXTENDED_MIN &&
+              memcmp(raw, snapshot, len) == 0, "Z: chamber_temp on v1 rejected atomically");
+    }
+
+    /* AA: TD 250 clamp agreement — desired 300 on a v2 record already at 250
+     * is a no-op, not a rewrite or a false change. */
+    printf("[AA] v2 transmission distance clamp agreement\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_V2_MAP_SIZE;
+        build_v2_nominal(raw);
+        raw[OT3D_V2_OFF_TD] = 250;
+        uint8_t snapshot[OT3D_V2_MAP_SIZE];
+        memcpy(snapshot, raw, len);
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_TRANSMISSION;
+        p.values.transmission_distance = 300;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && memcmp(raw, snapshot, len) == 0,
+              "AA: desired 300 == clamped on-tag 250 rewrote nothing");
+        p.values.transmission_distance = 120;
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        CHECK(r == OT3D_OK && raw[OT3D_V2_OFF_TD] == 120 &&
+              raw[OT3D_V2_OFF_MFI_TEMP] == snapshot[OT3D_V2_OFF_MFI_TEMP],
+              "AA: sub-clamp value patches only the one-byte v2 field");
+    }
+
+    /* AB: RGBA subfield — patching color_1 rewrites only its 4 bytes. */
+    printf("[AB] RGBA subfield range isolation\n");
+    {
+        uint8_t raw[OT3D_MAX_PAYLOAD_SIZE];
+        size_t len = OT3D_V2_MAP_SIZE;
+        build_v2_nominal(raw);
+        uint8_t snapshot[OT3D_V2_MAP_SIZE];
+        memcpy(snapshot, raw, len);
+        opentag3d_patch_t p;
+        memset(&p, 0, sizeof(p));
+        p.present = OT3D_PATCH_COLOR_1;
+        memcpy(p.values.color_rgba[0], (uint8_t[]){10, 20, 30, 40}, 4);
+        r = opentag3d_patch_payload(raw, &len, OT3D_MAX_PAYLOAD_SIZE, &p);
+        int isolated = 1;
+        for (size_t i = 0; i < OT3D_V2_MAP_SIZE; i++) {
+            int in_field = (i >= OT3D_V2_OFF_COLOR_1 && i < OT3D_V2_OFF_COLOR_1 + 4);
+            if (!in_field && raw[i] != snapshot[i]) isolated = 0;
+        }
+        CHECK(r == OT3D_OK && memcmp(raw + OT3D_V2_OFF_COLOR_1, "\x0A\x14\x1E\x28", 4) == 0 && isolated,
+              "AB: only the selected 4-byte RGBA range changed");
+    }
 
     printf("%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
     return failures ? 1 : 0;

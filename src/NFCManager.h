@@ -68,6 +68,7 @@ public:
     void startScanTask();                            // Start FreeRTOS scan task
     bool enqueueWrite(const NFCWriteRequest& req);   // Queue a write request
     bool enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize);
+    bool enqueueOpenTag3DPatch(const NFCWriteRequest& req, const opentag3d_patch_t& patch);
     void setAtomicWriteFields(const AtomicWriteFields& fields) { atomicWriteFields_ = fields; }
     bool writeSpoolmanDataToTag(int32_t spoolman_id, const char* expected_spool_id = nullptr);
     bool isRequestCompleted(uint32_t request_id);    // Check if request done
@@ -107,6 +108,9 @@ public:
         // way every terminal execution path does — the deduction stays pending
         // in NVS and retries on the next scan (#329).
         releaseRawWriteIf(nullptr);
+        openTag3DPatchState_ = OpenTag3DPatchState::Empty;
+        openTag3DPatchRequestId_ = 0;
+        memset(&openTag3DPatch_, 0, sizeof(openTag3DPatch_));
         // Drain write queue
         if (writeQueue) {
             NFCWriteRequest dummy;
@@ -211,6 +215,11 @@ private:
     // Last parsed OpenTag3D data (retained for /api/status)
     opentag3d_t lastOpenTag3D_;
     bool lastOpenTag3DValid_ = false;
+    uint8_t openTag3DRawBaseline_[OT3D_MAX_PAYLOAD_SIZE] = {0};
+    size_t openTag3DRawBaselineLen_ = 0;
+    char openTag3DRawBaselineUid_[17] = {0};
+    bool openTag3DRawBaselineValid_ = false;
+    bool openTag3DMimeSeen_ = false;
     OpenSpoolData lastOpenSpool_;
     bool lastOpenSpoolValid_ = false;
     BambuTagData lastBambuTag_;
@@ -244,6 +253,21 @@ private:
         rawWriteBufferSize_ = 0;
         rawWriteUid_[0] = '\0';
         memset(rawWriteBuffer_, 0, sizeof(rawWriteBuffer_));
+    }
+    enum class OpenTag3DPatchState : uint8_t { Empty, Staged, InFlight };
+    opentag3d_patch_t openTag3DPatch_ = {};
+    OpenTag3DPatchState openTag3DPatchState_ = OpenTag3DPatchState::Empty;
+    uint32_t openTag3DPatchRequestId_ = 0;
+
+    // Scan-task-owned work areas. Keeping these out of nested read/write
+    // frames preserves the 8192-byte NFC task stack at the 500-byte ceiling.
+    uint8_t openTag3DPayloadScratch_[OT3D_MAX_PAYLOAD_SIZE] = {0};
+    uint8_t ndefScratch_[532] = {0};
+
+    void clearOpenTag3DRawBaselineLocked() {
+        openTag3DRawBaselineValid_ = false;
+        openTag3DRawBaselineLen_ = 0;
+        openTag3DRawBaselineUid_[0] = '\0';
     }
     bool writeRawTag();
     opt_tag_t writeScratchTag_;   // Reused by scan task write path to avoid large stack frames
