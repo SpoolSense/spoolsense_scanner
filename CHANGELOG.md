@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.3] - 2026-09-20
+
+### Fixed
+
+- **Startup failures for all subsystem managers are now visible** -- NFC begin, NFC scan-task, LED, LCD, TFT render, Spoolman sync, and Home Assistant MQTT task creation now return a status. Failed NFC initialization displays **NFC FAILED**; failed displays are excluded from use; other task failures log and continue boot. `NFCManager::begin()` cleans up allocations on failure so retries are safe, and `LEDManager` cleans up its mutex after a task-creation failure. (#264)
+
 ## [1.11.2] - 2026-09-18
 
 ### Added

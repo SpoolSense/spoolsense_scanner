@@ -73,18 +73,26 @@ void LEDManager::begin(uint8_t pin) {
     _initialized = true;
 }
 
-void LEDManager::startTask() {
-    if (!_initialized) return;
+bool LEDManager::startTask() {
+    if (!_initialized) return false;
 #ifndef NATIVE_TEST
     _mutex = xSemaphoreCreateMutex();
-    if (_mutex == nullptr) return;
+    if (_mutex == nullptr) return false;
     // Core 1 for animation task — keeps UI responsive on Core 0
-    if (createTaskWithAffinity(ledTaskFunc, "LEDTask", 2048, this, 1, &_taskHandle, 1) == pdPASS) {
+    BaseType_t created = createTaskWithAffinity(ledTaskFunc, "LEDTask", 2048, this, 1, &_taskHandle, 1);
+    if (taskCreationSucceeded(created, &_taskHandle)) {
         _taskStarted = true;
-    } else {
-        _taskHandle = nullptr;
-        Serial.println("LEDManager: ERROR — task creation failed");
+        return true;
     }
+    // Failed start: no task, no flag, no orphaned mutex (issue #264).
+    _taskHandle = nullptr;
+    _taskStarted = false;
+    vSemaphoreDelete(_mutex);
+    _mutex = nullptr;
+    Serial.println("LEDManager: ERROR — task creation failed");
+    return false;
+#else
+    return false;
 #endif
 }
 

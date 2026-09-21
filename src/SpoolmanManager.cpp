@@ -1306,9 +1306,9 @@ bool SpoolmanManager::begin(SemaphoreHandle_t httpMutex) {
     return true;
 }
 
-void SpoolmanManager::startTask() {
+bool SpoolmanManager::startTask() {
     if (taskHandle != nullptr) {
-        return;
+        return true;  // idempotent: the sync task is already live
     }
 
     BaseType_t created = createTaskWithAffinity(
@@ -1320,12 +1320,13 @@ void SpoolmanManager::startTask() {
         &taskHandle,
         1  // Core 1
     );
-    if (created == pdPASS) {
+    if (taskCreationSucceeded(created, &taskHandle)) {
         Serial.println("SpoolmanManager: Task started");
-    } else {
-        taskHandle = nullptr;
-        Serial.println("SpoolmanManager: ERROR — task creation failed");
+        return true;
     }
+    taskHandle = nullptr;
+    Serial.println("SpoolmanManager: ERROR — task creation failed");
+    return false;
 }
 
 bool SpoolmanManager::enqueueSync(const SpoolmanSyncRequest& req) {
