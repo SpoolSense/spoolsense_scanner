@@ -1,4 +1,10 @@
 #include <WiFi.h>
+
+#if defined(SPOOLSENSE_4LANE_PN532)
+#include "FourLanePN532Manager.h"
+#include "TagStateJson.h"
+#endif
+
 #include <DNSServer.h>
 #include <time.h>
 #include <ESPmDNS.h>
@@ -60,6 +66,99 @@ TFTManager* tftManagerPtr = nullptr;
 
 // Always declared; only initialized if isLedEnabled() at runtime
 LEDManager ledManager;
+
+#if defined(SPOOLSENSE_4LANE_PN532)
+// BoxTurtle/AFC four-lane mode keeps the stock application/network/web stack,
+// but replaces the singleton NFC scan task with four sequential PN532 readers.
+// All lanes share one MQTT connection through HomeAssistantManager's publish queue.
+static FourLanePN532Manager fourLaneNfc;
+static TaskHandle_t fourLaneNfcTaskHandle = nullptr;
+static char fourLaneBaseDeviceId[7] = {0};
+
+static void fourLaneUidToHex(const uint8_t* uid, uint8_t uidLength, char* out, size_t outSize) {
+  if (out == nullptr || outSize == 0) return;
+  out[0] = '\0';
+  if (uid == nullptr) return;
+
+  const size_t maxBytes = (outSize - 1) / 2;
+  const size_t count = uidLength < maxBytes ? uidLength : maxBytes;
+  for (size_t i = 0; i < count; ++i) {
+    snprintf(out + (i * 2), outSize - (i * 2), "%02x", uid[i]);
+  }
+}
+
+static void onFourLaneEvent(uint8_t lane, bool present, const uint8_t* uid, uint8_t uidLength) {
+  HAPublishRequest req{};
+  snprintf(req.topic, sizeof(req.topic), "spoolsense/%s-L%u/tag/state", fourLaneBaseDeviceId, lane);
+  req.retained = true;
+
+  if (present) {
+    TagStateFields fields{};
+    fourLaneUidToHex(uid, uidLength, fields.uid, sizeof(fields.uid));
+    fields.present = true;
+    fields.tag_data_valid = false;
+    fields.tag_format = "uid_only";
+    fields.spoolman_id = -1;
+    fields.blank = false;
+    buildTagStateJson(req.payload, sizeof(req.payload), fields);
+  } else {
+    buildEmptyTagStateJson(req.payload, sizeof(req.payload));
+  }
+
+  Serial.printf("VSCAN L%u MQTT TOPIC=%s\n", lane, req.topic);
+  Serial.printf("VSCAN L%u MQTT PAYLOAD=%s\n", lane, req.payload);
+
+  auto& ha = HomeAssistantManager::getInstance();
+  if (ha.isConfigured()) {
+    if (!ha.enqueuePublish(req)) {
+      Serial.printf("VSCAN L%u MQTT QUEUE UNAVAILABLE\n", lane);
+    }
+  } else {
+    Serial.printf("VSCAN L%u MQTT DEFERRED (not configured)\n", lane);
+  }
+}
+
+static void fourLaneNfcTask(void* /*param*/) {
+  Serial.printf("FourLanePN532: scan task started on core %d\n", xPortGetCoreID());
+  for (;;) {
+    fourLaneNfc.poll();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
+static bool startFourLaneNfc() {
+  HomeAssistantManager::getDeviceId(fourLaneBaseDeviceId, sizeof(fourLaneBaseDeviceId));
+  Serial.println("NFC mode: 4-lane PN532 / BoxTurtle");
+  Serial.println("Lane CS: L1=14 L2=18 L3=32 L4=33");
+
+  for (uint8_t lane = 1; lane <= FourLanePN532Manager::LANE_COUNT; ++lane) {
+    Serial.printf("Virtual scanner L%u: %s-L%u\n", lane, fourLaneBaseDeviceId, lane);
+  }
+
+  fourLaneNfc.setEventCallback(onFourLaneEvent);
+
+  if (!fourLaneNfc.begin()) {
+    Serial.println("FourLanePN532: no readers initialized - continuing for diagnostics");
+  }
+
+  BaseType_t rc = xTaskCreatePinnedToCore(
+      fourLaneNfcTask,
+      "4LaneNFC",
+      6144,
+      nullptr,
+      1,
+      &fourLaneNfcTaskHandle,
+      1);
+
+  if (rc != pdPASS || fourLaneNfcTaskHandle == nullptr) {
+    Serial.printf("FourLanePN532: failed to start scan task (rc=%ld)\n", static_cast<long>(rc));
+    fourLaneNfcTaskHandle = nullptr;
+    return false;
+  }
+
+  return true;
+}
+#endif
 
 void startAPMode() {
   // Fallback when WiFi SSID not configured or connection fails — zero-CLI setup via captive portal
@@ -301,9 +400,15 @@ void setup() {
     lcdManager.setScreenTimeoutMs(config.getLcdTimeoutMs());
   }
 
+#if defined(SPOOLSENSE_4LANE_PN532)
+  if (config.isKeypadEnabled()) {
+    Serial.println("4-lane mode: keypad disabled (GPIO18 reserved for Lane 2 CS)");
+  }
+#else
   if (config.isKeypadEnabled()) {
     InputManager::getInstance().begin();
   }
+#endif
 
   // ApplicationManager: message queue dispatcher with optional display backing
   DisplayI* activeDisplay = nullptr;
@@ -350,8 +455,21 @@ void setup() {
     Serial.println("AP mode active - skipping Spoolman, HA, automation init");
   }
 
+  #if defined(SPOOLSENSE_4LANE_PN532)
+  // Four-lane mode owns all PN532 readers; do not start the stock NFCManager.
+  if (!startFourLaneNfc()) {
+    Serial.println("FourLanePN532 init failed - continuing without NFC scan task");
+
+    if (config.isTftEnabled() && tftManagerPtr) {
+      tftManagerPtr->showError("NFC FAILED");
+    } else if (config.isLcdEnabled()) {
+      lcdManager.updateScreen("NFC FAILED", "");
+    }
+  }
+#else
   // NFC reader selection: PN532/RC522 (ISO14443A only) vs PN5180 (multi-format default)
   const char* nfcReader = config.getNfcReader();
+
   if (strcmp(nfcReader, "pn532") == 0) {
     Serial.println("NFC reader: PN532 (ISO14443A only)");
     NFCManager::getInstance().setConnection(new HardwareNFCConnectionPN532());
@@ -365,15 +483,16 @@ void setup() {
   // Initialize NFCManager
   if (!NFCManager::getInstance().begin()) {
     Serial.println("NFCManager init failed - continuing without NFC");
+
     if (config.isTftEnabled() && tftManagerPtr) {
       tftManagerPtr->showError("NFC FAILED");
     } else if (config.isLcdEnabled()) {
       lcdManager.updateScreen("NFC FAILED", "");
     }
   } else {
-    // Start NFC scan task
     NFCManager::getInstance().startScanTask();
   }
+#endif
 
   if (!g_apModeActive) {
     // Start network task managers
@@ -445,9 +564,11 @@ void loop() {
   U1Manager::getInstance().loopTick();
 
   // Keypad polling: 4x3 matrix for ASSIGN_SPOOL tool number entry
+ #if !defined(SPOOLSENSE_4LANE_PN532)
   if (ConfigurationManager::getInstance().isKeypadEnabled()) {
     InputManager::getInstance().poll();
   }
+#endif
 
   // Watchdog: detect WiFi drops and reconnect with exponential backoff
   checkWiFi();
