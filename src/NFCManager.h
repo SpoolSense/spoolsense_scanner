@@ -15,6 +15,9 @@
 #include "OpenSpoolParser.h"
 #include "opentag3d_lib.h"
 #include "BambuTagParser.h"
+#include "RawWriteSlot.h"
+#include "RequestId.h"
+#include <atomic>
 
 // Sidecar for WRITE_ATOMIC: filled by HTTP handler, consumed by scan task.
 // All fields are optional — only those with has_* = true are applied.
@@ -107,7 +110,7 @@ public:
         // write never happened (the scan task is gone), so release it the same
         // way every terminal execution path does — the deduction stays pending
         // in NVS and retries on the next scan (#329).
-        releaseRawWriteIf(nullptr);
+        rawWriteSlot_.releaseAny();
         openTag3DPatchState_ = OpenTag3DPatchState::Empty;
         openTag3DPatchRequestId_ = 0;
         memset(&openTag3DPatch_, 0, sizeof(openTag3DPatch_));
@@ -228,32 +231,15 @@ private:
     // Resolved Spoolman data for the current generic UID tag
     GenericTagSpoolInfo lastGenericTagSpoolInfo_ = {};
 
-    // Raw tag write sidecar buffer (filled by HTTP context, consumed by scan task)
+    // Raw tag write staging slot (filled by HTTP/app tasks, consumed by the
+    // scan task), owned by one request id at a time. Released on every
+    // terminal path so a refused or failed write never wedges it (#329).
     static constexpr size_t RAW_WRITE_BUFFER_SIZE = 320;
-    uint8_t rawWriteBuffer_[RAW_WRITE_BUFFER_SIZE];
-    size_t rawWriteBufferSize_ = 0;
-    // Sidecar in flight = enqueued but not yet consumed/abandoned. The scan
-    // task consumes it inside executeWrite(); it is released (and the buffer
-    // zeroed) on every terminal path — failed enqueue, UID mismatch, encode/
-    // capacity/write failure, success — so a refused or failed write can never
-    // wedge the sidecar forever (#329 review: wrong-tag retries were locked
-    // out because the sidecar stayed set).
-    bool rawWritePending_ = false;
-    // UID the in-flight sidecar belongs to (set by enqueueRawWrite, cleared on
-    // release). A failed enqueue release must NOT wipe an older request's
-    // sidecar that is still queued, so release is UID-guarded.
-    char rawWriteUid_[17] = {0};
+    RawWriteSlot<RAW_WRITE_BUFFER_SIZE> rawWriteSlot_;
 
     // Release the raw sidecar if it belongs to `uid` (empty uid = release
     // unconditionally). Scan-task context only. Zeroes the buffer so a stale
     // payload can never be written to a later tag.
-    void releaseRawWriteIf(const char* uid) {
-        if (uid && uid[0] != '\0' && strcmp(rawWriteUid_, uid) != 0) return;
-        rawWritePending_ = false;
-        rawWriteBufferSize_ = 0;
-        rawWriteUid_[0] = '\0';
-        memset(rawWriteBuffer_, 0, sizeof(rawWriteBuffer_));
-    }
     enum class OpenTag3DPatchState : uint8_t { Empty, Staged, InFlight };
     opentag3d_patch_t openTag3DPatch_ = {};
     OpenTag3DPatchState openTag3DPatchState_ = OpenTag3DPatchState::Empty;
@@ -269,7 +255,7 @@ private:
         openTag3DRawBaselineLen_ = 0;
         openTag3DRawBaselineUid_[0] = '\0';
     }
-    bool writeRawTag();
+    bool writeRawTag(const NFCWriteRequest& request);
     opt_tag_t writeScratchTag_;   // Reused by scan task write path to avoid large stack frames
     AtomicWriteFields atomicWriteFields_;  // Sidecar for WRITE_ATOMIC (filled by HTTP, consumed by scan task)
 
@@ -282,7 +268,7 @@ private:
     uint32_t completedRequests[COMPLETED_REQUESTS_SIZE];
     size_t completedRequestsIndex = 0;
     SemaphoreHandle_t completedMutex = nullptr;
-    static uint32_t s_write_request_id_counter;
+    static std::atomic<uint32_t> s_write_request_id_counter;
 
     // Task handle
     TaskHandle_t scanTaskHandle = nullptr;

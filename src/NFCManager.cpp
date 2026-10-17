@@ -35,7 +35,7 @@
 #endif
 
 // Static member initialization
-uint32_t NFCManager::s_write_request_id_counter = 1000;
+std::atomic<uint32_t> NFCManager::s_write_request_id_counter{1000};
 
 NFCManager& NFCManager::getInstance() {
     static NFCManager instance;
@@ -1606,24 +1606,17 @@ void NFCManager::sendTagRemovedMessage() {
 }
 
 bool NFCManager::enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize) {
-    if (dataSize == 0 || dataSize > RAW_WRITE_BUFFER_SIZE) {
+    // A completed id would be skipped by enqueueWrite without queueing,
+    // leaving the staged payload with no consumer.
+    if (isRequestCompleted(req.request_id)) return false;
+    if (!rawWriteSlot_.stage(req.request_id, req.expected_spool_id, data, dataSize)) {
+        Serial.println("NFCManager: Raw write refused (slot busy or bad payload)");
         return false;
     }
-    if (rawWritePending_) {
-        Serial.println("NFCManager: Raw write already pending");
-        return false;
-    }
-    memcpy(rawWriteBuffer_, data, dataSize);
-    rawWriteBufferSize_ = dataSize;
-    rawWritePending_ = true;
-    strncpy(rawWriteUid_, req.expected_spool_id, sizeof(rawWriteUid_) - 1);
-    rawWriteUid_[sizeof(rawWriteUid_) - 1] = '\0';
     if (!enqueueWrite(req)) {
-        // Queue full / not initialized — the request never reached the scan
-        // task, so nothing will consume the sidecar. Release it unconditionally
-        // (this sidecar is by definition ours) or it wedges until reboot (#329
-        // review: queue-full failures used to lock out every later write).
-        releaseRawWriteIf(nullptr);
+        // The request never reached the scan task, so nothing will consume
+        // the slot — release it or it wedges until reboot (#329).
+        rawWriteSlot_.release(req.request_id);
         return false;
     }
     return true;
@@ -1660,7 +1653,7 @@ bool NFCManager::enqueueOpenTag3DPatch(const NFCWriteRequest& req,
 }
 
 uint32_t NFCManager::generateRequestId() {
-    return ++s_write_request_id_counter;
+    return nextRequestId(s_write_request_id_counter);
 }
 
 bool NFCManager::writeSpoolmanDataToTag(int32_t spoolman_id, const char* expected_spool_id) {
@@ -1780,6 +1773,7 @@ void NFCManager::processWriteQueue() {
         // Check if already completed — skip without counting as our one write
         if (isRequestCompleted(request.request_id)) {
             xQueueReceive(writeQueue, &request, 0);
+            rawWriteSlot_.release(request.request_id);
             continue;
         }
 
@@ -1861,14 +1855,20 @@ void NFCManager::processWriteQueue() {
     }
 }
 
-bool NFCManager::writeRawTag() {
+bool NFCManager::writeRawTag(const NFCWriteRequest& request) {
     Serial.println("NFCManager: writeRawTag() called");
 
-    // Copy raw data into a local opt_tag_t
+    // Copy raw data into a local opt_tag_t; this frees the slot
     opt_tag_t localTag;
     opt_init(&localTag);
-    memcpy(localTag.data, rawWriteBuffer_, rawWriteBufferSize_);
-    localTag.data_size = rawWriteBufferSize_;
+    bool staged = rawWriteSlot_.consume(request.request_id, [&](const uint8_t* d, size_t n) {
+        memcpy(localTag.data, d, n);
+        localTag.data_size = n;
+    });
+    if (!staged) {
+        Serial.println("NFCManager: WRITE_RAW_TAG - no raw data staged for this request");
+        return false;
+    }
     localTag.initialized = true;
 
     // Write all pages to NFC tag
@@ -1877,7 +1877,6 @@ bool NFCManager::writeRawTag() {
     opt_error_t err = opt_write_to_nfc(&localTag, hal);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to write raw tag: %s\n", opt_error_str(err));
-        releaseRawWriteIf(nullptr);
         return false;
     }
 
@@ -1893,7 +1892,6 @@ bool NFCManager::writeRawTag() {
             if (err == OPT_OK) {
                 if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
                     Serial.println("NFCManager: Could not acquire tagMutex after raw write verify");
-                    releaseRawWriteIf(nullptr);
                     return false;
                 }
                 currentSpool.tag_data = localTag;
@@ -1904,8 +1902,6 @@ bool NFCManager::writeRawTag() {
                 addToRecentSpoolsLocked();
                 sendOpenPrintTagMessage();
                 xSemaphoreGive(tagMutex);
-
-                releaseRawWriteIf(nullptr);
                 Serial.println("NFCManager: writeRawTag() complete - verified");
                 return true;
             }
@@ -1920,13 +1916,11 @@ bool NFCManager::writeRawTag() {
     err = opt_parse_ndef(&localTag);
     if (err != OPT_OK) {
         Serial.printf("NFCManager: Failed to parse in-memory raw data: %s\n", opt_error_str(err));
-        releaseRawWriteIf(nullptr);
         return false;
     }
 
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("NFCManager: Could not acquire tagMutex after raw write fallback");
-        releaseRawWriteIf(nullptr);
         return false;
     }
     currentSpool.tag_data = localTag;
@@ -1937,8 +1931,6 @@ bool NFCManager::writeRawTag() {
     addToRecentSpoolsLocked();
     sendOpenPrintTagMessage();
     xSemaphoreGive(tagMutex);
-
-    releaseRawWriteIf(nullptr);
     Serial.println("NFCManager: writeRawTag() complete - unverified");
     return true;
 }
@@ -2285,23 +2277,20 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
         // UID-bound OpenSpool request) and execution. The sidecar belongs to
         // this request and nothing else will consume it: release it here or
         // every later raw write is rejected until reboot (#329).
-        releaseRawWriteIf(request.expected_spool_id);
+        rawWriteSlot_.release(request.request_id);
         return false;
     }
 
-    if (!rawWritePending_ || rawWriteBufferSize_ == 0) {
-        Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data available");
-        releaseRawWriteIf(request.expected_spool_id);
-        return false;
-    }
-
-    const uint8_t* jsonPayload = rawWriteBuffer_;
-    uint16_t payloadLen = (uint16_t)rawWriteBufferSize_;
+    // The payload is copied into ndefBuf and the slot freed in one step
     uint8_t ndefBuf[256];
-    uint16_t ndefLen = buildNdefMimeTlv("application/json", jsonPayload, payloadLen, ndefBuf, sizeof(ndefBuf));
-    // Payload is now copied into ndefBuf; release the sidecar on every path
-    // (same rule as WRITE_OPENTAG3D, #329).
-    releaseRawWriteIf(request.expected_spool_id);
+    uint16_t ndefLen = 0;
+    bool staged = rawWriteSlot_.consume(request.request_id, [&](const uint8_t* d, size_t n) {
+        ndefLen = buildNdefMimeTlv("application/json", d, (uint16_t)n, ndefBuf, sizeof(ndefBuf));
+    });
+    if (!staged) {
+        Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data staged for this request");
+        return false;
+    }
     if (ndefLen == 0) {
         Serial.printf("NFCManager: WRITE_OPENSPOOL - NDEF too large\n");
         return false;
@@ -2453,15 +2442,15 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
     }
 
     if (request.type == NFCWriteType::WRITE_RAW_TAG) {
-        if (!rawWritePending_) {
-            Serial.println("NFCManager: WRITE_RAW_TAG - no raw data pending");
+        if (!rawWriteSlot_.ownedBy(request.request_id)) {
+            Serial.println("NFCManager: WRITE_RAW_TAG - no raw data staged for this request");
             return false;
         }
         if (!validateWriteUid(request.expected_spool_id, "WRITE_RAW_TAG")) {
-            releaseRawWriteIf(request.expected_spool_id);
+            rawWriteSlot_.release(request.request_id);
             return false;
         }
-        return writeRawTag();
+        return writeRawTag(request);
     }
 
     if (request.type == NFCWriteType::WRITE_TIGERTAG)  return executeTigerTagWrite(request);

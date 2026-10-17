@@ -1025,7 +1025,7 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             opt_get_gp_spoolman_id(&state.tag_data, &existingId);
             if (existingId != msg.payload.spoolmanSynced.spoolman_id) {
                 NFCWriteRequest request;
-                request.request_id = millis();
+                request.request_id = NFCManager::getInstance().generateRequestId();
                 request.type = NFCWriteType::WRITE_SPOOLMAN_ID;
                 strncpy(request.expected_spool_id, msg.payload.spoolmanSynced.spool_id,
                         sizeof(request.expected_spool_id) - 1);

@@ -5,14 +5,14 @@
 // must release its state on every terminal path so the next correct-tag scan
 // can retry instead of being rejected forever.
 //
-// The pure release rule lives in NFCManager::releaseRawWriteIf(); the enqueue
-// ordering rule it relies on (xQueueSend fails when the queue holds maxItems
-// items) is mirrored here with the production NFCWriteRequest type and the
-// same native queue stubs production code uses under
-// NATIVE_TEST. Keep this mirror in sync with NFCManager.h/.cpp in the same
-// commit if the sidecar rules change.
+// The slot itself is the production RawWriteSlot (test_raw_write_slot covers
+// its concurrency). This suite drives it through the enqueue ordering rule
+// (xQueueSend fails when the queue holds maxItems items) with the production
+// NFCWriteRequest type and the native queue stubs; enqueueRawWrite below
+// mirrors NFCManager::enqueueRawWrite — keep them in sync.
 #include "platform/NativePlatform.h"
 #include "NFCWriteTypes.h"
+#include "RawWriteSlot.h"
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -34,34 +34,21 @@ static int checks_failed = 0;
 static const size_t SIDECAR_SIZE = 320;  // matches RAW_WRITE_BUFFER_SIZE
 
 struct Sidecar {
-    uint8_t buffer[SIDECAR_SIZE] = {0};
-    size_t bufferSize = 0;
-    bool pending = false;
-    char uid[17] = {0};
+    RawWriteSlot<SIDECAR_SIZE> slot;
 
-    // Scan-task context: release if it belongs to `uid` (null/empty = always).
-    // Mirror of NFCManager::releaseRawWriteIf().
-    void releaseIf(const char* reqUid) {
-        if (reqUid && reqUid[0] != '\0' && strcmp(uid, reqUid) != 0) return;
-        pending = false;
-        bufferSize = 0;
-        uid[0] = '\0';
-        memset(buffer, 0, sizeof(buffer));
+    bool pending() const { return slot.busy(); }
+    uint8_t firstByte(uint32_t id) {
+        uint8_t b = 0;
+        slot.consume(id, [&](const uint8_t* d, size_t) { b = d[0]; });
+        return b;
     }
 
-    // Mirror of NFCManager::enqueueRawWrite using the production request type
-    // and the production queue capacity.
+    // Mirror of NFCManager::enqueueRawWrite with the production queue capacity.
     bool enqueueRawWrite(NativeQueue<NFCWriteRequest, 8>& queue,
                          const NFCWriteRequest& req, const uint8_t* data, size_t dataSize) {
-        if (dataSize == 0 || dataSize > SIDECAR_SIZE) return false;
-        if (pending) return false;  // single sidecar slot
-        memcpy(buffer, data, dataSize);
-        bufferSize = dataSize;
-        pending = true;
-        strncpy(uid, req.expected_spool_id, sizeof(uid) - 1);
-        uid[sizeof(uid) - 1] = '\0';
+        if (!slot.stage(req.request_id, req.expected_spool_id, data, dataSize)) return false;
         if (!queue.send(req)) {
-            releaseIf(nullptr);  // this sidecar is by definition ours (#329 fix)
+            slot.release(req.request_id);
             return false;
         }
         return true;
@@ -100,7 +87,7 @@ static bool branchReleasesBeforeReturn(const std::string& body, const char* bran
     if (start == std::string::npos) return false;
     size_t returnPos = body.find("return false;", start);
     if (returnPos == std::string::npos) return false;
-    size_t releasePos = body.find("releaseRawWriteIf(request.expected_spool_id);", start);
+    size_t releasePos = body.find("rawWriteSlot_.release(request.request_id);", start);
     return releasePos != std::string::npos && releasePos < returnPos;
 }
 
@@ -150,16 +137,15 @@ int main(int argc, char** argv) {
         uint8_t payload[16] = {1, 2, 3, 4};
         CHECK(!sc.enqueueRawWrite(q, makeReq(100, UID_A), payload, sizeof(payload)),
               "enqueue rejected while queue full");
-        CHECK(!sc.pending, "sidecar released after failed enqueue (was the wedge)");
-        CHECK(sc.bufferSize == 0, "sidecar size reset after failed enqueue");
-        CHECK(sc.uid[0] == '\0', "sidecar uid reset after failed enqueue");
+        CHECK(!sc.pending(), "sidecar released after failed enqueue (was the wedge)");
+        CHECK(sc.slot.uid()[0] == '\0', "sidecar uid reset after failed enqueue");
 
         // Drain one slot: the next deduction write must enqueue successfully.
         NFCWriteRequest dummy;
         q.receive(dummy);
         CHECK(sc.enqueueRawWrite(q, makeReq(101, UID_A), payload, sizeof(payload)),
               "retry enqueues after a queue slot frees (failure -> pending -> retry)");
-        CHECK(sc.pending, "sidecar staged for the queued write");
+        CHECK(sc.pending(), "sidecar staged for the queued write");
     }
 
     // ── A different UID's payload can never overwrite an in-flight sidecar ──
@@ -172,8 +158,8 @@ int main(int argc, char** argv) {
               "UID_A sidecar staged and queued");
         CHECK(!sc.enqueueRawWrite(q, makeReq(201, UID_B), payloadB, sizeof(payloadB)),
               "UID_B enqueue refused while UID_A owns the sidecar");
-        CHECK(sc.uid[0] && strcmp(sc.uid, UID_A) == 0, "foreign request left the sidecar alone");
-        CHECK(sc.buffer[0] == 5, "UID_A payload intact");
+        CHECK(strcmp(sc.slot.uid(), UID_A) == 0, "foreign request left the sidecar alone");
+        CHECK(sc.firstByte(200) == 5, "UID_A payload intact");
     }
 
     // ── Wrong tag mid-execution: UID-guarded release drops the right sidecar ──
@@ -189,8 +175,8 @@ int main(int argc, char** argv) {
               "deduction write enqueued");
         NFCWriteRequest req;
         q.receive(req);
-        sc.releaseIf(req.expected_spool_id);  // validateWriteUid failed -> release own UID
-        CHECK(!sc.pending, "sidecar cleared on validateWriteUid failure");
+        sc.slot.release(req.request_id);  // validateWriteUid failed -> release own request
+        CHECK(!sc.pending(), "sidecar cleared on validateWriteUid failure");
 
         // Next correct-tag scan can enqueue again — no permanent rejection.
         CHECK(sc.enqueueRawWrite(q, makeReq(301, UID_A), payload, sizeof(payload)),
@@ -198,30 +184,30 @@ int main(int argc, char** argv) {
     }
 
     // ── Stale release must not wipe a newer request's sidecar ──
+    // Release is bound to the request id: the same UID can belong to an
+    // older, already-finished request.
     {
         Sidecar sc;
         NativeQueue<NFCWriteRequest, 8> q;
         uint8_t payload[16] = {5, 5, 5, 5};
         sc.enqueueRawWrite(q, makeReq(400, UID_A), payload, sizeof(payload));
 
-        sc.releaseIf(UID_B);  // a release for a different UID
-        CHECK(sc.pending, "release for a different UID is a no-op");
-        CHECK(sc.bufferSize == sizeof(payload), "payload survives a foreign release");
+        CHECK(!sc.slot.release(399), "release for an older request of the same UID is a no-op");
+        CHECK(sc.pending(), "payload survives a foreign release");
 
-        sc.releaseIf(UID_A);
-        CHECK(!sc.pending, "release for the owning UID lands");
-        CHECK(sc.buffer[0] == 0, "buffer zeroed so a stale payload can't reach a later tag");
+        CHECK(sc.slot.release(400), "release for the owning request lands");
+        CHECK(!sc.pending(), "slot empty after the owner's release");
+        CHECK(sc.firstByte(400) == 0, "a released payload can't reach a later tag");
     }
 
-    // ── Release with null UID is unconditional (failed-enqueue self-cleanup) ──
+    // ── Reboot path releases whatever is staged ──
     {
         Sidecar sc;
         NativeQueue<NFCWriteRequest, 8> q;
         uint8_t payload[16] = {7, 7, 7, 7};
         sc.enqueueRawWrite(q, makeReq(500, UID_A), payload, sizeof(payload));
-        sc.releaseIf(nullptr);
-        CHECK(!sc.pending && sc.bufferSize == 0 && sc.uid[0] == '\0',
-              "null-UID release clears everything");
+        sc.slot.releaseAny();
+        CHECK(!sc.pending() && sc.slot.uid()[0] == '\0', "reboot release clears everything");
     }
 
     // ── Every early-return execution failure still ends with a clear sidecar ──
@@ -239,13 +225,13 @@ int main(int argc, char** argv) {
                   "enqueue for failure-path iteration");
             NFCWriteRequest req;
             q.receive(req);
-            sc.releaseIf(req.expected_spool_id);  // consumed at dequeue (production order)
-            CHECK(!sc.pending, paths[failAt]);
+            sc.slot.consume(req.request_id, [](const uint8_t*, size_t) {});  // consumed first (production order)
+            CHECK(!sc.pending(), paths[failAt]);
             CHECK(sc.enqueueRawWrite(q, makeReq(610 + failAt, UID_A), payload, sizeof(payload)),
                   "next scan retries after execution failure");
             NFCWriteRequest drain;
             q.receive(drain);
-            sc.releaseIf(UID_A);
+            sc.slot.release(drain.request_id);
         }
     }
 

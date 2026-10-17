@@ -1899,7 +1899,7 @@ void WebServerManager::handleApiWriteTag() {
     // Enqueue single atomic write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_ATOMIC;
     req.suppress_sync = 0;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
@@ -1938,7 +1938,7 @@ void WebServerManager::handleApiFormatTag() {
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::FORMAT_NEW;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     if (!NFCManager::getInstance().enqueueWrite(req)) {
@@ -2033,7 +2033,7 @@ void WebServerManager::handleApiWriteTigerTag() {
     // Enqueue write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_TIGERTAG;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     memcpy(req.data.tigertag_data, payload, 40);
