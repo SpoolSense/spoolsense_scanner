@@ -525,6 +525,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
     document.getElementById('backBtn').addEventListener('click', showCreateView);
     document.getElementById('anotherBtn').addEventListener('click', showCreateView);
 
+    // Clear starts a fresh tag: forget the alpha of the tag last read
+    writerForm.addEventListener('reset', function() {
+      loadedAlpha = 255;
+    });
+
     writerForm.addEventListener('submit', function(e) {
       e.preventDefault();
       sharedWriteFlow({
