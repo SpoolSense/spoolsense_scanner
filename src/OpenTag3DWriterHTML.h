@@ -349,6 +349,8 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
   <script src="/js/shared.js?v=)rawliteral" FIRMWARE_VERSION R"rawliteral("></script>
   <script>
     var writerForm = document.getElementById('writerForm');
+    // Alpha of the tag last read; 255 (opaque) for a fresh tag
+    var loadedAlpha = 255;
 
     syncColorPicker('colorPicker', 'colorHex');
     setupAdvancedToggle('advancedToggle', 'advancedBox');
@@ -479,7 +481,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         color_r: r,
         color_g: g,
         color_b: b,
-        color_a: 255,
+        color_a: loadedAlpha,
         diameter_um: intVal('diameter_um', 1750),
         target_weight_g: intVal('target_weight_g', 1000),
         print_temp_c: intVal('print_temp_c', 210),
@@ -522,6 +524,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     document.getElementById('backBtn').addEventListener('click', showCreateView);
     document.getElementById('anotherBtn').addEventListener('click', showCreateView);
+
+    // Clear starts a fresh tag: forget the alpha of the tag last read
+    writerForm.addEventListener('reset', function() {
+      loadedAlpha = 255;
+    });
 
     writerForm.addEventListener('submit', function(e) {
       e.preventDefault();
@@ -600,6 +607,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       showMatchBadge: showMatchBadge,
       fillForm: function(status) {
         var ot = status.opentag3d || {};
+        loadedAlpha = (typeof ot.color_a === 'number') ? ot.color_a : 255;
         setVal('base_material', ot.base_material || '');
         setVal('manufacturer', ot.manufacturer || '');
         if (ot.color_hex) {

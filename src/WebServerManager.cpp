@@ -1558,6 +1558,8 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     snprintf(colorHex, sizeof(colorHex), "#%02X%02X%02X",
              ot3d.color_rgba[0][0], ot3d.color_rgba[0][1], ot3d.color_rgba[0][2]);
     obj["color_hex"] = colorHex;
+    // The writer has no alpha input; it sends this back so a write keeps it
+    obj["color_a"] = ot3d.color_rgba[0][3];
 
     obj["target_weight_g"] = ot3d.target_weight_g;
     obj["diameter_mm"] = opentag3d_diameter_mm(&ot3d);
@@ -1899,7 +1901,7 @@ void WebServerManager::handleApiWriteTag() {
     // Enqueue single atomic write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_ATOMIC;
     req.suppress_sync = 0;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
@@ -1938,7 +1940,7 @@ void WebServerManager::handleApiFormatTag() {
 
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::FORMAT_NEW;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     if (!NFCManager::getInstance().enqueueWrite(req)) {
@@ -2033,7 +2035,7 @@ void WebServerManager::handleApiWriteTigerTag() {
     // Enqueue write request
     NFCWriteRequest req;
     memset(&req, 0, sizeof(req));
-    req.request_id = millis();
+    req.request_id = NFCManager::getInstance().generateRequestId();
     req.type = NFCWriteType::WRITE_TIGERTAG;
     strncpy(req.expected_spool_id, uid, sizeof(req.expected_spool_id) - 1);
     memcpy(req.data.tigertag_data, payload, 40);

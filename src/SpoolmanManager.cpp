@@ -2221,7 +2221,7 @@ bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpo
     // creation happens only on a clean not-found.
     // Tier 0: a spool the user picked THIS sync is authoritative — it must
     // never be outranked, even by a stale duplicate nfc_id claim that the
-    // best-effort cleanup failed to clear (Codex finding on #224).
+    // best-effort cleanup failed to clear.
     SpoolResolution r;
     if (justLinkedSpoolId > 0) {
         r.spoolId = justLinkedSpoolId;

@@ -5,7 +5,7 @@
 // Luminance map of a 3D filament spool (grey coil). Rendered by
 // TFTManager::drawSpoolImage: coil takes the scanned color via a
 // brightness-gated tint, reel stays neutral, 0 = transparent(black).
-// Source: docs/spool.png (AI-generated), masked + downscaled.
+// Source: docs/spool.png, masked + downscaled.
 static const uint16_t SPOOL_IMG_W = 200;
 static const uint16_t SPOOL_IMG_H = 200;
 static const uint8_t SPOOL_IMG_LUM[40000] PROGMEM = {
