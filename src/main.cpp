@@ -435,7 +435,10 @@ void setup() {
     }
   }
 
-  if (tftTaskStarted) {
+  // A failed NFC start keeps its NFC FAILED screen instead of looking ready
+  if (!nfcReady) {
+    Serial.println("Setup: NFC not running — keeping the NFC FAILED screen");
+  } else if (tftTaskStarted) {
     if (tftManagerPtr && !config.isBambuDashboardEnabled()) {
       tftManagerPtr->showReady();
     } else if (tftManagerPtr && config.isBambuDashboardEnabled()) {
