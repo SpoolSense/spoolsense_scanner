@@ -1558,6 +1558,8 @@ void WebServerManager::serializeOpenTag3DStatus(JsonDocument& doc) {
     snprintf(colorHex, sizeof(colorHex), "#%02X%02X%02X",
              ot3d.color_rgba[0][0], ot3d.color_rgba[0][1], ot3d.color_rgba[0][2]);
     obj["color_hex"] = colorHex;
+    // The writer has no alpha input; it sends this back so a write keeps it
+    obj["color_a"] = ot3d.color_rgba[0][3];
 
     obj["target_weight_g"] = ot3d.target_weight_g;
     obj["diameter_mm"] = opentag3d_diameter_mm(&ot3d);
