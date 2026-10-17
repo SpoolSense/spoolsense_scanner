@@ -349,6 +349,8 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
   <script src="/js/shared.js?v=)rawliteral" FIRMWARE_VERSION R"rawliteral("></script>
   <script>
     var writerForm = document.getElementById('writerForm');
+    // Alpha of the tag last read; 255 (opaque) for a fresh tag
+    var loadedAlpha = 255;
 
     syncColorPicker('colorPicker', 'colorHex');
     setupAdvancedToggle('advancedToggle', 'advancedBox');
@@ -438,12 +440,6 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       });
     });
 
-    var EXTENDED_IDS = [
-      'serial_number', 'online_url', 'measured_filament_weight_g',
-      'empty_spool_weight_g', 'min_print_temp_c', 'max_print_temp_c',
-      'min_bed_temp_c', 'max_bed_temp_c', 'max_dry_temp_c',
-      'dry_time_hours', 'target_volumetric_speed', 'transmission_distance'
-    ];
 
     function intVal(id, fallback) {
       var raw = document.getElementById(id).value.trim();
@@ -464,13 +460,6 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       return el ? el.value.trim() : '';
     }
 
-    function hasExtended() {
-      for (var i = 0; i < EXTENDED_IDS.length; i++) {
-        var el = document.getElementById(EXTENDED_IDS[i]);
-        if (el && el.value.trim() !== '') return true;
-      }
-      return false;
-    }
 
     function buildPayload(uid) {
       var color = normalizeHex(document.getElementById('colorHex').value);
@@ -492,7 +481,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         color_r: r,
         color_g: g,
         color_b: b,
-        color_a: 255,
+        color_a: loadedAlpha,
         diameter_um: intVal('diameter_um', 1750),
         target_weight_g: intVal('target_weight_g', 1000),
         print_temp_c: intVal('print_temp_c', 210),
@@ -500,29 +489,28 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         density_ugcm3: densityUgcm3
       };
 
-      if (hasExtended()) {
-        var sn = strVal('serial_number');
-        if (sn) body.serial_number = sn;
-        var url = strVal('online_url');
-        if (url) body.online_url = url;
-        if (strVal('measured_filament_weight_g')) body.measured_filament_weight_g = intVal('measured_filament_weight_g', 0);
-        if (strVal('empty_spool_weight_g')) body.empty_spool_weight_g = intVal('empty_spool_weight_g', 0);
-        if (strVal('min_print_temp_c')) body.min_print_temp_c = intVal('min_print_temp_c', 0);
-        if (strVal('max_print_temp_c')) body.max_print_temp_c = intVal('max_print_temp_c', 0);
-        if (strVal('min_bed_temp_c')) body.min_bed_temp_c = intVal('min_bed_temp_c', 0);
-        if (strVal('max_bed_temp_c')) body.max_bed_temp_c = intVal('max_bed_temp_c', 0);
-        if (strVal('max_dry_temp_c')) body.max_dry_temp_c = intVal('max_dry_temp_c', 0);
-        if (strVal('dry_time_hours')) body.dry_time_hours = intVal('dry_time_hours', 0);
-        if (strVal('target_volumetric_speed')) body.target_volumetric_speed = intVal('target_volumetric_speed', 0);
-        if (strVal('transmission_distance')) body.transmission_distance = intVal('transmission_distance', 0);
-      }
+      var optionalStrings = ['serial_number', 'online_url', 'sku', 'barcode'];
+      optionalStrings.forEach(function(id) {
+        var value = strVal(id);
+        if (value !== '') body[id] = value;
+      });
+      var optionalInts = [
+        'measured_filament_weight_g', 'empty_spool_weight_g',
+        'min_print_temp_c', 'max_print_temp_c',
+        'min_bed_temp_c', 'max_bed_temp_c',
+        'max_dry_temp_c', 'dry_time_hours',
+        'target_volumetric_speed', 'transmission_distance'
+      ];
+      optionalInts.forEach(function(id) {
+        if (strVal(id) !== '') body[id] = intVal(id, 0);
+      });
 
-      body.sku = strVal('sku');
-      var barcodeDigits = strVal('barcode');
-      if (barcodeDigits) body.barcode = barcodeDigits;
-      body.chamber_temp_c = intVal('chamber_temp_c', 0);
-      var minNozzleMm = floatVal('min_nozzle_diameter_mm', -1);
-      if (minNozzleMm >= 0) body.min_nozzle_diameter = Math.round(minNozzleMm * 10);
+      if (strVal('chamber_temp_c') !== '') {
+        body.chamber_temp_c = intVal('chamber_temp_c', 0);
+      }
+      if (strVal('min_nozzle_diameter_mm') !== '') {
+        body.min_nozzle_diameter = Math.round(floatVal('min_nozzle_diameter_mm', 0) * 10);
+      }
 
       return body;
     }
@@ -536,6 +524,11 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
 
     document.getElementById('backBtn').addEventListener('click', showCreateView);
     document.getElementById('anotherBtn').addEventListener('click', showCreateView);
+
+    // Clear starts a fresh tag: forget the alpha of the tag last read
+    writerForm.addEventListener('reset', function() {
+      loadedAlpha = 255;
+    });
 
     writerForm.addEventListener('submit', function(e) {
       e.preventDefault();
@@ -614,6 +607,7 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       showMatchBadge: showMatchBadge,
       fillForm: function(status) {
         var ot = status.opentag3d || {};
+        loadedAlpha = (typeof ot.color_a === 'number') ? ot.color_a : 255;
         setVal('base_material', ot.base_material || '');
         setVal('manufacturer', ot.manufacturer || '');
         if (ot.color_hex) {
@@ -631,9 +625,9 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
         if (ot.max_bed_temp) setVal('max_bed_temp_c', ot.max_bed_temp);
         if (ot.dry_temp) setVal('max_dry_temp_c', ot.dry_temp);
         if (ot.dry_time_hours) setVal('dry_time_hours', ot.dry_time_hours);
-        // Present-key guard: a v2 read carries chamber_temp even at 0 (so 0 is
-        // applied), while a v1 read omits it and leaves a typed value alone.
-        if (ot.chamber_temp !== undefined) setVal('chamber_temp_c', ot.chamber_temp);
+        // A v2 read carries chamber_temp even at 0. A v1 read omits it, so keep
+        // the field blank and avoid creating a v2-only patch intent.
+        setVal('chamber_temp_c', ot.chamber_temp !== undefined ? ot.chamber_temp : '');
         if (ot.diameter_mm) {
           var dEl = document.getElementById('diameter_um');
           if (dEl) dEl.value = Math.round(ot.diameter_mm * 1000);

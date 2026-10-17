@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.11.3] - 2026-10-17
+
+### Fixed
+
+- **A failed tag write no longer loses a weight deduction** -- a deduction was marked done as soon as its tag write was queued. If the write then failed (tag pulled away, wrong tag, size check, verify mismatch), the used grams were lost, and two scans close together could deduct the same spool twice. A deduction now stays pending until its write succeeds, and retries on the next scan. One rare case remains: if the write lands but its check read fails, the next scan can subtract again (#338). (#330)
+- **Two writes at once no longer collide** -- a web write and a deduction (or two web writes) started close together could wipe each other's data, or leave the scanner refusing writes until a reboot. Each write now holds the staging area alone and has its own id. (#339)
+- **OpenTag3D writes keep the tag's transparency** -- the writer page always wrote the color as fully opaque. It now writes back the value it read. (#339)
+- **NFC FAILED stays on screen** -- when the NFC reader did not start, the boot screen showed NFC FAILED and then switched to the ready screen a moment later. (#339)
+- **Startup failures for all subsystem managers are now visible** -- NFC begin, NFC scan-task, LED, LCD, TFT render, Spoolman sync, and Home Assistant MQTT task creation now return a status. Failed NFC initialization displays **NFC FAILED**; failed displays are excluded from use; other task failures log and continue boot. `NFCManager::begin()` cleans up allocations on failure so retries are safe, and `LEDManager` cleans up its mutex after a task-creation failure. (#264)
+
+### Changed
+
+- **OpenTag3D writes keep the bytes the scanner doesn't edit** -- a write used to rebuild the whole record, which dropped reserved bytes and anything past the fields the scanner knows. The scanner now patches the record in place, so those bytes survive, and longer records (up to 500 bytes) can be written instead of being read-only. (#331)
+
 ## [1.11.2] - 2026-09-18
 
 ### Added

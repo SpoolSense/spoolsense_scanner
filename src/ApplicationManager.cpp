@@ -594,6 +594,14 @@ void ApplicationManager::handleSpoolUpdated(const AppMessage& msg) {
         msg.payload.spoolUpdated.update_type,
         msg.payload.spoolUpdated.success ? "true" : "false");
 
+#ifndef NATIVE_TEST
+    // Settle any deduction claim waiting on this write's result (#329).
+    // Ignores request ids it never claimed; keeps display/LED/Spoolman
+    // behavior below unchanged.
+    DeductionManager::getInstance().handleWriteResult(
+        msg.payload.spoolUpdated.request_id, msg.payload.spoolUpdated.success);
+#endif
+
     // Fetch current spool material name from NFCManager state (for deferred display)
     char materialName[32] = {0};
     float kgRemaining = msg.payload.spoolUpdated.kg_remaining;
@@ -1017,7 +1025,7 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             opt_get_gp_spoolman_id(&state.tag_data, &existingId);
             if (existingId != msg.payload.spoolmanSynced.spoolman_id) {
                 NFCWriteRequest request;
-                request.request_id = millis();
+                request.request_id = NFCManager::getInstance().generateRequestId();
                 request.type = NFCWriteType::WRITE_SPOOLMAN_ID;
                 strncpy(request.expected_spool_id, msg.payload.spoolmanSynced.spool_id,
                         sizeof(request.expected_spool_id) - 1);

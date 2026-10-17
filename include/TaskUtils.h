@@ -19,3 +19,10 @@ inline BaseType_t createTaskWithAffinity(TaskFunction_t task,
     return xTaskCreatePinnedToCore(task, name, stackDepth, parameter, priority, handle, core);
 #endif
 }
+
+// Single definition of "a live task exists": the scheduler returned pdPASS
+// AND installed a non-null handle. All manager startup paths use this so a
+// failed creation is never reported as success (issue #264).
+inline bool taskCreationSucceeded(BaseType_t result, const TaskHandle_t* handle) {
+    return result == pdPASS && handle != nullptr && *handle != nullptr;
+}

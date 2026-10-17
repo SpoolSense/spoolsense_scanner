@@ -1306,9 +1306,9 @@ bool SpoolmanManager::begin(SemaphoreHandle_t httpMutex) {
     return true;
 }
 
-void SpoolmanManager::startTask() {
+bool SpoolmanManager::startTask() {
     if (taskHandle != nullptr) {
-        return;
+        return true;  // idempotent: the sync task is already live
     }
 
     BaseType_t created = createTaskWithAffinity(
@@ -1320,12 +1320,13 @@ void SpoolmanManager::startTask() {
         &taskHandle,
         1  // Core 1
     );
-    if (created == pdPASS) {
+    if (taskCreationSucceeded(created, &taskHandle)) {
         Serial.println("SpoolmanManager: Task started");
-    } else {
-        taskHandle = nullptr;
-        Serial.println("SpoolmanManager: ERROR — task creation failed");
+        return true;
     }
+    taskHandle = nullptr;
+    Serial.println("SpoolmanManager: ERROR — task creation failed");
+    return false;
 }
 
 bool SpoolmanManager::enqueueSync(const SpoolmanSyncRequest& req) {
@@ -2220,7 +2221,7 @@ bool SpoolmanManager::syncSpool(const SpoolmanSyncRequest& req, int& resolvedSpo
     // creation happens only on a clean not-found.
     // Tier 0: a spool the user picked THIS sync is authoritative — it must
     // never be outranked, even by a stale duplicate nfc_id claim that the
-    // best-effort cleanup failed to clear (Codex finding on #224).
+    // best-effort cleanup failed to clear.
     SpoolResolution r;
     if (justLinkedSpoolId > 0) {
         r.spoolId = justLinkedSpoolId;

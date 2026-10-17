@@ -95,7 +95,7 @@ void LCDManager::setScreenTimeoutMs(uint32_t timeoutMs) {
     }
 }
 
-void LCDManager::startTask() {
+bool LCDManager::startTask() {
     BaseType_t created = createTaskWithAffinity(
         taskFunc,
         "LCDTask",
@@ -105,12 +105,13 @@ void LCDManager::startTask() {
         &_taskHandle,
         0  // core 0 avoids contention with BLE/WiFi on core 1
     );
-    if (created == pdPASS) {
+    if (taskCreationSucceeded(created, &_taskHandle)) {
         Serial.println("LCDManager: Task started");
-    } else {
-        _taskHandle = nullptr;
-        Serial.println("LCDManager: ERROR — task creation failed");
+        return true;
     }
+    _taskHandle = nullptr;
+    Serial.println("LCDManager: ERROR — task creation failed");
+    return false;
 }
 
 void LCDManager::taskFunc(void* param) {

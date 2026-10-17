@@ -212,14 +212,14 @@ bool HomeAssistantManager::enqueuePublish(const HAPublishRequest& req) {
 
 #ifndef NATIVE_TEST
 
-void HomeAssistantManager::startTask() {
+bool HomeAssistantManager::startTask() {
     if (taskControlMutex == nullptr) {
         Serial.println("HomeAssistantManager: task control mutex not initialized");
-        return;
+        return false;
     }
     if (xSemaphoreTake(taskControlMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         Serial.println("HomeAssistantManager: startTask mutex timeout");
-        return;
+        return false;
     }
 
     auto& config = ConfigurationManager::getInstance();
@@ -239,13 +239,13 @@ void HomeAssistantManager::startTask() {
                       enabled ? "true" : "false",
                       static_cast<unsigned>(hostLen));
         xSemaphoreGive(taskControlMutex);
-        return;
+        return false;  // normal skip — no task exists
     }
 
     if (taskHandle != nullptr) {
         Serial.println("HomeAssistantManager: Task already running");
         xSemaphoreGive(taskControlMutex);
-        return;
+        return true;
     }
 
     // Reset task state for clean (re)start — exponential backoff timer and last reconnect attempt
@@ -265,20 +265,21 @@ void HomeAssistantManager::startTask() {
         &taskHandle,
         1
     );
-    if (rc != pdPASS || taskHandle == nullptr) {
+    if (!taskCreationSucceeded(rc, &taskHandle)) {
         size_t free8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
         Serial.printf("HomeAssistantManager: Failed to start task (rc=%ld, free_heap=%u)\n",
                       static_cast<long>(rc),
                       static_cast<unsigned>(free8bit));
         taskHandle = nullptr;
         xSemaphoreGive(taskControlMutex);
-        return;
+        return false;
     }
 
     Serial.printf("HomeAssistantManager: Task started (stack=%u, free_heap=%u)\n",
                   static_cast<unsigned>(TASK_STACK_SIZE),
                   static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
     xSemaphoreGive(taskControlMutex);
+    return true;
 }
 
 void HomeAssistantManager::taskFunc(void* param) {
@@ -320,16 +321,12 @@ void HomeAssistantManager::stopTask() {
 
 bool HomeAssistantManager::restartAndTestConnection(uint32_t timeoutMs, int* mqttStateOut) {
     stopTask();
-    startTask();
+    bool started = startTask();
 
-    if (taskControlMutex != nullptr &&
-        xSemaphoreTake(taskControlMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        bool started = (taskHandle != nullptr);
-        xSemaphoreGive(taskControlMutex);
-        if (!started) {
-            if (mqttStateOut != nullptr) *mqttStateOut = getLastMqttState();
-            return false;
-        }
+    // No task means no point waiting for a connection (issue #264).
+    if (!started) {
+        if (mqttStateOut != nullptr) *mqttStateOut = getLastMqttState();
+        return false;
     }
 
     uint32_t startMs = millis();
@@ -880,13 +877,12 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
         if (NFCManager::getInstance().getCurrentSpoolState(deductSpool) &&
             deductSpool.present && strcasecmp(deductSpool.spool_id, uidFromTopic) == 0) {
             DeductionManager::getInstance().applyIfPending(deductSpool.spool_id, deductSpool.kind);
-        } else if (SpoolmanManager::getInstance().isConfigured()) {
-            // Tag not on scanner — try Spoolman direct (Bambu AMS use case)
-            bool spOk = false;
-            SpoolmanManager::getInstance().deductFromSpoolman(uidFromTopic, deductG, &spOk);
-            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
-                DeductionManager::getInstance().clearPending(uidFromTopic);
-            }
+        } else {
+            // Tag not on scanner — Spoolman direct (Bambu AMS use case), routed
+            // through the same claim/settlement rules (#329). If Spoolman is
+            // unconfigured or fails, the pending amount stays durable for a
+            // later tag scan.
+            DeductionManager::getInstance().applyViaSpoolmanIfPending(uidFromTopic);
         }
 
         publishCommandResponse(command, true, nullptr);
@@ -1007,14 +1003,10 @@ void HomeAssistantManager::handleCommand(const char* topic, const char* payload)
 
         DeductionManager::getInstance().storePending(resolvedUid, deductG);
 
-        // Try Spoolman direct deduction (spool not on scanner)
-        if (SpoolmanManager::getInstance().isConfigured()) {
-            bool spOk = false;
-            SpoolmanManager::getInstance().deductFromSpoolman(resolvedUid, deductG, &spOk);
-            if (spOk) {  // success includes a 0 g deduction on an already-empty spool
-                DeductionManager::getInstance().clearPending(resolvedUid);
-            }
-        }
+        // Spoolman direct deduction (spool not on scanner), routed through the
+        // claim/settlement rules (#329) — no blind clearPending. Pending
+        // survives if Spoolman is unconfigured or the call fails.
+        DeductionManager::getInstance().applyViaSpoolmanIfPending(resolvedUid);
 
         // Update dashboard tray weight
         ApplicationManager& app = ApplicationManager::getInstance();

@@ -53,7 +53,7 @@ class SpoolmanManager {
 public:
     static SpoolmanManager& getInstance();
     bool begin(SemaphoreHandle_t httpMutex);
-    void startTask();
+    bool startTask();  // true only if the sync task is live
     bool enqueueSync(const SpoolmanSyncRequest& req);
     bool isConfigured() const;
     bool getSpoolDetails(int32_t spoolmanId, SpoolDetails& outDetails);

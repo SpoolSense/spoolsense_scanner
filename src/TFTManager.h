@@ -14,7 +14,7 @@ class TFTManager : public DisplayI {
 public:
     explicit TFTManager(TFTDriver = TFTDriver::ST7789) {}
     void begin() {}
-    void startTask() {}
+    bool startTask() { return false; }  // no render task exists on no-TFT boards
     void showBoot(const char*) {}
     void showWifiConnecting() {}
     void showWifiConnected(const char*) {}
@@ -90,7 +90,7 @@ public:
     TFTManager(TFTDriver driver = TFTDriver::ST7789);
 
     void begin();
-    void startTask();
+    bool startTask();  // true only if the render task is live
 
     // --- Call these from the main task, same callers that call LCDManager ---
     void showBoot(const char* version);

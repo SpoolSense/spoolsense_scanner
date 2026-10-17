@@ -23,7 +23,7 @@ public:
     void begin();
     void updateScreen(const char* line1, const char* line2);
     void updateScreen(const char* line1, const char* line2, const char* line3, const char* line4);
-    void startTask();
+    bool startTask();  // true only if the render task is live
     void setScreenTimeoutMs(uint32_t timeoutMs) override;
 
     // DisplayI interface

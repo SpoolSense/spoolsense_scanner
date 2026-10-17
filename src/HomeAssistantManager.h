@@ -25,7 +25,7 @@ public:
     static HomeAssistantManager& getInstance();
 
     bool begin();
-    void startTask();
+    bool startTask();  // true only if the MQTT task is live (unconfigured = false)
     void stopTask();
     bool restartAndTestConnection(uint32_t timeoutMs, int* mqttStateOut = nullptr);
     bool enqueuePublish(const HAPublishRequest& req);
