@@ -4,32 +4,30 @@
 #include <SPI.h>
 #include <cstring>
 
-constexpr uint8_t FourLanePN532Manager::CS_PINS[FourLanePN532Manager::LANE_COUNT];
-
 // Match the proven Tarantula PN532 path: use an explicit HSPI controller on
-// the custom 25/26/27 pins instead of the global default SPI object.
+// the configured pins instead of the global default SPI object.
 static SPIClass fourLanePn532Spi(HSPI);
 
 bool FourLanePN532Manager::begin() {
     Serial.println("FourLanePN532: initializing shared HSPI readers");
     Serial.printf("  HSPI SCK=%u MISO=%u MOSI=%u\n",
-                  PIN_SCK, PIN_MISO, PIN_MOSI);
+                  FourLanePins::SCK, FourLanePins::MISO, FourLanePins::MOSI);
 
     // All readers share the SPI data/clock lines. Every CS must be HIGH before
     // the bus starts so only the explicitly selected PN532 can drive MISO.
     for (uint8_t i = 0; i < LANE_COUNT; ++i) {
-        pinMode(CS_PINS[i], OUTPUT);
-        digitalWrite(CS_PINS[i], HIGH);
+        pinMode(FourLanePins::CS[i], OUTPUT);
+        digitalWrite(FourLanePins::CS[i], HIGH);
     }
 
     // RSTO on the ELECHOUSE PN532 V3 is a reader output, not an ESP32-driven
     // reset input. Leave it disconnected and initialize the bus directly.
-    fourLanePn532Spi.begin(PIN_SCK, PIN_MISO, PIN_MOSI, -1);
+    fourLanePn532Spi.begin(FourLanePins::SCK, FourLanePins::MISO, FourLanePins::MOSI, -1);
 
     bool anyReady = false;
     for (uint8_t i = 0; i < LANE_COUNT; ++i) {
-        Serial.printf("FourLanePN532: lane %u CS=%u init...\n", i + 1, CS_PINS[i]);
-        lanes_[i].reader = new Adafruit_PN532(CS_PINS[i], &fourLanePn532Spi);
+        Serial.printf("FourLanePN532: lane %u CS=%u init...\n", i + 1, FourLanePins::CS[i]);
+        lanes_[i].reader = new Adafruit_PN532(FourLanePins::CS[i], &fourLanePn532Spi);
 
         if (lanes_[i].reader == nullptr) {
             Serial.printf("FourLanePN532: lane %u allocation FAILED\n", i + 1);

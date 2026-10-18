@@ -4,18 +4,14 @@
 
 #include <Arduino.h>
 #include <Adafruit_PN532.h>
+#include "FourLanePins.h"
 
 class FourLanePN532Manager {
 public:
-    static constexpr uint8_t LANE_COUNT = 4;
+    static constexpr uint8_t LANE_COUNT = FourLanePins::LANE_COUNT;
     using LaneEventCallback = void (*)(uint8_t lane, bool present, const uint8_t* uid, uint8_t uidLength);
 
-    // ESP32 4-lane BoxTurtle prototype wiring.
-    // GPIO16/17 are deliberately avoided because some ESP32 modules reserve
-    // them for PSRAM; using them as CS can prevent the board from running.
-    static constexpr uint8_t PIN_SCK  = 25;
-    static constexpr uint8_t PIN_MISO = 26;
-    static constexpr uint8_t PIN_MOSI = 27;
+    // SPI pins are centralized in include/FourLanePins.h.
 
     bool begin();
     void poll();
@@ -33,9 +29,7 @@ private:
         uint8_t absentMisses = 0;
     };
 
-    // Per-reader chip-select lines. 32/33 are unused by PN532 mode and avoid
-    // the GPIO16/17 PSRAM collision seen on the bench ESP32 module.
-    static constexpr uint8_t CS_PINS[LANE_COUNT] = {14, 18, 32, 33};
+    // Per-reader CS pins are centralized in include/FourLanePins.h.
     static constexpr uint8_t REMOVE_MISS_THRESHOLD = 3;
 
     LaneState lanes_[LANE_COUNT];

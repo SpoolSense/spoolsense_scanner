@@ -2,6 +2,7 @@
 
 #if defined(SPOOLSENSE_4LANE_PN532)
 #include "FourLanePN532Manager.h"
+#include "FourLanePins.h"
 #include "TagStateJson.h"
 #endif
 
@@ -129,7 +130,11 @@ static void fourLaneNfcTask(void* /*param*/) {
 static bool startFourLaneNfc() {
   HomeAssistantManager::getDeviceId(fourLaneBaseDeviceId, sizeof(fourLaneBaseDeviceId));
   Serial.println("NFC mode: 4-lane PN532 / BoxTurtle");
-  Serial.println("Lane CS: L1=14 L2=18 L3=32 L4=33");
+  Serial.print("Lane CS:");
+  for (uint8_t i = 0; i < FourLanePins::LANE_COUNT; ++i) {
+    Serial.printf(" L%u=%u", i + 1, FourLanePins::CS[i]);
+  }
+  Serial.println();
 
   for (uint8_t lane = 1; lane <= FourLanePN532Manager::LANE_COUNT; ++lane) {
     Serial.printf("Virtual scanner L%u: %s-L%u\n", lane, fourLaneBaseDeviceId, lane);
@@ -402,7 +407,7 @@ void setup() {
 
 #if defined(SPOOLSENSE_4LANE_PN532)
   if (config.isKeypadEnabled()) {
-    Serial.println("4-lane mode: keypad disabled (GPIO18 reserved for Lane 2 CS)");
+    Serial.println("4-lane mode: keypad disabled (four-lane PN532 mode)");
   }
 #else
   if (config.isKeypadEnabled()) {

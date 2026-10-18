@@ -5,6 +5,7 @@
 #include <esp_mac.h>
 
 #include "FourLanePN532Manager.h"
+#include "FourLanePins.h"
 #include "FourLaneMqttPublisher.h"
 #include "TagStateJson.h"
 
@@ -66,7 +67,11 @@ void setup() {
     Serial.println();
     Serial.println("=== SpoolSense 4-Lane PN532 virtual-scanner MQTT bring-up ===");
     Serial.println("Uses stock SpoolSense Wi-Fi/MQTT settings from NVS; no credentials are compiled in.");
-    Serial.println("Lane CS: L1=14 L2=18 L3=32 L4=33");
+    Serial.print("Lane CS:");
+    for (uint8_t i = 0; i < FourLanePins::LANE_COUNT; ++i) {
+      Serial.printf(" L%u=%u", i + 1, FourLanePins::CS[i]);
+    }
+    Serial.println();
     Serial.printf("Base device ID: %s\n", baseDeviceId);
     for (uint8_t lane = 1; lane <= FourLanePN532Manager::LANE_COUNT; ++lane) {
         Serial.printf("Virtual scanner L%u: %s-L%u\n", lane, baseDeviceId, lane);
