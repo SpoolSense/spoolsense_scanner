@@ -256,6 +256,14 @@ void checkWiFi() {
 void setup() {
   delay(1000);
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+  // Serial is the chip's native USB here. Plugged into a PC with no serial
+  // monitor open, the host keeps the USB link up but nobody reads, so every
+  // write waits out the TX timeout once the buffer is full. Boot prints
+  // hundreds of lines, which held setup() (and the web UI) back ~45 s.
+  // Don't wait: lines are only dropped when no one is reading anyway.
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(1000);
   Serial.println("=== Starting setup ===");
 
