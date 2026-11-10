@@ -85,6 +85,12 @@ enum PN5180TransceiveStat {
 #define RX_SOF_DET_IRQ_STAT (1<<14) // RF SOF Detection IRQ
 #define GENERAL_ERROR_IRQ_STAT (1<<17) // General error IRQ (protocol/parameter errors)
 
+// RF_STATUS register bits
+// TX_RF_STATUS: set while the PN5180's own RF field is on. Measured on
+// PN5180 FW 4.0: field on -> 0x000200xx, field off after reset -> 0x00740150,
+// so it is bit 17; bit 20 (used before) is set while the field is OFF.
+#define RF_STATUS_TX_RF_ON  (1UL<<17)
+
 class PN5180 {
 private:
   uint8_t PN5180_NSS;   // active low

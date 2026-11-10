@@ -485,7 +485,7 @@ bool PN5180::setRF_on() {
       // success (this fired as a false "TIMEOUT TX_RFON_IRQ" on every idle
       // scan cycle once the timeout logs became always-on).
       uint32_t rfStatus = 0;
-      if (readRegister(RF_STATUS, &rfStatus) && (rfStatus & (1UL << 20))) {
+      if (readRegister(RF_STATUS, &rfStatus) && (rfStatus & RF_STATUS_TX_RF_ON)) {
         return true;  // TX_RF_STATUS: field is on
       }
       if (millis() - t > 500) {
@@ -516,7 +516,7 @@ bool PN5180::setRF_off() {
     while (0 == (TX_RFOFF_IRQ_STAT & getIRQStatus())) { // wait for RF field to shut down
       // Mirror of setRF_on: no edge when the field was already off
       uint32_t rfStatus = 0;
-      if (readRegister(RF_STATUS, &rfStatus) && !(rfStatus & (1UL << 20))) {
+      if (readRegister(RF_STATUS, &rfStatus) && !(rfStatus & RF_STATUS_TX_RF_ON)) {
         return true;  // field is off
       }
       if (millis() - t > 500) {
