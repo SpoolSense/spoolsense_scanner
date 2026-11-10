@@ -472,10 +472,29 @@ const char OPENTAG3D_WRITER_HTML[] PROGMEM = R"rawliteral(
       var densityGcm3 = floatVal('density', 1.24);
       var densityUgcm3 = Math.round(densityGcm3 * 1000);
 
+      // The tag stores 5 characters of base material and the modifier in its
+      // own field. A material typed as "PETG-CF" would be cut to "PETG-" and
+      // never match on verify, so move a known modifier suffix to the modifier
+      // field and send the base material as the tag will hold it.
+      var baseMaterial = strVal('base_material').toUpperCase();
+      var modifiers = strVal('material_modifiers');
+      var dash = baseMaterial.indexOf('-');
+      if (dash > 0) {
+        var suffix = baseMaterial.substring(dash + 1);
+        if (!modifiers) {
+          var opts = document.getElementById('material_modifiers').options;
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].value && opts[i].value.toUpperCase() === suffix) modifiers = opts[i].value;
+          }
+        }
+        if (modifiers && modifiers.toUpperCase() === suffix) baseMaterial = baseMaterial.substring(0, dash);
+      }
+      baseMaterial = baseMaterial.substring(0, 5);
+
       var body = {
         uid: uid || '',
-        base_material: strVal('base_material').toUpperCase(),
-        material_modifiers: strVal('material_modifiers'),
+        base_material: baseMaterial,
+        material_modifiers: modifiers,
         manufacturer: strVal('manufacturer'),
         color_name: strVal('color_name'),
         color_r: r,
