@@ -291,7 +291,13 @@ private:
 
     // Last finished write (scan task writes it under tagMutex; web reads it)
     bool tagCanHold(size_t bytes, const char* what);  // ISO15693 size check before a full write
-    char writeError_[96] = {0};       // reason for the write in progress, set on failure
+    // Reason for the write in progress, set on failure. Scan task only (written
+    // in tagCanHold/processWriteQueue, no mutex): other tasks read the copy in
+    // lastWriteError_ through getLastWriteResult().
+    char writeError_[96] = {0};
+    // UID length of the tag selected this scan cycle, as detected (0 = none).
+    // Scan task only, same ownership as selectedUidHex_.
+    uint8_t selectedUidLen_ = 0;
     uint32_t lastWriteId_ = 0;
     bool lastWriteOk_ = false;
     bool lastWriteValid_ = false;

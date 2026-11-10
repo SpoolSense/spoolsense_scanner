@@ -75,7 +75,8 @@ public:
 
     // ISO15693 only: probe whether the tag has blocks 0..neededBlocks-1.
     // Returns neededBlocks-1 if it does, the highest readable block if the tag
-    // is smaller, or -1 if unknown (other readers, or not even block 0 reads).
+    // itself reports the higher blocks as missing, or -1 if unknown (other
+    // readers, or a read got no answer, which says nothing about the size).
     virtual int iso15693LastBlock(uint8_t neededBlocks) { (void)neededBlocks; return -1; }
 };
 

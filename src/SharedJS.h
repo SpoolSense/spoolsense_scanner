@@ -681,9 +681,14 @@ async function sharedWriteFlow(config) {
       await sleep(500);
       var status = await api('/api/status');
       var lw = status.last_write;
-      if (writeResp && writeResp.request_id && lw && lw.request_id === writeResp.request_id && !lw.ok) {
-        setStepState('step-verify', 'error');
-        throw new Error('Write failed: ' + (lw.error || 'the tag did not accept the data') + '.');
+      if (writeResp && writeResp.request_id) {
+        // Wait for this write's own result: tag data that already matched
+        // before the write finished is not proof that it succeeded.
+        if (!lw || lw.request_id < writeResp.request_id) continue;
+        if (lw.request_id === writeResp.request_id && !lw.ok) {
+          setStepState('step-verify', 'error');
+          throw new Error('Write failed: ' + (lw.error || 'the tag did not accept the data') + '.');
+        }
       }
       if (status.present && config.verify(status, payload)) {
         setBanner('statusBanner', 'Tag verified \u2014 hold for a moment\u2026');

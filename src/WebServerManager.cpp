@@ -78,6 +78,15 @@ static const char* tagKindToString(TagKind kind) {
     }
 }
 
+// Reply for a queued tag write. request_id lets the writer page match
+// /api/status last_write to this write.
+static void sendWriteQueued(WebServer& server, uint32_t requestId) {
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"success\":true,\"request_id\":%lu}",
+             (unsigned long)requestId);
+    server.send(200, "application/json", resp);
+}
+
 WebServerManager& WebServerManager::getInstance() {
     static WebServerManager instance;
     return instance;
@@ -1925,11 +1934,7 @@ void WebServerManager::handleApiWriteTag() {
         return;
     }
 
-    // request_id lets the page match /api/status last_write to this write
-    char resp[64];
-    snprintf(resp, sizeof(resp), "{\"success\":true,\"request_id\":%lu}",
-             (unsigned long)req.request_id);
-    _server.send(200, "application/json", resp);
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2061,7 +2066,7 @@ void WebServerManager::handleApiWriteTigerTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2300,7 +2305,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2355,7 +2360,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
