@@ -88,6 +88,9 @@ public:
     void pauseScanTask();
     void resumeScanTask();
     bool isWriteQueueEmpty() const;
+    // Outcome of the most recent write request, for the web writer pages.
+    // Returns false if no write has finished yet.
+    bool getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen);
 
     // Cooperative diagnostic pause for the self-test wizard (#253). Unlike
     // pauseScanTask()/vTaskSuspend, the scan task only stops at its safe loop
@@ -285,6 +288,14 @@ private:
     volatile bool suppressReDetection_ = false;
     char suppressReDetectionUid_[17] = {0};
     volatile bool batchHadSuppressSync_ = false;  // Track if any write in batch had suppress_sync
+
+    // Last finished write (scan task writes it under tagMutex; web reads it)
+    bool tagCanHold(size_t bytes, const char* what);  // ISO15693 size check before a full write
+    char writeError_[96] = {0};       // reason for the write in progress, set on failure
+    uint32_t lastWriteId_ = 0;
+    bool lastWriteOk_ = false;
+    bool lastWriteValid_ = false;
+    char lastWriteError_[96] = {0};
 };
 
 #endif // NFC_MANAGER_H

@@ -1770,6 +1770,19 @@ void WebServerManager::handleApiStatus() {
 
     serializeEnrichment(doc);
 
+    {
+        // Outcome of the most recent tag write (writer pages show failures)
+        uint32_t writeId = 0;
+        bool writeOk = false;
+        char writeErr[96];
+        if (NFCManager::getInstance().getLastWriteResult(writeId, writeOk, writeErr, sizeof(writeErr))) {
+            JsonObject lw = doc["last_write"].to<JsonObject>();
+            lw["request_id"] = writeId;
+            lw["ok"] = writeOk;
+            if (!writeOk) lw["error"] = writeErr;
+        }
+    }
+
     String body;
     serializeJson(doc, body);
     _server.send(200, "application/json", body);
@@ -1912,7 +1925,11 @@ void WebServerManager::handleApiWriteTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    // request_id lets the page match /api/status last_write to this write
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"success\":true,\"request_id\":%lu}",
+             (unsigned long)req.request_id);
+    _server.send(200, "application/json", resp);
 }
 
 // ---------------------------------------------------------------------------

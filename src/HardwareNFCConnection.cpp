@@ -100,6 +100,27 @@ void HardwareNFCConnection::getReaderInfo(char* buf, size_t len) const {
     }
 }
 
+int HardwareNFCConnection::iso15693LastBlock(uint8_t neededBlocks) {
+    if (!nfc_ || neededBlocks == 0) return -1;
+    uint8_t buf[8];
+    auto readable = [&](uint8_t block) {
+        for (int attempt = 0; attempt < 2; attempt++) {  // one retry: not a size problem if it reads
+            if (nfc_->readSingleBlock(currentUid_, block, buf, 4) == ISO15693_EC_OK) return true;
+        }
+        return false;
+    };
+    const uint8_t last = neededBlocks - 1;
+    if (readable(last)) return last;
+    if (!readable(0)) return -1;  // can't tell (not an ISO15693 tag in the field, or RF trouble)
+    // Highest readable block below `last`: binary search, ~7 reads for 78 blocks
+    uint8_t lo = 0, hi = last;     // lo readable, hi not
+    while (hi - lo > 1) {
+        uint8_t mid = lo + (hi - lo) / 2;
+        if (readable(mid)) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
 bool HardwareNFCConnection::begin() {
     // Configure additional input pins for future use
     // Shared-SPI boards use explicit -1 sentinels for signals that are not
