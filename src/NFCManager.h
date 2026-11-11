@@ -91,6 +91,9 @@ public:
     // Outcome of the most recent write request, for the web writer pages.
     // Returns false if no write has finished yet.
     bool getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen);
+    // Result of one write by request ID; false while it is pending (or too old
+    // to be kept: the last WRITE_RESULTS_KEPT results are kept)
+    bool getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen);
 
     // Cooperative diagnostic pause for the self-test wizard (#253). Unlike
     // pauseScanTask()/vTaskSuspend, the scan task only stops at its safe loop
@@ -293,15 +296,23 @@ private:
     bool tagCanHold(size_t bytes, const char* what);  // ISO15693 size check before a full write
     // Reason for the write in progress, set on failure. Scan task only (written
     // in tagCanHold/processWriteQueue, no mutex): other tasks read the copy in
-    // lastWriteError_ through getLastWriteResult().
+    // writeResults_ through getWriteResult().
     char writeError_[96] = {0};
     // UID length of the tag selected this scan cycle, as detected (0 = none).
     // Scan task only, same ownership as selectedUidHex_.
     uint8_t selectedUidLen_ = 0;
-    uint32_t lastWriteId_ = 0;
-    bool lastWriteOk_ = false;
-    bool lastWriteValid_ = false;
-    char lastWriteError_[96] = {0};
+    // Finished writes, newest at writeResultNext_ - 1, so overlapping writes
+    // can each be checked by request ID (scan task writes, web reads, both
+    // under tagMutex)
+    struct WriteResult {
+        uint32_t requestId;
+        bool ok;
+        char error[96];
+    };
+    static constexpr uint8_t WRITE_RESULTS_KEPT = 4;
+    WriteResult writeResults_[WRITE_RESULTS_KEPT] = {};
+    uint8_t writeResultNext_ = 0;
+    uint8_t writeResultCount_ = 0;
 };
 
 #endif // NFC_MANAGER_H

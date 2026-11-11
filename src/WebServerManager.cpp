@@ -1780,11 +1780,19 @@ void WebServerManager::handleApiStatus() {
     serializeEnrichment(doc);
 
     {
-        // Outcome of the most recent tag write (writer pages show failures)
+        // Outcome of a tag write (writer pages show failures): the one asked
+        // for with ?write_id=N (absent while it is pending), else the latest
         uint32_t writeId = 0;
         bool writeOk = false;
         char writeErr[96];
-        if (NFCManager::getInstance().getLastWriteResult(writeId, writeOk, writeErr, sizeof(writeErr))) {
+        bool haveWrite;
+        if (_server.hasArg("write_id")) {
+            writeId = (uint32_t)strtoul(_server.arg("write_id").c_str(), nullptr, 10);
+            haveWrite = NFCManager::getInstance().getWriteResult(writeId, writeOk, writeErr, sizeof(writeErr));
+        } else {
+            haveWrite = NFCManager::getInstance().getLastWriteResult(writeId, writeOk, writeErr, sizeof(writeErr));
+        }
+        if (haveWrite) {
             JsonObject lw = doc["last_write"].to<JsonObject>();
             lw["request_id"] = writeId;
             lw["ok"] = writeOk;

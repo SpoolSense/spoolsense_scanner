@@ -679,13 +679,15 @@ async function sharedWriteFlow(config) {
     var verifyDeadline = Date.now() + 15000;
     while (Date.now() < verifyDeadline) {
       await sleep(500);
-      var status = await api('/api/status');
+      var hasId = writeResp && writeResp.request_id;
+      // Ask for this write's own result: another write finishing in between
+      // must not hide it, and tag data that already matched before the write
+      // finished is not proof that it succeeded.
+      var status = await api(hasId ? '/api/status?write_id=' + writeResp.request_id : '/api/status');
       var lw = status.last_write;
-      if (writeResp && writeResp.request_id) {
-        // Wait for this write's own result: tag data that already matched
-        // before the write finished is not proof that it succeeded.
-        if (!lw || lw.request_id < writeResp.request_id) continue;
-        if (lw.request_id === writeResp.request_id && !lw.ok) {
+      if (hasId) {
+        if (!lw || lw.request_id !== writeResp.request_id) continue;
+        if (!lw.ok) {
           setStepState('step-verify', 'error');
           throw new Error('Write failed: ' + (lw.error || 'the tag did not accept the data') + '.');
         }

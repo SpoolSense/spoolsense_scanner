@@ -1785,25 +1785,23 @@ void NFCManager::processWriteQueue() {
         // Dequeue the request
         xQueueReceive(writeQueue, &request, 0);
 
+        // Each write reports its own failure reason only (format and atomic
+        // writes both run their own checks)
+        writeError_[0] = '\0';
         // executeWrite() manages its own mutex internally
         bool success = executeWrite(request);
         // Wait longer than the usual 50 ms: a dropped result would leave the
         // writer page waiting for a failure it can never see.
         if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            lastWriteId_ = request.request_id;
-            lastWriteOk_ = success;
-            lastWriteValid_ = true;
-            strncpy(lastWriteError_, success ? "" : (writeError_[0] ? writeError_ : "the tag did not accept the data"),
-                    sizeof(lastWriteError_) - 1);
-            lastWriteError_[sizeof(lastWriteError_) - 1] = '\0';
+            WriteResult& r = writeResults_[writeResultNext_];
+            r.requestId = request.request_id;
+            r.ok = success;
+            strncpy(r.error, success ? "" : (writeError_[0] ? writeError_ : "the tag did not accept the data"),
+                    sizeof(r.error) - 1);
+            r.error[sizeof(r.error) - 1] = '\0';
+            writeResultNext_ = (writeResultNext_ + 1) % WRITE_RESULTS_KEPT;
+            if (writeResultCount_ < WRITE_RESULTS_KEPT) writeResultCount_++;
             xSemaphoreGive(tagMutex);
-        }
-        // A failure reason holds for the rest of the batch: a write that fails
-        // because an earlier one in the same batch failed (e.g. the format step
-        // refused a too-small tag) reports that root cause. Clear it once the
-        // batch is done.
-        if (uxQueueMessagesWaiting(writeQueue) == 0) {
-            writeError_[0] = '\0';
         }
 
         markRequestCompleted(request.request_id);
@@ -2338,14 +2336,14 @@ bool NFCManager::executeAtomicWrite(const NFCWriteRequest& request) {
         Serial.println("NFCManager: WRITE_ATOMIC - no atomic fields pending");
         return false;
     }
+    AtomicWriteFields f = atomicWriteFields_;
+    atomicWriteFields_.pending = false;
+
     // Wrong tag type or too small: refuse with a clear reason before the
     // checks below, which would only report a generic failure
     if (!tagCanHold(312, "OpenPrintTag")) {
         return false;
     }
-
-    AtomicWriteFields f = atomicWriteFields_;
-    atomicWriteFields_.pending = false;
 
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("NFCManager: WRITE_ATOMIC - could not acquire tagMutex");
@@ -3036,13 +3034,33 @@ bool NFCManager::tagCanHold(size_t bytes, const char* what) {
 
 bool NFCManager::getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen) {
     if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
-    const bool valid = lastWriteValid_;
-    requestId = lastWriteId_;
-    ok = lastWriteOk_;
-    if (error && errorLen) {
-        strncpy(error, lastWriteError_, errorLen - 1);
-        error[errorLen - 1] = '\0';
+    const bool valid = writeResultCount_ > 0;
+    if (valid) {
+        const WriteResult& r = writeResults_[(writeResultNext_ + WRITE_RESULTS_KEPT - 1) % WRITE_RESULTS_KEPT];
+        requestId = r.requestId;
+        ok = r.ok;
+        if (error && errorLen) {
+            strncpy(error, r.error, errorLen - 1);
+            error[errorLen - 1] = '\0';
+        }
     }
     xSemaphoreGive(tagMutex);
     return valid;
+}
+
+bool NFCManager::getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen) {
+    if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    bool found = false;
+    for (uint8_t i = 0; i < writeResultCount_ && !found; i++) {
+        const WriteResult& r = writeResults_[(writeResultNext_ + WRITE_RESULTS_KEPT - 1 - i) % WRITE_RESULTS_KEPT];
+        if (r.requestId != requestId) continue;
+        found = true;
+        ok = r.ok;
+        if (error && errorLen) {
+            strncpy(error, r.error, errorLen - 1);
+            error[errorLen - 1] = '\0';
+        }
+    }
+    xSemaphoreGive(tagMutex);
+    return found;
 }
