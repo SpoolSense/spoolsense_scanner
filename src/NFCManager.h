@@ -91,9 +91,11 @@ public:
     // Outcome of the most recent write request, for the web writer pages.
     // Returns false if no write has finished yet.
     bool getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen);
-    // Result of one write by request ID; false while it is pending (or too old
-    // to be kept: the last WRITE_RESULTS_KEPT results are kept)
-    bool getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen);
+    // Result of one write by request ID. Expired: it finished, but so many
+    // writes finished after it that its result is no longer kept.
+    enum class WriteResultState : uint8_t { Pending, Done, Expired };
+    WriteResultState getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen);
+    static constexpr uint8_t WRITE_QUEUE_LEN = 8;
 
     // Cooperative diagnostic pause for the self-test wizard (#253). Unlike
     // pauseScanTask()/vTaskSuspend, the scan task only stops at its safe loop
@@ -309,7 +311,9 @@ private:
         bool ok;
         char error[96];
     };
-    static constexpr uint8_t WRITE_RESULTS_KEPT = 4;
+    // A full queue can finish after a writer page's own write before its first
+    // poll, so keep that many results plus its own
+    static constexpr uint8_t WRITE_RESULTS_KEPT = WRITE_QUEUE_LEN + 1;
     WriteResult writeResults_[WRITE_RESULTS_KEPT] = {};
     uint8_t writeResultNext_ = 0;
     uint8_t writeResultCount_ = 0;

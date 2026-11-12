@@ -685,7 +685,8 @@ async function sharedWriteFlow(config) {
       // finished is not proof that it succeeded.
       var status = await api(hasId ? '/api/status?write_id=' + writeResp.request_id : '/api/status');
       var lw = status.last_write;
-      if (hasId) {
+      // An expired result is unknown: fall back to checking the tag data
+      if (hasId && !(lw && lw.expired)) {
         if (!lw || lw.request_id !== writeResp.request_id) continue;
         if (!lw.ok) {
           setStepState('step-verify', 'error');

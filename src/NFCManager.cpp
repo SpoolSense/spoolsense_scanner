@@ -81,7 +81,7 @@ bool NFCManager::begin() {
     }
 
     // Create FreeRTOS primitives
-    writeQueue = xQueueCreate(8, sizeof(NFCWriteRequest));
+    writeQueue = xQueueCreate(WRITE_QUEUE_LEN, sizeof(NFCWriteRequest));
     if (writeQueue == nullptr) {
         Serial.println("NFCManager: Failed to create write queue");
         cleanupBeginAllocations();
@@ -3048,19 +3048,25 @@ bool NFCManager::getLastWriteResult(uint32_t& requestId, bool& ok, char* error, 
     return valid;
 }
 
-bool NFCManager::getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen) {
-    if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
-    bool found = false;
-    for (uint8_t i = 0; i < writeResultCount_ && !found; i++) {
+NFCManager::WriteResultState NFCManager::getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen) {
+    if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return WriteResultState::Pending;
+    WriteResultState state = WriteResultState::Pending;
+    for (uint8_t i = 0; i < writeResultCount_ && state == WriteResultState::Pending; i++) {
         const WriteResult& r = writeResults_[(writeResultNext_ + WRITE_RESULTS_KEPT - 1 - i) % WRITE_RESULTS_KEPT];
         if (r.requestId != requestId) continue;
-        found = true;
+        state = WriteResultState::Done;
         ok = r.ok;
         if (error && errorLen) {
             strncpy(error, r.error, errorLen - 1);
             error[errorLen - 1] = '\0';
         }
     }
+    // Request IDs only grow and the queue runs in order: an ID older than the
+    // oldest kept result has finished, and its result was dropped
+    if (state == WriteResultState::Pending && writeResultCount_ == WRITE_RESULTS_KEPT &&
+        requestId < writeResults_[writeResultNext_].requestId) {
+        state = WriteResultState::Expired;
+    }
     xSemaphoreGive(tagMutex);
-    return found;
+    return state;
 }
