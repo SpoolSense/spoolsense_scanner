@@ -91,8 +91,8 @@ public:
     // Outcome of the most recent write request, for the web writer pages.
     // Returns false if no write has finished yet.
     bool getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen);
-    // Result of one write by request ID. Expired: it finished, but so many
-    // writes finished after it that its result is no longer kept.
+    // Result of one write by request ID. Expired: it finished (it is among the
+    // completed requests), but its result is no longer kept.
     enum class WriteResultState : uint8_t { Pending, Done, Expired };
     WriteResultState getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen);
     static constexpr uint8_t WRITE_QUEUE_LEN = 8;

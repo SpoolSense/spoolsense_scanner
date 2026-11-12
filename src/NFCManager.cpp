@@ -3061,12 +3061,13 @@ NFCManager::WriteResultState NFCManager::getWriteResult(uint32_t requestId, bool
             error[errorLen - 1] = '\0';
         }
     }
-    // Request IDs only grow and the queue runs in order: an ID older than the
-    // oldest kept result has finished, and its result was dropped
-    if (state == WriteResultState::Pending && writeResultCount_ == WRITE_RESULTS_KEPT &&
-        requestId < writeResults_[writeResultNext_].requestId) {
+    xSemaphoreGive(tagMutex);
+    // Not kept, but finished (the result is recorded before the request is
+    // marked completed): its result was dropped. IDs are not queued in ID
+    // order, so this can't be told from the ID itself. Checked after
+    // releasing tagMutex, so the two locks are never held together.
+    if (state == WriteResultState::Pending && isRequestCompleted(requestId)) {
         state = WriteResultState::Expired;
     }
-    xSemaphoreGive(tagMutex);
     return state;
 }
