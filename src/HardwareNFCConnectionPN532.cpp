@@ -12,6 +12,11 @@
 // ATQA and SAK extracted from bytes 9-10 and 11 respectively.
 extern byte pn532_packetbuffer[];
 
+namespace {
+// Longest UID the firmware stores (SpoolInfo::uid, lastSeenUid), as in the RC522 connection
+constexpr uint8_t MAX_SUPPORTED_UID_LEN = 8;
+}
+
 HardwareNFCConnectionPN532::HardwareNFCConnectionPN532() {
     memset(&hal_, 0, sizeof(hal_));
     memset(currentUid_, 0, sizeof(currentUid_));
@@ -138,10 +143,21 @@ bool HardwareNFCConnectionPN532::detectTag(uint8_t* uid, uint8_t* uidLength) {
 
     // 100ms timeout is safe compromise: detects tags fast enough for scan loop, but avoids
     // blocking on non-responsive tags or noise that causes readPassiveTargetID to hang
+    // Callers pass 8-byte buffers (the firmware maximum, as in the RC522
+    // connection), but the library copies as many bytes as the reply frame's
+    // length byte says: 4, 7 or 10 for a real tag, up to 255 for a corrupted
+    // frame. Read into a buffer that holds anything it can write, then check.
+    uint8_t rawUid[UINT8_MAX];
     uint8_t uidLen = 0;
-    bool found = pn532_->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+    bool found = pn532_->readPassiveTargetID(PN532_MIFARE_ISO14443A, rawUid, &uidLen, 100);
     if (!found || uidLen == 0) return false;
+    if (uidLen > MAX_SUPPORTED_UID_LEN) {
+        Serial.printf("PN532: unsupported UID length %u (firmware maximum is %u)\n",
+                      uidLen, MAX_SUPPORTED_UID_LEN);
+        return false;
+    }
 
+    memcpy(uid, rawUid, uidLen);
     *uidLength = uidLen;
 
     // Extract ATQA/SAK from Adafruit's global buffer after readPassiveTargetID parses the
