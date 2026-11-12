@@ -3049,6 +3049,11 @@ bool NFCManager::getLastWriteResult(uint32_t& requestId, bool& ok, char* error, 
 }
 
 NFCManager::WriteResultState NFCManager::getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen) {
+    // Read completion first: a result is stored before its request is marked
+    // completed, so if it is completed now, the search below finds the result
+    // unless it was dropped. (Checked before taking tagMutex, so the two
+    // locks are never held together.)
+    const bool completed = isRequestCompleted(requestId);
     if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return WriteResultState::Pending;
     WriteResultState state = WriteResultState::Pending;
     for (uint8_t i = 0; i < writeResultCount_ && state == WriteResultState::Pending; i++) {
@@ -3062,11 +3067,9 @@ NFCManager::WriteResultState NFCManager::getWriteResult(uint32_t requestId, bool
         }
     }
     xSemaphoreGive(tagMutex);
-    // Not kept, but finished (the result is recorded before the request is
-    // marked completed): its result was dropped. IDs are not queued in ID
-    // order, so this can't be told from the ID itself. Checked after
-    // releasing tagMutex, so the two locks are never held together.
-    if (state == WriteResultState::Pending && isRequestCompleted(requestId)) {
+    // Not kept, but finished: its result was dropped. (IDs are not queued in
+    // ID order, so this can't be told from the ID itself.)
+    if (state == WriteResultState::Pending && completed) {
         state = WriteResultState::Expired;
     }
     return state;
