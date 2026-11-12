@@ -665,7 +665,7 @@ async function sharedWriteFlow(config) {
     setStepState('step-write', 'active');
     setBanner('statusBanner', 'Writing ' + config.formatName + ' data\u2026');
     setResult('resultBox', 'Keep the tag on the scanner \u2014 writing and verifying takes a few seconds.', '');
-    await api(config.endpoint, {
+    var writeResp = await api(config.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -679,7 +679,20 @@ async function sharedWriteFlow(config) {
     var verifyDeadline = Date.now() + 15000;
     while (Date.now() < verifyDeadline) {
       await sleep(500);
-      var status = await api('/api/status');
+      var hasId = writeResp && writeResp.request_id;
+      // Ask for this write's own result: another write finishing in between
+      // must not hide it, and tag data that already matched before the write
+      // finished is not proof that it succeeded.
+      var status = await api(hasId ? '/api/status?write_id=' + writeResp.request_id : '/api/status');
+      var lw = status.last_write;
+      // An expired result is unknown: fall back to checking the tag data
+      if (hasId && !(lw && lw.expired)) {
+        if (!lw || lw.request_id !== writeResp.request_id) continue;
+        if (!lw.ok) {
+          setStepState('step-verify', 'error');
+          throw new Error('Write failed: ' + (lw.error || 'the tag did not accept the data') + '.');
+        }
+      }
       if (status.present && config.verify(status, payload)) {
         setBanner('statusBanner', 'Tag verified \u2014 hold for a moment\u2026');
         await sleep(2000);

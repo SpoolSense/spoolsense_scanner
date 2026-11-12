@@ -78,6 +78,15 @@ static const char* tagKindToString(TagKind kind) {
     }
 }
 
+// Reply for a queued tag write. request_id lets the writer page match
+// /api/status last_write to this write.
+static void sendWriteQueued(WebServer& server, uint32_t requestId) {
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"success\":true,\"request_id\":%lu}",
+             (unsigned long)requestId);
+    server.send(200, "application/json", resp);
+}
+
 WebServerManager& WebServerManager::getInstance() {
     static WebServerManager instance;
     return instance;
@@ -1770,6 +1779,35 @@ void WebServerManager::handleApiStatus() {
 
     serializeEnrichment(doc);
 
+    {
+        // Outcome of a tag write (writer pages show failures): the one asked
+        // for with ?write_id=N (absent while it is pending, expired:true once
+        // its result is no longer kept), else the latest
+        uint32_t writeId = 0;
+        bool writeOk = false;
+        char writeErr[96];
+        bool haveWrite;
+        if (_server.hasArg("write_id")) {
+            writeId = (uint32_t)strtoul(_server.arg("write_id").c_str(), nullptr, 10);
+            NFCManager::WriteResultState st =
+                NFCManager::getInstance().getWriteResult(writeId, writeOk, writeErr, sizeof(writeErr));
+            haveWrite = st == NFCManager::WriteResultState::Done;
+            if (st == NFCManager::WriteResultState::Expired) {
+                JsonObject lw = doc["last_write"].to<JsonObject>();
+                lw["request_id"] = writeId;
+                lw["expired"] = true;
+            }
+        } else {
+            haveWrite = NFCManager::getInstance().getLastWriteResult(writeId, writeOk, writeErr, sizeof(writeErr));
+        }
+        if (haveWrite) {
+            JsonObject lw = doc["last_write"].to<JsonObject>();
+            lw["request_id"] = writeId;
+            lw["ok"] = writeOk;
+            if (!writeOk) lw["error"] = writeErr;
+        }
+    }
+
     String body;
     serializeJson(doc, body);
     _server.send(200, "application/json", body);
@@ -1912,7 +1950,7 @@ void WebServerManager::handleApiWriteTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2044,7 +2082,7 @@ void WebServerManager::handleApiWriteTigerTag() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2283,7 +2321,7 @@ void WebServerManager::handleApiWriteOpenTag3D() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -2338,7 +2376,7 @@ void WebServerManager::handleApiWriteOpenSpool() {
         return;
     }
 
-    _server.send(200, "application/json", "{\"success\":true}");
+    sendWriteQueued(_server, req.request_id);
 }
 
 // ---------------------------------------------------------------------------

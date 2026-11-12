@@ -81,7 +81,7 @@ bool NFCManager::begin() {
     }
 
     // Create FreeRTOS primitives
-    writeQueue = xQueueCreate(8, sizeof(NFCWriteRequest));
+    writeQueue = xQueueCreate(WRITE_QUEUE_LEN, sizeof(NFCWriteRequest));
     if (writeQueue == nullptr) {
         Serial.println("NFCManager: Failed to create write queue");
         cleanupBeginAllocations();
@@ -615,6 +615,7 @@ bool NFCManager::isSkippableDuplicate(const uint8_t* uid, uint8_t uidLength) {
 }
 
 void NFCManager::recordSelectedUid(const uint8_t* uid, uint8_t uidLength) {
+    selectedUidLen_ = uidLength;        // as detected, before the hex buffer's clamp
     if (uidLength > 8) uidLength = 8;   // selectedUidHex_ holds 8 bytes max
     for (uint8_t i = 0; i < uidLength; i++) {
         snprintf(selectedUidHex_ + (i * 2), 3, "%02X", uid[i]);
@@ -623,6 +624,7 @@ void NFCManager::recordSelectedUid(const uint8_t* uid, uint8_t uidLength) {
 }
 
 void NFCManager::clearSelectedUid() {
+    selectedUidLen_ = 0;
     selectedUidHex_[0] = '\0';
 }
 
@@ -995,6 +997,9 @@ bool NFCManager::formatNewSpool() {
     }
 
     Serial.println("NFCManager: Writing to NFC tag...");
+    if (!tagCanHold(localTag.data_size, "OpenPrintTag")) {
+        return false;
+    }
     opt_nfc_hal_t* hal = connection_->getHal();
     err = opt_write_to_nfc(&localTag, hal);
     if (err != OPT_OK) {
@@ -1780,8 +1785,24 @@ void NFCManager::processWriteQueue() {
         // Dequeue the request
         xQueueReceive(writeQueue, &request, 0);
 
+        // Each write reports its own failure reason only (format and atomic
+        // writes both run their own checks)
+        writeError_[0] = '\0';
         // executeWrite() manages its own mutex internally
         bool success = executeWrite(request);
+        // Wait longer than the usual 50 ms: a dropped result would leave the
+        // writer page waiting for a failure it can never see.
+        if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            WriteResult& r = writeResults_[writeResultNext_];
+            r.requestId = request.request_id;
+            r.ok = success;
+            strncpy(r.error, success ? "" : (writeError_[0] ? writeError_ : "the tag did not accept the data"),
+                    sizeof(r.error) - 1);
+            r.error[sizeof(r.error) - 1] = '\0';
+            writeResultNext_ = (writeResultNext_ + 1) % WRITE_RESULTS_KEPT;
+            if (writeResultCount_ < WRITE_RESULTS_KEPT) writeResultCount_++;
+            xSemaphoreGive(tagMutex);
+        }
 
         markRequestCompleted(request.request_id);
 
@@ -1873,6 +1894,9 @@ bool NFCManager::writeRawTag(const NFCWriteRequest& request) {
 
     // Write all pages to NFC tag
     Serial.println("NFCManager: Writing raw data to NFC tag...");
+    if (!tagCanHold(localTag.data_size, "OpenPrintTag data")) {
+        return false;
+    }
     opt_nfc_hal_t* hal = connection_->getHal();
     opt_error_t err = opt_write_to_nfc(&localTag, hal);
     if (err != OPT_OK) {
@@ -2312,9 +2336,14 @@ bool NFCManager::executeAtomicWrite(const NFCWriteRequest& request) {
         Serial.println("NFCManager: WRITE_ATOMIC - no atomic fields pending");
         return false;
     }
-
     AtomicWriteFields f = atomicWriteFields_;
     atomicWriteFields_.pending = false;
+
+    // Wrong tag type or too small: refuse with a clear reason before the
+    // checks below, which would only report a generic failure
+    if (!tagCanHold(312, "OpenPrintTag")) {
+        return false;
+    }
 
     if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         Serial.println("NFCManager: WRITE_ATOMIC - could not acquire tagMutex");
@@ -2972,4 +3001,76 @@ bool NFCManager::readBambuTag(const uint8_t* uid, uint8_t uidLength, BambuTagDat
     // parseBambuBlocks reports validity: a zeroed identity block is never
     // published as a spool.
     return bambuEssentialBlocksPresent(blockOk) && parseBambuBlocks(blocks, out);
+}
+
+// Refuse a full-image write to an ISO15693 tag that is too small for it,
+// before touching the tag (a partial write leaves it half-written). Tags whose
+// size can't be probed are written as before.
+bool NFCManager::tagCanHold(size_t bytes, const char* what) {
+    if (bytes == 0 || connection_ == nullptr) return true;
+    // These images are ISO15693 (NFC-V) block writes; an NFC-A tag (NTAG,
+    // MIFARE: 4- or 7-byte UID) can't take them at all
+    // Judge the tag selected this cycle, not currentSpool, which can still
+    // describe the previous tag when the cooldown skipped a refresh.
+    if (selectedUidLen_ != 0 && selectedUidLen_ != 8) {
+        const bool spoolIsSelected = strcmp(currentSpool.spool_id, selectedUidHex_) == 0;
+        const char* kind = (spoolIsSelected && currentSpool.variant != NtagVariant::Unknown)
+                           ? ntagVariantName(currentSpool.variant) : "an NFC-A tag";
+        snprintf(writeError_, sizeof(writeError_),
+                 "%s needs an ISO15693 (NFC-V) tag, e.g. ICODE SLIX2; this is %s", what, kind);
+        Serial.printf("NFCManager: %s\n", writeError_);
+        LogBuffer::getInstance().logPrintf("Write refused: %s\n", writeError_);
+        return false;
+    }
+    const uint8_t blocks = (uint8_t)((bytes + 3) / 4);
+    const int last = connection_->iso15693LastBlock(blocks);
+    if (last < 0 || last >= blocks - 1) return true;
+    snprintf(writeError_, sizeof(writeError_), "tag too small: it holds %u bytes, %s needs %u",
+             (unsigned)((last + 1) * 4), what, (unsigned)(blocks * 4));
+    Serial.printf("NFCManager: %s\n", writeError_);
+    LogBuffer::getInstance().logPrintf("Write refused: %s\n", writeError_);
+    return false;
+}
+
+bool NFCManager::getLastWriteResult(uint32_t& requestId, bool& ok, char* error, size_t errorLen) {
+    if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return false;
+    const bool valid = writeResultCount_ > 0;
+    if (valid) {
+        const WriteResult& r = writeResults_[(writeResultNext_ + WRITE_RESULTS_KEPT - 1) % WRITE_RESULTS_KEPT];
+        requestId = r.requestId;
+        ok = r.ok;
+        if (error && errorLen) {
+            strncpy(error, r.error, errorLen - 1);
+            error[errorLen - 1] = '\0';
+        }
+    }
+    xSemaphoreGive(tagMutex);
+    return valid;
+}
+
+NFCManager::WriteResultState NFCManager::getWriteResult(uint32_t requestId, bool& ok, char* error, size_t errorLen) {
+    // Read completion first: a result is stored before its request is marked
+    // completed, so if it is completed now, the search below finds the result
+    // unless it was dropped. (Checked before taking tagMutex, so the two
+    // locks are never held together.)
+    const bool completed = isRequestCompleted(requestId);
+    if (tagMutex == nullptr || xSemaphoreTake(tagMutex, pdMS_TO_TICKS(50)) != pdTRUE) return WriteResultState::Pending;
+    WriteResultState state = WriteResultState::Pending;
+    for (uint8_t i = 0; i < writeResultCount_ && state == WriteResultState::Pending; i++) {
+        const WriteResult& r = writeResults_[(writeResultNext_ + WRITE_RESULTS_KEPT - 1 - i) % WRITE_RESULTS_KEPT];
+        if (r.requestId != requestId) continue;
+        state = WriteResultState::Done;
+        ok = r.ok;
+        if (error && errorLen) {
+            strncpy(error, r.error, errorLen - 1);
+            error[errorLen - 1] = '\0';
+        }
+    }
+    xSemaphoreGive(tagMutex);
+    // Not kept, but finished: its result was dropped. (IDs are not queued in
+    // ID order, so this can't be told from the ID itself.)
+    if (state == WriteResultState::Pending && completed) {
+        state = WriteResultState::Expired;
+    }
+    return state;
 }
