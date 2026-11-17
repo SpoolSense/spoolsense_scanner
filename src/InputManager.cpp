@@ -1,4 +1,7 @@
 #include "InputManager.h"
+
+#ifndef BOARD_NO_KEYPAD
+
 #include "ApplicationManager.h"
 #include "BoardPins.h"
 #include <Arduino.h>
@@ -63,3 +66,5 @@ void InputManager::poll() {
 
     ApplicationManager::getInstance().sendMessage(msg);
 }
+
+#endif // BOARD_NO_KEYPAD

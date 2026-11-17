@@ -1,6 +1,19 @@
 #ifndef INPUT_MANAGER_H
 #define INPUT_MANAGER_H
 
+#if defined(BOARD_NO_KEYPAD)
+
+// No-keypad boards: a compile-time stub keeps shared code (main.cpp) free of
+// #ifdefs while the Keypad library and InputManager.cpp are left out.
+class InputManager {
+public:
+    static InputManager& getInstance() { static InputManager instance; return instance; }
+    void begin() {}
+    void poll() {}
+};
+
+#else
+
 #include <Keypad.h>
 
 class InputManager {
@@ -24,5 +37,7 @@ private:
     Keypad* keypad_ = nullptr;
     bool initialized_ = false;
 };
+
+#endif // BOARD_NO_KEYPAD
 
 #endif // INPUT_MANAGER_H
